@@ -132,12 +132,14 @@ anchor contains only:
 - highest applied receipt sequence and chain hash; and
 - last verified paired-backup manifest hash.
 
-Before any Actual write call, one companion transaction persists the
-`applying` receipt, exact action, holds, and next issued-intent sequence/hash.
-The service then atomically advances and verifies the external anchor's issued
-chain. It must not call Actual until the database and anchor agree. After an
-applied receipt transaction commits, the applied chain advances through the
-same protocol.
+Before the first Actual write call for a logical receipt, one companion
+transaction persists the `applying` receipt, exact action, holds, and next
+issued-intent sequence/hash. The service then atomically advances and verifies
+the external anchor's issued chain. It must not call Actual until the database
+and anchor agree. A retry after authoritative no-commit proof reuses and
+reverifies the same receipt/intent hash; it never consumes another issued
+sequence. A changed action requires a new receipt. After an applied receipt
+transaction commits, the applied chain advances through the same protocol.
 
 Because writes are serialized and another write cannot start during anchor
 repair, startup may finish exactly one valid database-chain extension that is
@@ -782,7 +784,9 @@ The post-gate apply protocol is:
 3. Atomically advance the authenticated external anchor to that issued intent
    and verify it matches the database. A crash with the database exactly one
    valid intent ahead may finish this update on restart. Actual must not be
-   called before both copies agree.
+   called before both copies agree. Every later retry of this exact logical
+   operation reverifies and reuses the same intent; it does not add an
+   attempt-level chain entry.
 4. Invoke exactly one server-owned conditional mutation with the receipt ID and
    canonical action hash. The server re-reads the target, re-derives both hashes
    and deterministic IDs, and rejects any mismatch before applying. In the same
@@ -796,8 +800,9 @@ The post-gate apply protocol is:
    accepting another mutation. Reacquire the queue, lock, and approved remote
    fence, then query the authoritative outcome by receipt ID. A matching
    committed outcome finalizes the receipt. A definitive no-commit result may
-   retry the identical idempotent operation or enter a terminal conflict. An
-   unavailable, mismatched, or otherwise unprovable outcome becomes
+   retry the identical idempotent operation under the already anchored intent
+   or enter a terminal conflict. An unavailable, mismatched, or otherwise
+   unprovable outcome becomes
    `outcome_unknown`; it retains its canonical action and holds and blocks the
    affected target/capacities.
 

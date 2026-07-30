@@ -224,14 +224,19 @@ later companion writes. Until all local and remote race/failure tests pass,
 approvals are read-only decisions with instructions to complete the edit in
 Actual's UI.
 
-Before every Actual write call, the serialized companion transaction assigns
-an issued-write sequence and chain hash covering the receipt ID, action hash,
-target, and any holds/quarantine identity. The external integrity anchor must
-advance to and verify that issued intent before the call begins. A crash may
-leave the database exactly one valid intent ahead for startup to finish, but an
-anchor ahead of restored companion state forces `recovery_required`. This
-pre-call gate makes loss of an unresolved attempt detectable even when Actual
-committed and the companion never finalized an applied receipt.
+Before the first Actual write call for each logical receipt, the serialized
+companion transaction assigns one issued-write sequence and chain hash covering
+the receipt ID, action hash, target, and any holds/quarantine identity. The
+external integrity anchor must advance to and verify that issued intent before
+the call begins. Every retry of the same receipt and exact action reuses and
+reverifies that one anchored intent; it does not issue another sequence. A
+changed action requires a new receipt and idempotency key.
+
+A crash may leave the database exactly one valid intent ahead for startup to
+finish, but an anchor ahead of restored companion state forces
+`recovery_required`. This pre-call gate makes loss of an unresolved attempt
+detectable even when Actual committed and the companion never finalized an
+applied receipt.
 
 ### Companion HTTP/UI boundary
 

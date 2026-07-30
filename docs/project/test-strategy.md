@@ -386,11 +386,14 @@ External-anchor cases cover a database one valid receipt ahead after a crash,
 database one valid issued intent ahead before the pre-call anchor update,
 issued-intent or applied anchor ahead of an older database, missing anchor after
 prior writes/intents, divergent chain, wrong budget, and a paired restore
-command that is the only allowed rollback. No Actual write call begins until
-the issued-intent chain matches. Backup cases also prove the two-phase order:
-capture and hash-bind the pre-backup anchor artifact, finalize the encrypted
-manifest, atomically advance the live anchor to that manifest hash, and
-reconstruct exactly that transition during restore without copying the MAC key.
+command that is the only allowed rollback. No first call or retry begins until
+the receipt's issued-intent chain matches. Retries of an identical receipt and
+action reverify the same intent and do not advance the issued sequence; a
+changed action requires a new receipt. Backup cases also prove the two-phase
+order: capture and hash-bind the pre-backup anchor artifact, finalize the
+encrypted manifest, atomically advance the live anchor to that manifest hash,
+and reconstruct exactly that transition during restore without copying the MAC
+key.
 
 ## Actual adapter integration tests
 
@@ -499,10 +502,12 @@ and after an Actual commit/lost response—must find the anchor ahead, enter
 Recovery reacquires the queue, lock, and approved remote fence, then queries
 Actual's durable operation outcome by receipt ID. A matching committed outcome
 becomes `applied`; a definitive no-commit result may retry the identical
-operation or become a terminal conflict. Before/after target hashes remain
-validation evidence and never establish outcome by themselves. An unavailable,
-mismatched, or unprovable outcome becomes `outcome_unknown`, retains the exact
-action and Amazon allocation holds, and blocks the affected target/capacities.
+operation under the same reverified issued intent or become a terminal
+conflict. The test asserts that no attempt-level issued sequence is added.
+Before/after target hashes remain validation evidence and never establish
+outcome by themselves. An unavailable, mismatched, or unprovable outcome
+becomes `outcome_unknown`, retains the exact action and Amazon allocation
+holds, and blocks the affected target/capacities.
 Reusing a key for another request returns a conflict and never replays another
 request's response. No ambiguous receipt permits another mutation. A timeout,
 lost response, or process death stays `applying`/`outcome_unknown`; only a
