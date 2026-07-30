@@ -9,7 +9,7 @@
 - Research start commit: `822fbe3f96af21f276f3f41d686c796ddcd84285`
 - Research end commit: `822fbe3f96af21f276f3f41d686c796ddcd84285`
 - Documentation branch: `research/FIN-2-capability-assessment`
-- Pull request: to be recorded after branch publication
+- Pull request: <https://github.com/FPynk/actual/pull/2>
 
 The requested `gpt-5.6-lunar` model was not available in this environment.
 All three research assignments used `gpt-5.6-terra` with high reasoning as the
