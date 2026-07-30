@@ -18,6 +18,10 @@ import * as monthUtils from '@actual-app/core/shared/months';
 import { css } from '@emotion/css';
 import { t } from 'i18next';
 
+import type {
+  CategoryGroupMonthProps,
+  CategoryMonthProps,
+} from '#components/budget';
 import { BalanceWithCarryover } from '#components/budget/BalanceWithCarryover';
 import { makeAmountGrey } from '#components/budget/util';
 import { NotesButton } from '#components/NotesButton';
@@ -31,7 +35,6 @@ import { useSheetValue } from '#hooks/useSheetValue';
 import { useUndo } from '#hooks/useUndo';
 import type { Binding, SheetFields } from '#spreadsheet';
 import { trackingBudget } from '#spreadsheet/bindings';
-import type { CategoryGroupMonthProps, CategoryMonthProps } from '..';
 
 import { BalanceMenu } from './BalanceMenu';
 import { BudgetMenu } from './BudgetMenu';
