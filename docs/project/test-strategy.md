@@ -186,6 +186,10 @@ is entirely synthetic and necessary.
 Each case asserts added IDs, updated IDs, ignored/review candidates, preserved
 fields, cleared/reconciled behavior, and idempotent rerun.
 
+The authoritative case definitions, result codes, and exact FIN-16/FIN-17 test
+ownership are frozen in
+[`transaction-identity-contract.md`](transaction-identity-contract.md).
+
 | Scenario                                                | Expected result                                                                         |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Same OFX file imported twice                            | One ledger transaction per stable ID; rerun is ignored/update-only                      |

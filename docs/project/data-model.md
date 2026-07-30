@@ -1149,6 +1149,10 @@ cannot satisfy required native-import and bank-sync reconciliation, a separate
 lead-owned design may add an Actual table conceptually named
 `transaction_sources`.
 
+The initial native identity and the full prerequisites for opening this
+migration gate are defined in
+[`transaction-identity-contract.md`](transaction-identity-contract.md).
+
 Potential minimum fields:
 
 | Field                 | Purpose                             |
