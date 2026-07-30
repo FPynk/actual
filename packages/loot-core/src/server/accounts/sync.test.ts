@@ -78,6 +78,23 @@ async function getAllPayees() {
   return (await db.getPayees()).filter(p => p.transfer_acct == null);
 }
 
+async function prepareLocalAccount(id: string) {
+  await db.insertAccount({ id, name: id });
+  await db.insertPayee({
+    id: `transfer-${id}`,
+    name: '',
+    transfer_acct: id,
+  });
+}
+
+async function getStoredTransactionCounts() {
+  return db.first<{ active: number; tombstoned: number }>(
+    `SELECT
+       (SELECT COUNT(*) FROM v_transactions_internal) AS active,
+       (SELECT COUNT(*) FROM transactions WHERE tombstone = 1) AS tombstoned`,
+  );
+}
+
 describe('Account sync', () => {
   test('reconcile creates payees correctly', async () => {
     const { id } = await prepareDatabase();
@@ -147,11 +164,20 @@ describe('Account sync', () => {
 
     await db.deleteTransaction(transactions1[0]);
 
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 1,
+      tombstoned: 1,
+    });
+
     await reconcileTransactions(acctId, [
       { date: '2020-01-01', imported_id: 'finid' },
     ]);
     const transactions2 = await getAllTransactions();
     expect(transactions2.length).toBe(1);
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 1,
+      tombstoned: 1,
+    });
     expect(transactions2).toMatchSnapshot();
   });
 
@@ -167,11 +193,20 @@ describe('Account sync', () => {
 
     await db.deleteTransaction(transactions1[0]);
 
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 1,
+      tombstoned: 1,
+    });
+
     await reconcileTransactions(acctId, [
       { date: '2020-01-01', imported_id: 'finid' },
     ]);
     const transactions2 = await getAllTransactions();
     expect(transactions2.length).toBe(2);
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 2,
+      tombstoned: 1,
+    });
     expect(transactions2).toMatchSnapshot();
   });
 
@@ -199,6 +234,10 @@ describe('Account sync', () => {
     );
     const transactions2 = await getAllTransactions();
     expect(transactions2.length).toBe(1);
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 1,
+      tombstoned: 1,
+    });
   });
 
   test('reconcile does rematch deleted transactions with reimportDeleted override true', async () => {
@@ -225,6 +264,10 @@ describe('Account sync', () => {
     );
     const transactions2 = await getAllTransactions();
     expect(transactions2.length).toBe(2);
+    expect(await getStoredTransactionCounts()).toEqual({
+      active: 2,
+      tombstoned: 1,
+    });
   });
 
   test('reimportDeleted override takes precedence over stored preference', async () => {
@@ -635,6 +678,799 @@ describe('Account sync', () => {
       expect(transactions[0].amount).toBe(-1239);
     },
   );
+
+  test('characterizes exact account-scoped stable-ID reruns and protected-field merging', async () => {
+    const accountId = 'characterized-exact-account';
+    await prepareLocalAccount(accountId);
+    await db.insertCategoryGroup({
+      id: 'characterized-category-group',
+      name: 'Characterized categories',
+    });
+    const existingPayeeId = await db.insertPayee({ name: 'Existing payee' });
+    const incomingPayeeId = await db.insertPayee({ name: 'Incoming payee' });
+    const existingCategoryId = await db.insertCategory({
+      name: 'Existing category',
+      cat_group: 'characterized-category-group',
+    });
+    const incomingCategoryId = await db.insertCategory({
+      name: 'Incoming category',
+      cat_group: 'characterized-category-group',
+    });
+
+    await db.insertTransaction({
+      id: 'exact-existing',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'exact-stable-id',
+      payee: existingPayeeId,
+      category: existingCategoryId,
+      notes: 'manual note',
+      imported_payee: 'old provider text',
+      raw_synced_data: '{"source":"existing"}',
+      cleared: false,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -9_999,
+        imported_id: 'exact-stable-id',
+        payee: incomingPayeeId,
+        category: incomingCategoryId,
+        notes: 'incoming note',
+        imported_payee: 'new provider text',
+        raw_synced_data: '{"source":"incoming"}',
+        cleared: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual(['exact-existing']);
+
+    const [transaction] = await getAllTransactions();
+    expect(transaction).toMatchObject({
+      id: 'exact-existing',
+      account: accountId,
+      imported_id: 'exact-stable-id',
+      amount: -1_234,
+      date: 20240405,
+      payee: existingPayeeId,
+      category: existingCategoryId,
+      notes: 'manual note',
+      imported_payee: 'new provider text',
+      raw_synced_data: '{"source":"existing"}',
+      cleared: 1,
+    });
+  });
+
+  test('characterizes the same textual stable ID as separate identities in separate accounts', async () => {
+    const firstAccountId = 'characterized-first-account';
+    const secondAccountId = 'characterized-second-account';
+    await prepareLocalAccount(firstAccountId);
+    await prepareLocalAccount(secondAccountId);
+
+    const firstResult = await reconcileTransactions(firstAccountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'shared-provider-id',
+        payee_name: 'Account one merchant',
+      },
+    ]);
+    const secondResult = await reconcileTransactions(secondAccountId, [
+      {
+        date: '2024-04-05',
+        amount: -5_678,
+        imported_id: 'shared-provider-id',
+        payee_name: 'Account two merchant',
+      },
+    ]);
+
+    expect(firstResult.added).toHaveLength(1);
+    expect(secondResult.added).toHaveLength(1);
+    const transactionsWithSharedId = (await getAllTransactions())
+      .filter(transaction => transaction.imported_id === 'shared-provider-id')
+      .sort((first, second) => first.account.localeCompare(second.account));
+    expect(transactionsWithSharedId).toMatchObject([
+      { account: firstAccountId, amount: -1_234 },
+      { account: secondAccountId, amount: -5_678 },
+    ]);
+
+    const rerunResult = await reconcileTransactions(firstAccountId, [
+      {
+        date: '2024-04-06',
+        amount: -9_999,
+        imported_id: 'shared-provider-id',
+        payee_name: 'Changed account one merchant',
+      },
+    ]);
+    expect(rerunResult.added).toEqual([]);
+    expect(rerunResult.updated).toEqual([firstResult.added[0]]);
+    expect(
+      (await getAllTransactions())
+        .filter(transaction => transaction.imported_id === 'shared-provider-id')
+        .sort((first, second) => first.account.localeCompare(second.account)),
+    ).toMatchObject([
+      { account: firstAccountId, amount: -1_234 },
+      { account: secondAccountId, amount: -5_678 },
+    ]);
+  });
+
+  test('characterizes strict changed stable IDs as separate transactions', async () => {
+    const accountId = 'characterized-strict-account';
+    await prepareLocalAccount(accountId);
+
+    const firstResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'strict-original-id',
+        payee_name: 'Strict merchant',
+      },
+    ]);
+    const secondResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -1_234,
+        imported_id: 'strict-changed-id',
+        payee_name: 'Strict merchant',
+      },
+    ]);
+
+    expect(firstResult.added).toHaveLength(1);
+    expect(secondResult.added).toHaveLength(1);
+    expect(secondResult.updated).toEqual([]);
+    expect(
+      (await getAllTransactions())
+        .map(transaction => transaction.imported_id)
+        .sort(),
+    ).toEqual(['strict-changed-id', 'strict-original-id']);
+  });
+
+  test('characterizes stable IDs as case-sensitive in strict reconciliation', async () => {
+    const accountId = 'characterized-case-sensitive-account';
+    await prepareLocalAccount(accountId);
+
+    const firstResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'Case-Sensitive-ID',
+        payee_name: 'Case merchant',
+      },
+    ]);
+    const secondResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'case-sensitive-id',
+        payee_name: 'Case merchant',
+      },
+    ]);
+
+    expect(firstResult.added).toHaveLength(1);
+    expect(secondResult.added).toHaveLength(1);
+    expect(secondResult.updated).toEqual([]);
+    expect(
+      (await getAllTransactions())
+        .map(transaction => transaction.imported_id)
+        .sort(),
+    ).toEqual(['Case-Sensitive-ID', 'case-sensitive-id']);
+  });
+
+  test('characterizes no-ID fuzzy matching without creating a durable stable ID', async () => {
+    const accountId = 'characterized-no-id-account';
+    await prepareLocalAccount(accountId);
+    const payeeId = await db.insertPayee({ name: 'No ID merchant' });
+    await db.insertTransaction({
+      id: 'manual-no-id-target',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      payee: payeeId,
+      cleared: false,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -1_234,
+        payee: payeeId,
+        cleared: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual(['manual-no-id-target']);
+    expect(await getAllTransactions()).toMatchObject([
+      { id: 'manual-no-id-target', imported_id: null, cleared: 1 },
+    ]);
+  });
+
+  test('characterizes two same-day, same-amount, same-payee no-ID purchases as separate additions', async () => {
+    const accountId = 'characterized-repeated-no-id-account';
+    await prepareLocalAccount(accountId);
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        payee_name: 'Repeated merchant',
+      },
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        payee_name: 'Repeated merchant',
+      },
+    ]);
+
+    expect(result.added).toHaveLength(2);
+    expect(result.updated).toEqual([]);
+    expect(await getAllTransactions()).toMatchObject([
+      { account: accountId, amount: -1_234, imported_id: null },
+      { account: accountId, amount: -1_234, imported_id: null },
+    ]);
+  });
+
+  test('characterizes same-ID cleared promotion without cleared demotion', async () => {
+    const accountId = 'characterized-cleared-account';
+    await prepareLocalAccount(accountId);
+
+    const firstResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'cleared-stable-id',
+        payee_name: 'Cleared merchant',
+        cleared: false,
+      },
+    ]);
+    const promotionResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -1_234,
+        imported_id: 'cleared-stable-id',
+        payee_name: 'Cleared merchant',
+        cleared: true,
+      },
+    ]);
+    const demotionResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-07',
+        amount: -1_234,
+        imported_id: 'cleared-stable-id',
+        payee_name: 'Cleared merchant',
+        cleared: false,
+      },
+    ]);
+
+    expect(firstResult.added).toHaveLength(1);
+    expect(promotionResult.updated).toEqual([firstResult.added[0]]);
+    expect(demotionResult.added).toEqual([]);
+    expect(demotionResult.updated).toEqual([]);
+    expect(await getAllTransactions()).toMatchObject([
+      { imported_id: 'cleared-stable-id', cleared: 1 },
+    ]);
+  });
+
+  test('characterizes a reconciled exact target as ignored without mutation or addition', async () => {
+    const accountId = 'characterized-reconciled-account';
+    await prepareLocalAccount(accountId);
+    await db.insertTransaction({
+      id: 'reconciled-target',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'reconciled-stable-id',
+      notes: 'locked note',
+      cleared: false,
+      reconciled: true,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -9_999,
+        imported_id: 'reconciled-stable-id',
+        notes: 'incoming note',
+        cleared: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.updatedPreview).toEqual([
+      expect.objectContaining({ ignored: true }),
+    ]);
+    expect(await getAllTransactions()).toMatchObject([
+      {
+        id: 'reconciled-target',
+        amount: -1_234,
+        date: 20240405,
+        notes: 'locked note',
+        cleared: 0,
+        reconciled: 1,
+      },
+    ]);
+  });
+
+  test('characterizes real preview and commit agreement without preview mutation', async () => {
+    const accountId = 'characterized-preview-account';
+    await prepareLocalAccount(accountId);
+    await db.insertTransaction({
+      id: 'preview-update-target',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'preview-update-id',
+      cleared: false,
+    });
+    await db.insertTransaction({
+      id: 'preview-ignored-target',
+      account: accountId,
+      amount: -2_345,
+      date: '2024-04-05',
+      imported_id: 'preview-ignored-id',
+      cleared: false,
+    });
+    await db.insertTransaction({
+      id: 'preview-locked-target',
+      account: accountId,
+      amount: -3_456,
+      date: '2024-04-05',
+      imported_id: 'preview-locked-id',
+      cleared: false,
+      reconciled: true,
+    });
+
+    const addedPreview = await reconcileTransactions(
+      accountId,
+      [
+        {
+          date: '2024-04-06',
+          amount: -4_567,
+          imported_id: 'preview-added-id',
+        },
+      ],
+      false,
+      true,
+      true,
+    );
+    const updatedPreview = await reconcileTransactions(
+      accountId,
+      [
+        {
+          date: '2024-04-06',
+          amount: -1_234,
+          imported_id: 'preview-update-id',
+          cleared: true,
+        },
+      ],
+      false,
+      true,
+      true,
+    );
+    const ignoredPreview = await reconcileTransactions(
+      accountId,
+      [
+        {
+          date: '2024-04-05',
+          amount: -2_345,
+          imported_id: 'preview-ignored-id',
+          cleared: false,
+        },
+      ],
+      false,
+      true,
+      true,
+    );
+    const lockedPreview = await reconcileTransactions(
+      accountId,
+      [
+        {
+          date: '2024-04-06',
+          amount: -3_456,
+          imported_id: 'preview-locked-id',
+          cleared: true,
+        },
+      ],
+      false,
+      true,
+      true,
+    );
+
+    expect(addedPreview.added).toHaveLength(1);
+    expect(addedPreview.updated).toEqual([]);
+    expect(updatedPreview.added).toEqual([]);
+    expect(updatedPreview.updated).toEqual(['preview-update-target']);
+    expect(ignoredPreview.added).toEqual([]);
+    expect(ignoredPreview.updated).toEqual([]);
+    expect(ignoredPreview.updatedPreview).toEqual([
+      expect.objectContaining({ ignored: true }),
+    ]);
+    expect(lockedPreview.added).toEqual([]);
+    expect(lockedPreview.updated).toEqual([]);
+    expect(lockedPreview.updatedPreview).toEqual([
+      expect.objectContaining({ ignored: true }),
+    ]);
+    const transactionsAfterPreviews = await getAllTransactions();
+    expect(transactionsAfterPreviews).toHaveLength(3);
+    expect(
+      transactionsAfterPreviews.find(
+        transaction => transaction.id === 'preview-update-target',
+      ),
+    ).toMatchObject({ id: 'preview-update-target', cleared: 0, reconciled: 0 });
+    expect(
+      transactionsAfterPreviews.find(
+        transaction => transaction.id === 'preview-ignored-target',
+      ),
+    ).toMatchObject({
+      id: 'preview-ignored-target',
+      cleared: 0,
+      reconciled: 0,
+    });
+    expect(
+      transactionsAfterPreviews.find(
+        transaction => transaction.id === 'preview-locked-target',
+      ),
+    ).toMatchObject({ id: 'preview-locked-target', cleared: 0, reconciled: 1 });
+
+    const addedCommit = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -4_567,
+        imported_id: 'preview-added-id',
+      },
+    ]);
+    const updatedCommit = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -1_234,
+        imported_id: 'preview-update-id',
+        cleared: true,
+      },
+    ]);
+    const ignoredCommit = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -2_345,
+        imported_id: 'preview-ignored-id',
+        cleared: false,
+      },
+    ]);
+    const lockedCommit = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -3_456,
+        imported_id: 'preview-locked-id',
+        cleared: true,
+      },
+    ]);
+
+    expect(addedCommit.added).toHaveLength(1);
+    expect(updatedCommit.updated).toEqual(['preview-update-target']);
+    expect(ignoredCommit.updated).toEqual([]);
+    expect(ignoredCommit.updatedPreview).toEqual([
+      expect.objectContaining({ ignored: true }),
+    ]);
+    expect(lockedCommit.updated).toEqual([]);
+    expect(lockedCommit.updatedPreview).toEqual([
+      expect.objectContaining({ ignored: true }),
+    ]);
+    const transactionsAfterCommits = await getAllTransactions();
+    expect(transactionsAfterCommits).toHaveLength(4);
+    expect(
+      transactionsAfterCommits.find(
+        transaction => transaction.imported_id === 'preview-added-id',
+      ),
+    ).toMatchObject({ imported_id: 'preview-added-id', amount: -4_567 });
+    expect(
+      transactionsAfterCommits.find(
+        transaction => transaction.id === 'preview-update-target',
+      ),
+    ).toMatchObject({ id: 'preview-update-target', cleared: 1, reconciled: 0 });
+    expect(
+      transactionsAfterCommits.find(
+        transaction => transaction.id === 'preview-ignored-target',
+      ),
+    ).toMatchObject({
+      id: 'preview-ignored-target',
+      cleared: 0,
+      reconciled: 0,
+    });
+    expect(
+      transactionsAfterCommits.find(
+        transaction => transaction.id === 'preview-locked-target',
+      ),
+    ).toMatchObject({ id: 'preview-locked-target', cleared: 0, reconciled: 1 });
+  });
+
+  test('characterizes a manual top-level target preserving fields while acquiring a stable ID', async () => {
+    const accountId = 'characterized-manual-account';
+    await prepareLocalAccount(accountId);
+    await db.insertCategoryGroup({
+      id: 'characterized-category-group',
+      name: 'Characterized categories',
+    });
+    const manualPayeeId = await db.insertPayee({ name: 'Manual payee' });
+    const incomingPayeeId = await db.insertPayee({ name: 'Incoming payee' });
+    const manualCategoryId = await db.insertCategory({
+      name: 'Manual category',
+      cat_group: 'characterized-category-group',
+    });
+    const incomingCategoryId = await db.insertCategory({
+      name: 'Incoming category',
+      cat_group: 'characterized-category-group',
+    });
+    await db.insertTransaction({
+      id: 'manual-top-level-target',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      payee: manualPayeeId,
+      category: manualCategoryId,
+      notes: 'manual note',
+      cleared: false,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'manual-acquired-id',
+        payee: incomingPayeeId,
+        category: incomingCategoryId,
+        notes: 'incoming note',
+        cleared: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual(['manual-top-level-target']);
+    expect(await getAllTransactions()).toMatchObject([
+      {
+        id: 'manual-top-level-target',
+        imported_id: 'manual-acquired-id',
+        amount: -1_234,
+        payee: manualPayeeId,
+        category: manualCategoryId,
+        notes: 'manual note',
+        cleared: 1,
+      },
+    ]);
+  });
+
+  test('characterizes split-parent matching as preserving children while propagating cleared state', async () => {
+    const accountId = 'characterized-split-account';
+    await prepareLocalAccount(accountId);
+    await db.insertCategoryGroup({
+      id: 'characterized-category-group',
+      name: 'Characterized categories',
+    });
+    const firstPayeeId = await db.insertPayee({
+      name: 'Split child one payee',
+    });
+    const secondPayeeId = await db.insertPayee({
+      name: 'Split child two payee',
+    });
+    const firstCategoryId = await db.insertCategory({
+      name: 'Split child one category',
+      cat_group: 'characterized-category-group',
+    });
+    const secondCategoryId = await db.insertCategory({
+      name: 'Split child two category',
+      cat_group: 'characterized-category-group',
+    });
+    await db.insertTransaction({
+      id: 'split-parent-target',
+      account: accountId,
+      amount: -10_000,
+      date: '2024-04-05',
+      imported_id: 'split-parent-id',
+      is_parent: true,
+      cleared: false,
+    });
+    await db.insertTransaction({
+      id: 'split-child-one',
+      account: accountId,
+      amount: -6_000,
+      date: '2024-04-05',
+      parent_id: 'split-parent-target',
+      is_child: true,
+      payee: firstPayeeId,
+      category: firstCategoryId,
+      notes: 'first child note',
+      cleared: false,
+    });
+    await db.insertTransaction({
+      id: 'split-child-two',
+      account: accountId,
+      amount: -4_000,
+      date: '2024-04-05',
+      parent_id: 'split-parent-target',
+      is_child: true,
+      payee: secondPayeeId,
+      category: secondCategoryId,
+      notes: 'second child note',
+      cleared: false,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -9_999,
+        imported_id: 'split-parent-id',
+        cleared: true,
+        subtransactions: [
+          { amount: -9_999, notes: 'incoming replacement child' },
+        ],
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual([
+      'split-parent-target',
+      'split-child-one',
+      'split-child-two',
+    ]);
+    const children = (await getAllTransactions()).filter(
+      transaction => transaction.parent_id === 'split-parent-target',
+    );
+    expect(
+      children.find(transaction => transaction.id === 'split-child-one'),
+    ).toMatchObject({
+      id: 'split-child-one',
+      amount: -6_000,
+      payee: firstPayeeId,
+      category: firstCategoryId,
+      notes: 'first child note',
+      cleared: 1,
+      date: 20240405,
+    });
+    expect(
+      children.find(transaction => transaction.id === 'split-child-two'),
+    ).toMatchObject({
+      id: 'split-child-two',
+      amount: -4_000,
+      payee: secondPayeeId,
+      category: secondCategoryId,
+      notes: 'second child note',
+      cleared: 1,
+      date: 20240405,
+    });
+    expect(
+      children.reduce((sum, transaction) => sum + transaction.amount, 0),
+    ).toBe(-10_000);
+  });
+
+  test('characterizes current FIN-17 baseline: fuzzy matching can select a split child directly', async () => {
+    const accountId = 'characterized-split-child-account';
+    await prepareLocalAccount(accountId);
+    const payeeId = await db.insertPayee({
+      name: 'Split child baseline payee',
+    });
+    await db.insertTransaction({
+      id: 'split-child-baseline-parent',
+      account: accountId,
+      amount: -10_000,
+      date: '2024-04-05',
+      is_parent: true,
+      cleared: false,
+    });
+    await db.insertTransaction({
+      id: 'split-child-baseline-target',
+      account: accountId,
+      amount: -5_000,
+      date: '2024-04-05',
+      parent_id: 'split-child-baseline-parent',
+      is_child: true,
+      payee: payeeId,
+      cleared: false,
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -5_000,
+        payee: payeeId,
+        cleared: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual(['split-child-baseline-target']);
+    const splitChildBaselineTransactions = await getAllTransactions();
+    expect(
+      splitChildBaselineTransactions.find(
+        transaction => transaction.id === 'split-child-baseline-parent',
+      ),
+    ).toMatchObject({ id: 'split-child-baseline-parent', cleared: 0 });
+    expect(
+      splitChildBaselineTransactions.find(
+        transaction => transaction.id === 'split-child-baseline-target',
+      ),
+    ).toMatchObject({ id: 'split-child-baseline-target', cleared: 1 });
+  });
+
+  test('characterizes updateDates for a normal exact match and a split parent', async () => {
+    const accountId = 'characterized-update-dates-account';
+    await prepareLocalAccount(accountId);
+    await db.insertTransaction({
+      id: 'normal-date-target',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'normal-date-id',
+    });
+    await db.insertTransaction({
+      id: 'split-date-parent',
+      account: accountId,
+      amount: -2_000,
+      date: '2024-04-05',
+      imported_id: 'split-date-id',
+      is_parent: true,
+    });
+    await db.insertTransaction({
+      id: 'split-date-child',
+      account: accountId,
+      amount: -2_000,
+      date: '2024-04-05',
+      parent_id: 'split-date-parent',
+      is_child: true,
+    });
+
+    const defaultResult = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-06',
+        amount: -1_234,
+        imported_id: 'normal-date-id',
+      },
+    ]);
+    const updateResult = await reconcileTransactions(
+      accountId,
+      [
+        {
+          date: '2024-04-07',
+          amount: -1_234,
+          imported_id: 'normal-date-id',
+        },
+        {
+          date: '2024-04-07',
+          amount: -2_000,
+          imported_id: 'split-date-id',
+        },
+      ],
+      false,
+      true,
+      false,
+      true,
+      true,
+    );
+
+    expect(defaultResult.updated).toEqual([]);
+    expect(updateResult.updated).toEqual([
+      'normal-date-target',
+      'split-date-parent',
+      'split-date-child',
+    ]);
+    const transactionsWithUpdatedDates = await getAllTransactions();
+    expect(
+      transactionsWithUpdatedDates.find(
+        transaction => transaction.id === 'normal-date-target',
+      ),
+    ).toMatchObject({ id: 'normal-date-target', date: 20240407 });
+    expect(
+      transactionsWithUpdatedDates.find(
+        transaction => transaction.id === 'split-date-parent',
+      ),
+    ).toMatchObject({ id: 'split-date-parent', date: 20240407 });
+    expect(
+      transactionsWithUpdatedDates.find(
+        transaction => transaction.id === 'split-date-child',
+      ),
+    ).toMatchObject({ id: 'split-date-child', date: 20240407 });
+  });
 });
 
 describe('SimpleFin batch sync', () => {
@@ -727,6 +1563,77 @@ describe('SimpleFin batch sync', () => {
       );
       expect(syncedTransaction).toBeDefined();
       expect(syncedTransaction.category).toBeNull();
+    } finally {
+      setSyncingMode('disabled');
+    }
+  });
+
+  test('characterizes configured SimpleFin sync matching a changed provider ID non-strictly', async () => {
+    const providerAccountId = 'sf-changed-id-account';
+    const accountId = await db.insertAccount({
+      id: 'sf-changed-id-local-account',
+      account_id: providerAccountId,
+      name: 'Changed ID account',
+      account_sync_source: 'simpleFin',
+    });
+    await db.insertPayee({
+      id: `transfer-${accountId}`,
+      name: '',
+      transfer_acct: accountId,
+    });
+
+    const syncTransaction = transactionId => {
+      mockSimpleFinTransactions({
+        [providerAccountId]: {
+          transactions: {
+            all: [
+              {
+                booked: true,
+                date: '2017-10-02',
+                payeeName: 'Changed ID merchant',
+                transactionAmount: { amount: '-12.34' },
+                transactionId,
+              },
+            ],
+            booked: [],
+            pending: [],
+          },
+          balances: [],
+          startingBalance: 0,
+        },
+        errors: {},
+      });
+
+      return accountsApp.handlers['simplefin-batch-sync']({
+        ids: [accountId],
+      });
+    };
+
+    setSyncingMode('offline');
+    try {
+      const firstResult = await syncTransaction('simplefin-original-id');
+      const [firstTransaction] = (await getAllTransactions()).filter(
+        transaction => transaction.imported_id === 'simplefin-original-id',
+      );
+
+      const secondResult = await syncTransaction('simplefin-changed-id');
+      const matchedTransaction = secondResult[0].res.matchedTransactions;
+      const importedTransactions = (await getAllTransactions()).filter(
+        transaction => transaction.imported_id?.startsWith('simplefin-'),
+      );
+
+      expect(firstResult[0].res.errors).toHaveLength(0);
+      expect(firstTransaction).toMatchObject({ amount: -1_234 });
+      expect(secondResult[0].res.errors).toHaveLength(0);
+      expect(secondResult[0].res.newTransactions).toEqual([]);
+      expect(matchedTransaction).toEqual([firstTransaction.id]);
+      expect(importedTransactions).toMatchObject([
+        {
+          id: firstTransaction.id,
+          imported_id: 'simplefin-changed-id',
+          amount: -1_234,
+        },
+      ]);
     } finally {
       setSyncingMode('disabled');
     }

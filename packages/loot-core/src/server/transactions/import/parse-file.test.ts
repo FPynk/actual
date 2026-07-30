@@ -7,6 +7,7 @@ import * as prefs from '#server/prefs';
 import { amountToInteger } from '#shared/util';
 
 import { parseFile } from './parse-file';
+import type { ParseFileResult } from './parse-file';
 
 beforeEach(global.emptyDatabase());
 
@@ -30,6 +31,11 @@ type Transaction = {
   notes: string | null;
   category?: string | null;
 };
+
+type ParsedOfxTransaction = Extract<
+  NonNullable<ParseFileResult['transactions']>[number],
+  { amount: number; date: string }
+> & { imported_id: string };
 
 async function getTransactions(accountId: string): Promise<Transaction[]> {
   return db.runQuery(
@@ -110,6 +116,45 @@ describe('File import', () => {
     );
     expect(errors.length).toBe(0);
     expect(await getTransactions('one')).toMatchSnapshot();
+  }, 45000);
+
+  test('preserves an OFX stable ID through reconciliation', async () => {
+    await prefs.loadPrefs();
+    await db.insertAccount({ id: 'one', name: 'one' });
+    const { errors, transactions } = await parseFile(
+      __dirname + '/../../../mocks/files/fin16-synthetic-stable-id.ofx',
+    );
+    const parsedTransaction = transactions?.find(
+      (transaction): transaction is ParsedOfxTransaction =>
+        !Array.isArray(transaction) &&
+        'imported_id' in transaction &&
+        transaction.imported_id === 'fin16-synthetic-stable-id' &&
+        typeof transaction.amount === 'number' &&
+        typeof transaction.date === 'string',
+    );
+
+    expect(errors).toHaveLength(0);
+    expect(parsedTransaction).toMatchObject({
+      imported_id: 'fin16-synthetic-stable-id',
+    });
+    if (!parsedTransaction) {
+      throw new Error('Expected the OFX fixture to contain its stable ID');
+    }
+
+    const result = await reconcileTransactions('one', [
+      {
+        ...parsedTransaction,
+        amount: amountToInteger(parsedTransaction.amount),
+      },
+    ]);
+
+    expect(result.added).toHaveLength(1);
+    expect(
+      await db.first<{ imported_id: string }>(
+        'SELECT imported_id FROM v_transactions_internal WHERE account = ?',
+        ['one'],
+      ),
+    ).toEqual({ imported_id: 'fin16-synthetic-stable-id' });
   }, 45000);
 
   test('ofx import works (credit card)', async () => {
