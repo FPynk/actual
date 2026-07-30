@@ -794,7 +794,21 @@ and PR acceptance criteria pass.
 
 ## Lead approval record
 
-Pending completion of the independent FIN-3 reviews, Linear child-ticket
-mapping, and final diff inspection. No implementation ticket may cite this
-design as approved until this section records the approval date and reviewed
-commit.
+- Approval date: 2026-07-30
+- Reviewed content commit:
+  `11c6f852040869c1146f254b1278d72fd3e06e39`
+- Independent security and financial-integrity gates:
+  `/root/fin3_security_integrity_gate_3` — APPROVE;
+  `/root/fin3_final_security_gate_2` — APPROVE
+- Roadmap and live Linear mapping gate:
+  `/root/fin3_linear_mapping_gate_2` — APPROVE
+- Lead decision: approved as the governing FIN-3 architecture, data model,
+  test strategy, and implementation roadmap.
+
+The approval covers the 51 one-to-one child-ticket mappings recorded in
+`docs/project/implementation-roadmap.md`. After FIN-3 merges, only FIN-4,
+FIN-6, and FIN-5 (P0.1, P0.2, and P0.3) may become `agent-ready`
+immediately. Every other child remains blocked by its named design and
+implementation dependencies. This approval does not enable any companion-led
+Actual write; those capabilities remain fail-closed behind their Phase 9
+gates.
