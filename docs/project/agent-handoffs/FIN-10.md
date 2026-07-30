@@ -5,8 +5,8 @@
 - Branch: `feature/FIN-10-finance-companion-scaffold`
 - Original start commit: `9e56bd235d69314b8a3efa2fb95c79e15c044f0e`
 - Current integration base: `27f673c09c4ff36729ae64ffd63869ad5bb4b4d3`
-- End commit: Pending lead commit
-- PR: Pending lead action
+- Implementation commit: `05aa9049cbe551f9ce18af44e2a4f3f8d6df1c92`
+- PR: https://github.com/FPynk/actual/pull/12
 
 ## Files
 
