@@ -1,0 +1,40 @@
+{
+  "name": "@actual-app/finance-companion",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#cli": "./src/cli.ts",
+    "#config": "./src/config.ts",
+    "#http/*": "./src/http/*.ts",
+    "#service/*": "./src/service/*.ts"
+  },
+  "scripts": {
+    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "test": "vitest --run",
+    "test:db": "node --experimental-strip-types ./src/cli.ts test:db",
+    "test:adapter": "node --experimental-strip-types ./src/cli.ts test:adapter",
+    "test:e2e": "node --experimental-strip-types ./src/cli.ts test:e2e",
+    "start": "yarn build && node ./dist/service/cli.js start",
+    "job:bank-sync": "node --experimental-strip-types ./src/cli.ts job:bank-sync",
+    "db:migrate": "node --experimental-strip-types ./src/cli.ts db:migrate",
+    "owner:rotate": "node --experimental-strip-types ./src/cli.ts owner:rotate",
+    "backup:create": "node --experimental-strip-types ./src/cli.ts backup:create",
+    "backup:verify": "node --experimental-strip-types ./src/cli.ts backup:verify",
+    "backup:restore": "node --experimental-strip-types ./src/cli.ts backup:restore",
+    "integrity:verify": "node --experimental-strip-types ./src/cli.ts integrity:verify",
+    "smoke:container": "node --experimental-strip-types ./src/cli.ts smoke:container"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.1",
+    "@typescript/native-preview": "beta",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  }
+}
