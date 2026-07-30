@@ -351,6 +351,10 @@ shows that no structured export exists. OCR output is always review-only.
 
 ## Reconciliation and duplicate semantics
 
+The exact initial native identity, collision, field-merge, pending/posted,
+manual/split, and migration-gate rules are frozen in
+[`transaction-identity-contract.md`](transaction-identity-contract.md).
+
 ### Invariants
 
 1. Actual account equality is a hard gate.
