@@ -1,6 +1,6 @@
 #!/bin/sh -e
 
-ROOT=`dirname $0`
+ROOT=$(dirname "$0")
 cd "$ROOT/.."
 
 export PORT=3001
