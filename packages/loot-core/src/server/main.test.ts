@@ -52,7 +52,9 @@ async function createTestBudget(name) {
 
 describe('Budgets', () => {
   afterEach(async () => {
-    fs._setDocumentDir(null);
+    await runHandler(handlers['close-budget']);
+    expect(db.getDatabase()).toBe(null);
+
     const budgetPath = fs.join(
       __dirname,
       '/../mocks/files/budgets/test-budget',
@@ -61,6 +63,9 @@ describe('Budgets', () => {
     if (await fs.exists(budgetPath)) {
       await fs.removeDirRecursively(budgetPath);
     }
+
+    expect(await fs.exists(budgetPath)).toBe(false);
+    fs._setDocumentDir(null);
   });
 
   test('budget is successfully loaded', async () => {
