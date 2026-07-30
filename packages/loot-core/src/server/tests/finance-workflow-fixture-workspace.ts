@@ -44,30 +44,29 @@ export async function withSyntheticFinanceFixtureWorkspace<T>(
   const temporaryRootDirectory = await realpath(
     resolve(options.temporaryRoot ?? tmpdir()),
   );
-  const workspaceDirectory = await realpath(
-    await mkdtemp(join(temporaryRootDirectory, workspaceDirectoryPrefix)),
+  const createdWorkspaceDirectory = await mkdtemp(
+    join(temporaryRootDirectory, workspaceDirectoryPrefix),
   );
-  validateWorkspaceDirectory(workspaceDirectory, temporaryRootDirectory);
-
   const cleanups: Array<() => void | Promise<void>> = [];
-  const workspace: SyntheticFinanceFixtureWorkspace = {
-    directory: workspaceDirectory,
-    fixture: createSyntheticFinanceWorkflowFixture({
-      clock: options.clock,
-    }),
-    registerCleanup: cleanup => {
-      cleanups.push(cleanup);
-    },
-  };
-
-  let callbackOutcome:
+  let operationOutcome:
     | Readonly<{ succeeded: true; result: T }>
     | Readonly<{ succeeded: false; error: unknown }>;
 
   try {
-    callbackOutcome = { succeeded: true, result: await run(workspace) };
+    const workspaceDirectory = await realpath(createdWorkspaceDirectory);
+    validateWorkspaceDirectory(workspaceDirectory, temporaryRootDirectory);
+    const workspace: SyntheticFinanceFixtureWorkspace = {
+      directory: workspaceDirectory,
+      fixture: createSyntheticFinanceWorkflowFixture({
+        clock: options.clock,
+      }),
+      registerCleanup: cleanup => {
+        cleanups.push(cleanup);
+      },
+    };
+    operationOutcome = { succeeded: true, result: await run(workspace) };
   } catch (error) {
-    callbackOutcome = { succeeded: false, error };
+    operationOutcome = { succeeded: false, error };
   }
 
   const cleanupErrors: unknown[] = [];
@@ -81,17 +80,20 @@ export async function withSyntheticFinanceFixtureWorkspace<T>(
 
   try {
     validateWorkspaceDirectory(
-      await realpath(workspaceDirectory),
+      await realpath(createdWorkspaceDirectory),
       temporaryRootDirectory,
     );
-    await rm(workspaceDirectory, { recursive: true, force: true });
+    await rm(createdWorkspaceDirectory, {
+      recursive: true,
+      force: true,
+    });
   } catch (error) {
     cleanupErrors.push(error);
   }
 
-  if (callbackOutcome.succeeded === false) {
-    attachCleanupErrors(callbackOutcome.error, cleanupErrors);
-    throw callbackOutcome.error;
+  if (operationOutcome.succeeded === false) {
+    attachCleanupErrors(operationOutcome.error, cleanupErrors);
+    throw operationOutcome.error;
   }
 
   if (cleanupErrors.length > 0) {
@@ -101,7 +103,7 @@ export async function withSyntheticFinanceFixtureWorkspace<T>(
     );
   }
 
-  return callbackOutcome.result;
+  return operationOutcome.result;
 }
 
 function validateWorkspaceDirectory(

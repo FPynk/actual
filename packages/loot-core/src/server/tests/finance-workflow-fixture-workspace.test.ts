@@ -107,6 +107,31 @@ describe('synthetic finance fixture workspace', () => {
     expect(await readdir(testRoot)).toEqual([]);
   });
 
+  test('removes the child when fixture construction fails', async () => {
+    const clockError = new Error('injected clock failure');
+    let callbackWasInvoked = false;
+
+    await expect(
+      withSyntheticFinanceFixtureWorkspace(
+        {
+          temporaryRoot: testRoot,
+          clock: {
+            currentDate: () => {
+              throw clockError;
+            },
+            currentTimestamp: () => '2026-01-15T12:00:00.000Z',
+          },
+        },
+        async () => {
+          callbackWasInvoked = true;
+        },
+      ),
+    ).rejects.toBe(clockError);
+
+    expect(callbackWasInvoked).toBe(false);
+    expect(await readdir(testRoot)).toEqual([]);
+  });
+
   test('preserves the callback error and attaches cleanup failures', async () => {
     const callbackError = new Error('primary callback failure');
     const cleanupError = new Error('secondary cleanup failure');
