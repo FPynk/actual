@@ -10,6 +10,8 @@ import type {
 
 import { random } from './random';
 
+export * from './finance-workflow';
+
 export function generateAccount(
   name: AccountEntity['name'],
   isConnected?: boolean,
