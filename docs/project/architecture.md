@@ -75,6 +75,11 @@ cannot import `loot-core` internals. Keeping it in one monorepo provides the
 current development and test workflow; the interface allows later extraction
 without moving financial data.
 
+The exact version-one package map, configuration keys, DTOs, migration
+ownership, adapter lifecycle, loopback authentication, idempotency, and
+backup/restore interfaces are frozen in
+`docs/project/finance-companion-v1-contract.md`.
+
 ```mermaid
 flowchart LR
   User["User"]

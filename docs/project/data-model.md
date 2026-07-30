@@ -686,6 +686,47 @@ The first Amazon release is read-only and creates no reservations. Application
 is enabled only after the server-owned conditional mutator can apply one
 balanced parent/split change atomically and reject stale or reconciled targets.
 
+### Request replay
+
+#### `request_replays`
+
+Stores idempotency state for authenticated mutating companion endpoints that
+do not yet own an Actual application receipt. Job execution remains in
+`job_runs`; gated Actual writes move to `application_receipts`.
+
+| Column               | Type    | Constraint           | Purpose                                                           |
+| -------------------- | ------- | -------------------- | ----------------------------------------------------------------- |
+| `id`                 | text    | primary key          | Companion UUID                                                    |
+| `budget_key_hash`    | text    | not null             | Immutable single-budget scope                                     |
+| `principal_id`       | text    | not null foreign key | Stable owner principal, never a session ID                        |
+| `invocation_kind`    | text    | not null, enum       | `local_http`, `local_cli`, or `scheduler`                         |
+| `operation_id`       | text    | not null             | Versioned endpoint or command identity                            |
+| `idempotency_key`    | text    | not null             | Caller-provided duplicate request guard                           |
+| `request_hash`       | text    | not null             | Versioned canonical semantic request hash                         |
+| `status`             | text    | not null, enum       | `in_progress`, `completed`, `failed_retryable`, or `failed_final` |
+| `response_status`    | integer | nullable             | Allowlisted replay HTTP/result status                             |
+| `response_json`      | text    | nullable             | Route-specific allowlisted replay response                        |
+| `domain_record_kind` | text    | nullable             | `job_run`, `review_decision`, `import_batch`, or approved kind    |
+| `domain_record_id`   | text    | nullable             | Durable owning record when one was committed                      |
+| `error_code`         | text    | nullable             | Redacted stable code                                              |
+| `created_at`         | text    | not null             | UTC timestamp                                                     |
+| `completed_at`       | text    | nullable             | UTC timestamp                                                     |
+| `expires_at`         | text    | nullable             | Retention boundary for non-write endpoint replay                  |
+
+Unique
+`(budget_key_hash, principal_id, invocation_kind, operation_id,
+idempotency_key)`. An exact completed replay returns the stored allowlisted
+result. Reusing the key with another request hash is a conflict. Creation of a
+replay row and its domain decision/job/import record is atomic. An
+`in_progress` row is not guessed successful from current Actual state; startup
+resolves the companion transaction first, and gated Actual writes use the
+stronger application-receipt protocol.
+
+Indexes cover `(status, created_at)` and `(expires_at)`. Completed non-write
+replays are retained for 30 days unless their owning domain record requires a
+longer suppression period. Rows associated with unresolved work are never
+purged by age.
+
 ### Job runs and application receipts
 
 #### `job_runs`
@@ -997,6 +1038,7 @@ Defaults are conservative and configurable:
 | ------------------------------------------------ | ------------------------------------------------------------------ |
 | Uploaded export/archive or raw email body        | Parse in memory; remove immediately after success or failure       |
 | Redacted failed-import receipt                   | 30 days                                                            |
+| Completed request replays                        | 30 days unless an owning suppression/audit record lasts longer     |
 | Job runs                                         | 30 days                                                            |
 | Pending review candidates                        | Until decision or source invalidation                              |
 | Rejected reconciliation/classification proposals | 180 days to prevent immediate reproposal                           |
