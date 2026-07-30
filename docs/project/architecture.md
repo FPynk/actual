@@ -75,6 +75,11 @@ cannot import `loot-core` internals. Keeping it in one monorepo provides the
 current development and test workflow; the interface allows later extraction
 without moving financial data.
 
+The exact version-one package map, configuration keys, DTOs, migration
+ownership, adapter lifecycle, loopback authentication, idempotency, and
+backup/restore interfaces are frozen in
+`docs/project/finance-companion-v1-contract.md`.
+
 ```mermaid
 flowchart LR
   User["User"]
@@ -223,6 +228,13 @@ allocation holds, and blocks the affected target and source capacities from
 later companion writes. Until all local and remote race/failure tests pass,
 approvals are read-only decisions with instructions to complete the edit in
 Actual's UI.
+
+Before any write capability is exposed, one immutable database event increments
+the capability generation and chains the versioned capability contract to an
+authenticated paired-backup manifest. The database row/event chain and external
+anchor must carry the same generation/hash. Only one valid database-ahead event
+may be completed after a crash; every other mismatch is
+`recovery_required`.
 
 Before the first Actual write call for each logical receipt, the serialized
 companion transaction assigns one issued-write sequence and chain hash covering
@@ -467,6 +479,9 @@ Policy:
   success/failure is attributable without parsing logs or internal provider
   results;
 - explicit succeeded, failed, skipped, and canceled account results; and
+- a hard kill or unproven final sync after provider work starts records a
+  durable `outcome_unknown`, retains the operation quarantine, and forbids
+  automatic same-key retry; and
 - Windows Task Scheduler for local automation tests, with systemd timer or a
   container scheduler documented for the future homelab.
 
@@ -704,24 +719,28 @@ A consistent upgrade backup performs these steps:
    and every unresolved write-operation quarantine into the encrypted backup
    set. Create one manifest binding the Actual export/snapshot hashes,
    companion backup hash, schema version, pre-backup anchor artifact hash,
-   quarantine hashes, and the last issued-intent and applied-receipt chain
-   hashes.
+   capability generation/event hash, quarantine/account-operation bindings, and
+   the last issued-intent and applied-receipt chain hashes.
 10. Encrypt and finalize the export/snapshots/anchor artifact/manifest and
     verify checksums. Only then atomically advance the live anchor's
     `last_verified_paired_backup_manifest_hash` to the finalized manifest hash.
     The manifest does not embed this post-finalization anchor, avoiding a
-    circular hash. Restore verifies the pre-backup anchor and manifest, then
+    circular hash. After the separately gated remotely fenced paired-restore
+    operation lands, restore verifies the pre-backup anchor and manifest, then
     reconstructs that one deterministic anchor transition.
 11. Update one service, run health/migration/synthetic smoke checks, and then
     resume scheduling.
 
-Rollback stops both services, restores the matching pre-upgrade volumes and
-prior images, and verifies them in isolation before resuming. A post-migration
+Generation-zero rollback stops the companion, restores its matching verified
+companion-only set, reconstructs the generation-zero anchor, and remains
+write-disabled. Write-era rollback is unavailable until the separately gated
+remotely fenced paired-restore protocol can restore the matching pre-upgrade
+Actual/companion/anchor images and verify them in isolation. A post-migration
 database is not assumed to be backward compatible. A write-enabled companion
-is never restored independently of the paired Actual snapshot/export.
-Missing, mismatched, or older companion integrity metadata sets
-`recovery_required`; writes remain disabled because this design has no
-automatic reconstruction or reset path.
+is never restored independently of the paired Actual snapshot/export. Missing,
+mismatched, or older companion integrity metadata sets `recovery_required`;
+writes remain disabled because this design has no automatic reconstruction or
+reset path.
 
 ## Alternatives considered
 
@@ -747,16 +766,20 @@ automatic reconstruction or reset path.
    enabled, the service may pause operations, acquire its exclusive lock, and
    create and verify a checkpoint-consistent companion-only backup before the
    migration transaction.
-4. Once write-era receipts or an integrity anchor exist, every migration uses
-   the full remotely fenced, paired Actual/companion/anchor upgrade-backup
-   protocol above. A companion-only migration backup or rollback is forbidden;
-   inability to complete the paired protocol leaves the service fail-closed.
+4. The required generation-zero integrity anchor is not a write-era marker by
+   itself. Once write capability generation is positive, an issued/applied
+   chain or receipt exists, or a bank-sync/write quarantine is unresolved,
+   every migration uses the full remotely fenced, paired
+   Actual/companion/anchor upgrade-backup protocol above. A companion-only
+   migration backup or rollback is then forbidden; inability to complete the
+   paired protocol leaves the service fail-closed.
 5. Actual transaction-source provenance requires a separate design ticket and
    is not silently introduced by an implementation agent.
 6. No migration backfills or deduplicates existing transactions automatically.
 7. A write-disabled rollback may restore its verified companion-only backup.
-   A write-enabled rollback restores only the paired set and prior images; down
-   migrations are not assumed safe after user-approved mutations.
+   A write-enabled rollback remains fail-closed until the paired-restore gate
+   lands, then restores only the paired set and prior images; down migrations
+   are not assumed safe after user-approved mutations.
 
 ## Rollout strategy
 

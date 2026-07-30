@@ -238,6 +238,18 @@ scheduler tests mock the Actual adapter and assert:
 - exponential retry cap and deterministic injected jitter;
 - continued processing after one account fails;
 - explicit succeeded, failed, skipped, and canceled per-account results;
+- hard-kill after provider work begins records `outcome_unknown`, retains the
+  job-bound quarantine, blocks automatic retry/companion-only backup, and
+  requires the explicit unknown-effects resolution flow;
+- every ordered account has a durable pre-worker child row binding its account
+  ID, worker-operation UUID, ordinal, and exact expected quarantine root;
+- startup rejects a missing expected root, unregistered lookalike, substituted
+  marker/account, duplicate ordinal, and quarantine bundle hash mismatch;
+- operation markers reject missing, duplicate, nested, non-regular, malformed,
+  noncanonical, wrong-version, unknown-field, wrong-root-kind, and
+  instance/binding/job/worker/account/receipt mismatches;
+- a crash after durable quarantine but before the child-row hash update recovers
+  only the exact marker-bound root and stores its stable canonical bundle hash;
 - deterministic partial-account summary and exit code;
 - idempotency bound to the versioned endpoint/command operation, budget,
   principal, and canonical request, with stored replay behavior;
@@ -382,17 +394,23 @@ Write-state tests prove that a fresh database is `disabled`, loss or an
 unpaired/older restore is `recovery_required`, and no ledger-write endpoint is
 available until a paired Actual/companion restore manifest and the complete
 receipt/hold/reservation chain plus unresolved write quarantines are verified.
+Generation tests require database/anchor equality, a null generation-zero event
+hash with an empty event table, contiguous immutable event hashes, an
+authenticated referenced paired manifest, and exact one-event database-ahead
+completion. Anchor-ahead, gaps, decreases, missing/extra events, unknown
+capability IDs, and divergent hashes remain `recovery_required`.
 External-anchor cases cover a database one valid receipt ahead after a crash,
 database one valid issued intent ahead before the pre-call anchor update,
 issued-intent or applied anchor ahead of an older database, missing anchor after
-prior writes/intents, divergent chain, wrong budget, and a paired restore
-command that is the only allowed rollback. No first call or retry begins until
-the receipt's issued-intent chain matches. Retries of an identical receipt and
-action reverify the same intent and do not advance the issued sequence; a
-changed action requires a new receipt. Backup cases also prove the two-phase
-order: capture and hash-bind the pre-backup anchor artifact, finalize the
-encrypted manifest, atomically advance the live anchor to that manifest hash,
-and reconstruct exactly that transition during restore without copying the MAC
+prior writes/intents, divergent chain, wrong budget, and the fail-closed paired
+restore gate; once that gate lands, paired restore is the only allowed
+write-era rollback. No first call or retry begins until the receipt's
+issued-intent chain matches. Retries of an identical receipt and action reverify
+the same intent and do not advance the issued sequence; a changed action
+requires a new receipt. Backup cases also prove the two-phase order: capture and
+hash-bind the pre-backup anchor artifact, finalize the encrypted manifest,
+atomically advance the live anchor to that manifest hash, and reconstruct
+exactly that transition during restore without copying the MAC
 key.
 
 ## Actual adapter integration tests
@@ -657,8 +675,11 @@ Before release readiness:
    all unresolved write-operation quarantine artifacts into the encrypted
    backup set. Create a manifest binding the Actual snapshots/exports,
    companion backup hash, schema version, pre-backup anchor artifact hash,
-   quarantine hashes, and the last issued-intent and applied-receipt chain
-   hashes.
+   capability generation/event hash, quarantine/account-operation bindings, and
+   the last issued-intent and applied-receipt chain hashes.
+   Prove that changing a quarantine bundle's positional archive index changes
+   its artifact hash but not its logical-name-independent bundle hash, while a
+   substituted bundle/root fails the database child-row binding.
 7. Encrypt and finalize the export/snapshots/anchor artifact/manifest, verify
    checksums and restrictive permissions, then atomically advance the live
    anchor's
@@ -668,13 +689,42 @@ Before release readiness:
    anchor transition.
 8. Upgrade/migrate the companion fixture and verify health, counts, pending
    reviews, receipts, and allocation reservations.
-9. Restore the matching prior images and both old volumes in isolation, then
-   verify the Actual export and companion integrity.
-10. Attempt a companion-only, older, and mismatched restore; each leaves Actual
-    unchanged but sets `recovery_required` and refuses every ledger write.
-11. Resume scheduling only after paired verification succeeds.
-12. Document that applied Actual mutations require Actual-level undo or a
+9. Until the remotely fenced paired-restore protocol lands, assert that paired
+   restore returns `feature_not_implemented` before key/source access or
+   mutation. After that separate release gate lands, restore the matching prior
+   images and both old volumes in isolation, then verify the Actual export and
+   companion integrity.
+10. Restore a matching generation-zero companion-only backup and prove the
+    database remains write-disabled with a reconstructed generation-zero
+    anchor. Reject companion-only restore into a write-era target and reject
+    older or mismatched backups without changing Actual.
+11. Reject generation-zero restore before staging when the backup database,
+    live database, or Actual API-root owner has a missing or different immutable
+    companion instance UUID.
+12. Resume scheduling only after paired verification succeeds.
+13. Document that applied Actual mutations require Actual-level undo or a
     separately tested compensating action.
+
+Hostile-container tests cover oversized/overflowing header and record lengths,
+the aggregate AES-GCM cap, duplicate/missing/undeclared/trailing records,
+backslash/drive/UNC names, record-manifest bijection, wrong mode/cardinality,
+noncanonical/duplicate/unknown header fields, wrong binary/JSON magic, version,
+algorithm, key ID, salt/nonce size, header/manifest backup ID, header/computed/
+expected manifest hash, and fixed-size streaming allocation. Quarantine tests
+round-trip a canonical directory bundle and reject links, reparse points, hard
+links, alternate streams, non-NFC names, excess entries, and byte limits.
+
+Restore crash injection stops before and after every journal replacement,
+database main/WAL/SHM member move, directory rename, parent flush, verification,
+anchor activation, and cleanup. Recovery must match the frozen
+hash-and-existence matrix. A crash in authenticated `preparing` cancels before
+live mutation and preserves the complete prior set; after global `prepared`,
+recovery converges only to the complete restored set or fails closed for manual
+recovery. Tests cover resumable journaled cleanup, journal removal last, and
+orphan restore-sibling rejection. They reject extra/missing/duplicated members.
+POSIX tests verify UID/modes and no-follow identity; Windows tests verify
+protected owner/DACL, stable file ID, reparse/alternate-stream rejection, and
+post-open identity revalidation.
 
 A remote-client edit injected before, during, or after export invalidates the
 backup set unless the approved fence proves it is outside the captured

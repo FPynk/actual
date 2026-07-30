@@ -120,6 +120,9 @@ P2.3 and report design may run in parallel because they do not touch the same
 files. P2.7 has an exact allowlist: init/download/read/query, `sync`,
 account-scoped `runBankSync`, and `shutdown`. It exposes no generic or review
 mutation. No review ticket can infer a ledger write from this adapter.
+The frozen package, configuration, DTO, migration, adapter, authentication,
+idempotency, and backup interfaces are in
+`docs/project/finance-companion-v1-contract.md`.
 
 ### Phase 3 — Import and reconciliation hardening
 

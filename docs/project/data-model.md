@@ -82,24 +82,88 @@ Historical migration files are immutable after merge.
 
 #### `companion_instance`
 
-One immutable row binds the database to a budget.
+One row binds the database to a budget; its binding fields are immutable.
 
-| Column                   | Type | Constraint                | Purpose                                       |
-| ------------------------ | ---- | ------------------------- | --------------------------------------------- |
-| `singleton_key`          | text | primary key, value `main` | Enforces one binding row                      |
-| `budget_key_hash`        | text | not null, unique          | Non-reversible configured budget scope        |
-| `budget_currency_code`   | text | not null                  | Verified single-budget ISO currency           |
-| `write_capability_state` | text | not null, enum            | `disabled`, `enabled`, or `recovery_required` |
-| `created_at`             | text | not null                  | UTC timestamp                                 |
+| Column                        | Type    | Constraint                  | Purpose                                                |
+| ----------------------------- | ------- | --------------------------- | ------------------------------------------------------ |
+| `singleton_key`               | text    | primary key, value `main`   | Enforces one binding row                               |
+| `instance_id`                 | text    | not null, unique            | Immutable lowercase canonical companion UUID           |
+| `budget_key_hash`             | text    | not null, unique            | Non-reversible configured budget scope                 |
+| `budget_currency_code`        | text    | not null                    | Verified single-budget ISO currency                    |
+| `write_capability_state`      | text    | not null, enum              | `disabled`, `enabled`, or `recovery_required`          |
+| `write_capability_generation` | integer | not null, safe, nonnegative | Durable value that must equal the authenticated anchor |
+| `write_capability_event_hash` | text    | nullable                    | Null at generation zero; otherwise current chain hash  |
+| `created_at`                  | text    | not null                    | UTC timestamp                                          |
 
-The hash is derived from the configured Actual server and budget identity with
-a versioned, domain-separated hash. It is not a credential. Changing the
-binding requires creating a different companion database. A fresh database
-always starts with writes `disabled`. The only supported restore workflow sets
-`recovery_required` and may re-enable writes only after verifying a paired
-Actual export/snapshot and the complete receipt/hold/reservation chain plus any
-unresolved write quarantine. Missing write-era metadata has no automatic reset
-path in this design.
+`instance_id` is generated once during first initialization and is the
+authoritative identity used by the Actual API-root and operation ownership
+markers. The hash is derived from the configured Actual server and budget
+identity with a versioned, domain-separated hash. It is not a credential.
+Changing the instance identity or binding requires creating a different
+companion database. A fresh database always starts with writes `disabled`. The
+only supported write-era restore workflow sets `recovery_required` and may
+re-enable writes only after verifying a paired Actual export/snapshot and the
+complete receipt/hold/reservation chain plus any unresolved write quarantine. A
+generation-zero companion-only restore remains write-disabled and reconstructs
+a verified generation-zero anchor. Missing write-era metadata has no automatic
+reset path in this design.
+
+Schema checks require generation zero to have a null event hash and state
+`disabled` or `recovery_required`; a positive generation requires a
+64-character lowercase hexadecimal event hash and state `enabled` or
+`recovery_required`.
+
+The generation starts at zero with a null event hash and never decreases.
+Generation zero requires no `write_capability_events` rows. Enabling the first
+or a later versioned write capability requires maintenance, the companion queue
+and lock, the remote fence, a verified paired backup, and the paired-restore
+release gate. One SQLite transaction inserts the next event, increments
+`write_capability_generation`, copies its hash into
+`write_capability_event_hash`, and records the enabled state. The command then
+advances the authenticated anchor to that exact generation/hash before any
+write is exposed.
+
+A crash may leave the database exactly one valid event ahead. Startup may
+finish only that extension after authenticating the event's referenced paired
+backup and recomputing its chain hash from the still-current anchor. An anchor
+ahead of the database, a gap greater than one, a decrease, a missing/extra
+event, or divergent event hash sets `recovery_required`. Every startup,
+migration, backup, restore, integrity check, and pre-write check requires exact
+database/anchor generation and event-hash equality.
+
+#### `write_capability_events`
+
+One immutable row records every approved capability transition.
+
+| Column                        | Type    | Constraint                  | Purpose                                                   |
+| ----------------------------- | ------- | --------------------------- | --------------------------------------------------------- |
+| `generation`                  | integer | primary key, positive, safe | Contiguous capability generation                          |
+| `previous_event_hash`         | text    | nullable                    | Null only for generation one                              |
+| `capability_contract_id`      | text    | not null                    | Versioned, release-allowlisted capability gate            |
+| `paired_backup_manifest_hash` | text    | not null                    | Authenticated published backup required before enablement |
+| `event_hash`                  | text    | not null, unique            | Domain-separated chain hash                               |
+| `enabled_at`                  | text    | not null                    | UTC timestamp                                             |
+
+The event hash is lowercase hexadecimal for:
+
+```text
+SHA-256(
+  UTF8("finance-companion/write-capability-event/v1") ||
+  0x00 ||
+  UTF8(
+    RFC8785({
+      generation,
+      previousEventHash,
+      capabilityContractId,
+      pairedBackupManifestHash
+    })
+  )
+)
+```
+
+`capability_contract_id` is compiled release metadata, never caller input.
+Events are append-only and contiguous. Their final generation/hash must equal
+the `companion_instance` row and authenticated anchor.
 
 #### `local_principals`
 
@@ -120,14 +184,15 @@ restart.
 
 ### External integrity freshness anchor
 
-A write-enabled instance also maintains a small authenticated anchor outside
-the companion `/data` volume and its ordinary database restore domain. Its
+Every instance maintains a small authenticated anchor outside the companion
+`/data` volume and its ordinary database restore domain. A fresh instance starts
+with the generation-zero anchor described below. Its
 permission-restricted host path and MAC key are configured separately. The
 anchor contains only:
 
 - budget binding hash;
 - anchor format version;
-- write-capability generation;
+- write-capability generation and current event-chain hash;
 - highest issued write-intent sequence and chain hash;
 - highest applied receipt sequence and chain hash; and
 - last verified paired-backup manifest hash.
@@ -147,15 +212,17 @@ ahead after a crash. If either anchor chain is ahead of the database, missing
 after prior writes/intents, bound to another budget, or divergent, the instance
 enters `recovery_required`. This detects a companion restore to before an
 unresolved attempt even when the Actual call committed and its response was
-lost. A new database cannot ignore an existing anchor. Only the paired restore
-command may roll the anchor back, after verifying the bound Actual
-export/snapshot and encrypted backup manifest.
+lost. A new database cannot ignore an existing anchor. After its separate
+release gate lands, only the paired restore command may roll a write-era anchor
+back, after verifying the bound Actual export/snapshot and encrypted backup
+manifest.
 
 Backup uses a two-phase anchor transition. The authenticated pre-backup anchor
 artifact, but never its MAC key, is copied into the encrypted backup set. The
 finalized manifest binds that artifact's hash, companion backup hash, Actual
-export/snapshot hashes, schema version, and issued-intent/applied-receipt
-chains. After that manifest and the backup set are encrypted and verified, the
+export/snapshot hashes, schema version, capability generation/event chain,
+issued-intent/applied-receipt chains, and quarantine/account-operation
+bindings. After that manifest and the backup set are encrypted and verified, the
 live anchor atomically advances its
 `last_verified_paired_backup_manifest_hash` to the manifest hash. The manifest
 does not embed the resulting post-finalization anchor. Restore verifies the
@@ -686,26 +753,89 @@ The first Amazon release is read-only and creates no reservations. Application
 is enabled only after the server-owned conditional mutator can apply one
 balanced parent/split change atomically and reject stale or reconciled targets.
 
+### Request replay
+
+#### `request_replays`
+
+Stores idempotency state for authenticated mutating companion endpoints that
+do not yet own an Actual application receipt. Job execution remains in
+`job_runs`; gated Actual writes move to `application_receipts`.
+
+| Column               | Type    | Constraint           | Purpose                                                           |
+| -------------------- | ------- | -------------------- | ----------------------------------------------------------------- |
+| `id`                 | text    | primary key          | Companion UUID                                                    |
+| `budget_key_hash`    | text    | not null             | Immutable single-budget scope                                     |
+| `principal_id`       | text    | not null foreign key | Stable owner principal, never a session ID                        |
+| `invocation_kind`    | text    | not null, enum       | `local_http`, `local_cli`, or `scheduler`                         |
+| `operation_id`       | text    | not null             | Versioned endpoint or command identity                            |
+| `idempotency_key`    | text    | not null             | Caller-provided duplicate request guard                           |
+| `request_hash`       | text    | not null             | Exactly 64 lowercase hexadecimal characters                       |
+| `status`             | text    | not null, enum       | `in_progress`, `completed`, `failed_retryable`, or `failed_final` |
+| `attempt`            | integer | not null, minimum 1  | Same-row retry/takeover number                                    |
+| `response_status`    | integer | nullable             | Allowlisted replay HTTP/result status                             |
+| `response_json`      | text    | nullable             | Route-specific allowlisted replay response                        |
+| `domain_record_kind` | text    | nullable             | Closed enum: `job_run`, `review_decision`, or `import_batch`      |
+| `domain_record_id`   | text    | nullable             | Durable owning record when one was committed                      |
+| `error_code`         | text    | nullable             | Redacted stable code                                              |
+| `created_at`         | text    | not null             | UTC timestamp                                                     |
+| `completed_at`       | text    | nullable             | UTC timestamp                                                     |
+| `expires_at`         | text    | nullable             | Retention boundary for non-write endpoint replay                  |
+
+Unique
+`(budget_key_hash, principal_id, invocation_kind, operation_id,
+idempotency_key)`. An exact completed replay returns the stored allowlisted
+result. Reusing the key with another request hash is a conflict. Creation of a
+replay row and its domain decision/job/import record is atomic. An
+`in_progress` row is not guessed successful from current Actual state; startup
+resolves the companion transaction first, and gated Actual writes use the
+stronger application-receipt protocol.
+
+Schema checks require domain kind and ID to be either both null or both
+non-null. The state matrix is closed:
+
+| Status             | Required                                               | Must be null                                     |
+| ------------------ | ------------------------------------------------------ | ------------------------------------------------ |
+| `in_progress`      | attempt and optional paired domain reference           | response status/body, error code, completed time |
+| `completed`        | response status/body and completed time                | error code                                       |
+| `failed_retryable` | error code and completed time                          | response status/body                             |
+| `failed_final`     | error code, allowlisted error JSON, and completed time | success response status                          |
+
+The owning domain result and replay terminal state commit atomically.
+`failed_retryable` can return to `in_progress` only through an atomic
+compare-and-set that reuses the same replay and domain rows, clears terminal
+fields, and increments `attempt`. A duplicate `failed_final` replays the stored
+allowlisted error. An `in_progress` row is never taken over based only on age.
+Its companion transaction boundary must be proven after restart; Actual writes
+use application receipts instead.
+
+Indexes cover `(status, created_at)` and `(expires_at)`. Completed non-write
+replays are retained for 30 days unless their owning domain record requires a
+longer suppression period. Rows associated with unresolved work are never
+purged by age.
+
 ### Job runs and application receipts
 
 #### `job_runs`
 
-| Column            | Type    | Constraint     | Purpose                                                           |
-| ----------------- | ------- | -------------- | ----------------------------------------------------------------- |
-| `id`              | text    | primary key    | Run UUID                                                          |
-| `job_kind`        | text    | not null       | `bank_sync`, `subscription_scan`, `amazon_parse`, or approved job |
-| `budget_key_hash` | text    | not null       | Non-reversible budget discriminator                               |
-| `invocation_kind` | text    | not null       | `scheduler`, `local_http`, or `local_cli`                         |
-| `operation_id`    | text    | not null       | Versioned endpoint or command identity                            |
-| `principal_id`    | text    | not null       | Stable local owner or scheduler principal                         |
-| `idempotency_key` | text    | not null       | Caller-provided duplicate invocation guard                        |
-| `request_hash`    | text    | not null       | Canonical action and parameter fingerprint                        |
-| `status`          | text    | not null, enum | `queued`, `running`, `succeeded`, `partial`, `failed`, `skipped`  |
-| `attempt`         | integer | not null       | Retry number                                                      |
-| `started_at`      | text    | nullable       | UTC timestamp                                                     |
-| `completed_at`    | text    | nullable       | UTC timestamp                                                     |
-| `error_code`      | text    | nullable       | Redacted stable code                                              |
-| `summary_json`    | text    | not null       | Allowlisted per-account results/counts/durations only             |
+| Column               | Type    | Constraint     | Purpose                                                                                            |
+| -------------------- | ------- | -------------- | -------------------------------------------------------------------------------------------------- |
+| `id`                 | text    | primary key    | Run UUID                                                                                           |
+| `job_kind`           | text    | not null       | `bank_sync`, `subscription_scan`, `amazon_parse`, or approved job                                  |
+| `budget_key_hash`    | text    | not null       | Non-reversible budget discriminator                                                                |
+| `invocation_kind`    | text    | not null       | `scheduler`, `local_http`, or `local_cli`                                                          |
+| `operation_id`       | text    | not null       | Versioned endpoint or command identity                                                             |
+| `principal_id`       | text    | not null       | Stable local owner or scheduler principal                                                          |
+| `idempotency_key`    | text    | not null       | Caller-provided duplicate invocation guard                                                         |
+| `request_hash`       | text    | not null       | Canonical action and parameter fingerprint                                                         |
+| `account_scope_hash` | text    | nullable       | Ordered linked-account scope once bank-sync enumeration commits                                    |
+| `status`             | text    | not null, enum | `queued`, `running`, `succeeded`, `partial`, `failed`, `skipped`, `canceled`, or `outcome_unknown` |
+| `attempt`            | integer | not null       | Retry number                                                                                       |
+| `started_at`         | text    | nullable       | UTC timestamp                                                                                      |
+| `completed_at`       | text    | nullable       | UTC timestamp                                                                                      |
+| `error_code`         | text    | nullable       | Redacted stable code                                                                               |
+| `summary_json`       | text    | not null       | Allowlisted per-account results/counts/durations only                                              |
+| `resolution_code`    | text    | nullable       | Explicit unknown-outcome resolution, never inferred provider result                                |
+| `resolved_at`        | text    | nullable       | UTC resolution timestamp                                                                           |
 
 Unique
 `(budget_key_hash, principal_id, invocation_kind, operation_id,
@@ -713,6 +843,68 @@ idempotency_key)`. The operation ID is the versioned HTTP endpoint or CLI job
 contract and the request hash includes `job_kind`. A repeat with the same
 request hash returns the stored allowlisted summary; the same key with a
 different request hash is a conflict.
+
+For bank sync, `account_scope_hash` is null only while linked-account
+enumeration has not committed. It becomes the lowercase hash:
+
+```text
+SHA-256(
+  UTF8("finance-companion/bank-sync-account-scope/v1") ||
+  0x00 ||
+  UTF8(RFC8785(orderedAccountIds))
+)
+```
+
+The ordered IDs exactly match contiguous child ordinals and never change for
+that run.
+
+Current public Actual bank sync exposes no trustworthy added/updated counts, so
+schema-v1 summaries store `transactionCounts: null`. If a bank-sync worker is
+hard-killed or explicit final sync/shutdown is unproven after provider work
+starts, its account-operation row and the parent run become `outcome_unknown`;
+the child row binds the operation quarantine, and neither is automatically
+retried or purged. The quarantine blocks companion-only backup and migration.
+Explicit offline resolution performs and proves a fresh authoritative sync;
+success changes the run to `failed`, keeps the per-account `outcome-unknown`
+evidence, and records `authoritative-sync-completed-effects-unknown`. Any later
+provider retry uses a new idempotency key.
+
+#### `job_run_account_operations`
+
+Bank-sync worker identity and account scope are normalized rather than hidden
+inside `summary_json`.
+
+| Column                     | Type    | Constraint                  | Purpose                                                                                 |
+| -------------------------- | ------- | --------------------------- | --------------------------------------------------------------------------------------- |
+| `worker_operation_id`      | text    | primary key, canonical UUID | One dedicated adapter-worker invocation                                                 |
+| `job_run_id`               | text    | not null foreign key        | Owning bank-sync run                                                                    |
+| `account_id`               | text    | not null                    | Exact Actual account scope                                                              |
+| `ordinal`                  | integer | not null, nonnegative       | Deterministic sequential order                                                          |
+| `expected_quarantine_root` | text    | not null, unique            | Exact `bank-sync-<run UUID>-<worker-operation UUID>` leaf                               |
+| `status`                   | text    | not null, enum              | `queued`, `running`, `succeeded`, `failed`, `skipped`, `canceled`, or `outcome_unknown` |
+| `quarantine_bundle_hash`   | text    | nullable                    | Stable logical-name-independent canonical bundle hash after quarantine                  |
+| `started_at`               | text    | nullable                    | UTC timestamp                                                                           |
+| `completed_at`             | text    | nullable                    | UTC timestamp                                                                           |
+| `resolution_code`          | text    | nullable                    | Explicit authoritative-sync/unknown-effects resolution                                  |
+| `resolved_at`              | text    | nullable                    | UTC resolution timestamp                                                                |
+
+Unique `(job_run_id, account_id)` and `(job_run_id, ordinal)`. For every
+enumerated account, the companion creates this row with its canonical random
+worker operation ID, exact account ID, ordinal, and derived expected quarantine
+root before the worker starts. In that same transaction, the parent
+`account_scope_hash` commits to the ordered account-ID list. The worker ownership
+marker and IPC request must match the row.
+
+A hard kill changes that account operation and the parent run to
+`outcome_unknown`. Recovery accepts a quarantine only when its exact root name,
+strict `operation-owner.json`, job-run ID, worker-operation ID, account ID, and
+logical-name-independent `quarantine_bundle_hash` agree with this row and the
+durable companion instance/budget binding. The marker's closed schema and
+canonical bytes are frozen in the companion contract. The hash uses the
+canonical `FCQTR001` bundle-byte formula there, never the backup artifact formula
+that includes a positional archive name. A missing expected quarantine,
+unregistered lookalike root, duplicate account/ordinal, or substituted bundle is
+fail-closed. `job_runs.summary_json` is rebuilt only from these child rows.
 
 One process-global queue serializes every use of the module-global Actual API,
 not only jobs. A cross-process lock protects the companion-owned API data
@@ -844,27 +1036,30 @@ IDs, response, and receipt-chain evidence remain.
 ## Target-version hashing
 
 A target-version hash detects a stale review. The client-provided hash is only
-an echo of the reviewed state; the server re-reads the authoritative row and
+an echo of the reviewed state; the server re-reads the authoritative graph and
 derives the hash itself. Before the conditional mutator exists, the hash can
 invalidate companion guidance but cannot protect a read-then-write update.
 After the gate, the server compares it inside the same serialized local
-mutation. Its canonical input contains only fields that the proposed action
-depends on:
+mutation.
 
-- Actual transaction ID;
-- account ID;
-- date;
-- integer amount;
-- payee ID and imported payee;
-- category ID;
-- cleared and reconciled flags;
-- parent/split relationship and child IDs/amounts;
-- notes hash when an enrichment action would modify notes; and
-- the target-version algorithm version.
+The frozen algorithm is the full `CanonicalActualTransactionGraphV1`
+projection in `finance-companion-v1-contract.md`: every transaction DTO field
+is present, nullable fields are explicit nulls, booleans are explicit, children
+are sorted by UTF-8 byte order of opaque ID, and duplicate child IDs are
+rejected. `targetVersionHash` itself is not an input. No timestamp, action,
+request, session, or review field is included. The stored value is exactly 64
+lowercase hexadecimal characters:
 
-Serialization uses sorted keys and explicit nulls before SHA-256. A hash is not
-a secret or identity, and it must not be used to infer that two transactions
-are duplicates.
+```text
+SHA-256(
+  UTF8("finance-companion/actual-transaction-graph/v1") ||
+  0x00 ||
+  UTF8(RFC8785(canonicalGraph))
+)
+```
+
+A hash is not a secret or identity, and it must not be used to infer that two
+transactions are duplicates.
 
 The hash and companion lock do not fence another synced Actual client. Phase
 9 may enable ledger writes only after its design proves pre/post-sync and
@@ -997,6 +1192,7 @@ Defaults are conservative and configurable:
 | ------------------------------------------------ | ------------------------------------------------------------------ |
 | Uploaded export/archive or raw email body        | Parse in memory; remove immediately after success or failure       |
 | Redacted failed-import receipt                   | 30 days                                                            |
+| Completed request replays                        | 30 days unless an owning suppression/audit record lasts longer     |
 | Job runs                                         | 30 days                                                            |
 | Pending review candidates                        | Until decision or source invalidation                              |
 | Rejected reconciliation/classification proposals | 180 days to prevent immediate reproposal                           |
@@ -1004,6 +1200,7 @@ Defaults are conservative and configurable:
 | Amazon normalized detail and observations        | 365 days after the source entity's last observation                |
 | Application receipts                             | Retain with companion backup for audit/idempotency                 |
 | Unresolved Amazon allocation holds               | Until a durable authoritative outcome resolves the receipt         |
+| Unresolved bank-sync quarantines                 | Until explicit unknown-effects resolution and verified backup      |
 | Unresolved write-operation quarantines           | Until the associated receipt has an authoritative terminal outcome |
 | Applied Amazon allocation reservations           | Retain as non-sensitive tombstones while the budget binding exists |
 
@@ -1034,12 +1231,18 @@ Companion migrations:
 1. Pause scheduling, stop accepting requests, and drain the operation queue.
 2. Acquire the exclusive companion process/data-directory lock.
 3. Inspect the authenticated write generation and anchor. If writes have never
-   been enabled and no write-era metadata exists, create a
+   been enabled, generation is zero with zero/null issued and applied chains,
+   and no receipt, write marker, or unresolved bank-sync/write quarantine
+   exists, create a
    checkpoint-consistent companion-only backup using the SQLite online backup
    API or `VACUUM INTO`, checksum it, and verify it opens while the lock is held.
    Otherwise complete the full remotely fenced paired
    Actual/companion/anchor upgrade-backup protocol and verify its finalized
    manifest before continuing.
+
+   The generation-zero anchor created for every fresh database is required
+   integrity state, not write-era metadata by itself.
+
 4. Start one SQLite transaction.
 5. Validate the migration checksum/history.
 6. Apply schema/data changes.
@@ -1051,19 +1254,22 @@ Companion migrations:
 On failure, roll back the transaction and keep the prior application version.
 If a migration is not backward compatible, a never-write-enabled instance may
 restore its verified companion-only backup with the prior application. A
-write-enabled instance may restore only the paired Actual/companion/anchor set
-and prior images; a companion-only rollback is rejected and sets
-`recovery_required`. Down migrations are not the default. Crash tests cover
-backup creation, pre-commit migration work, post-commit startup, and both
-allowed restore paths. A raw copy of the SQLite main file while WAL writes can
-occur is not a backup.
+write-enabled instance remains fail-closed until the remotely fenced protocol
+for paired restore lands; after that gate it may restore only the paired
+Actual/companion/anchor set and prior images. A companion-only write-era
+rollback is rejected and sets `recovery_required`. Down migrations are not the
+default. Crash tests cover backup creation, pre-commit migration work,
+post-commit startup, generation-zero restore, and the paired-mode fail-closed
+gate. A raw copy of the SQLite main file while WAL writes can occur is not a
+backup.
 
 Actual mutations already applied through approved reviews are not rolled back
 by restoring the companion database. User-visible rollback guidance must use
 Actual's own transaction/rule/schedule editing or a separately tested
-compensating action. A write-enabled restore is supported only with its paired
-Actual snapshot/export and bound manifest. Any companion-only, older, or
-mismatched restore enters `recovery_required`.
+compensating action. A write-enabled restore becomes supported only after the
+paired-restore gate, and then only with its paired Actual snapshot/export and
+bound manifest. Any companion-only write-era, older, or mismatched restore
+enters `recovery_required`.
 
 ## Data-model acceptance criteria
 
