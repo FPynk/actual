@@ -4,8 +4,8 @@
 - Ticket: FIN-16 - Characterize existing import and reconciliation behavior
 - Branch: `test/FIN-16-characterize-reconciliation`
 - Start commit: `3260a2e84db196d67c208712c8e9a0489b7ca359`
-- End commit: pending lead
-- Pull request: pending lead
+- Implementation commit: `a6027a08abf845946b86bf8a9536000c371e5587`
+- Pull request: https://github.com/FPynk/actual/pull/11
 
 ## Files changed
 
