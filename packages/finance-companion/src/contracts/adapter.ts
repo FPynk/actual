@@ -153,7 +153,10 @@ export type AccountBankSyncResultV1 = Readonly<{
 
 export type ActualAdapterResponse =
   | Readonly<{ kind: 'read-budget-snapshot'; snapshot: ActualBudgetSnapshotV1 }>
-  | Readonly<{ kind: 'read-actual-target'; target: ActualTransactionGraphV1 }>
+  | Readonly<{
+      kind: 'read-actual-target';
+      target: ActualTransactionGraphV1 | null;
+    }>
   | Readonly<{
       kind: 'run-account-bank-sync';
       result: AccountBankSyncResultV1;

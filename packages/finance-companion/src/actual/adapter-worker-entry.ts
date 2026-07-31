@@ -256,7 +256,7 @@ async function readTransactionTarget(id: string) {
       .options({ splits: 'grouped' }),
   );
   const initial = asRows(initialRows)[0];
-  if (initial === undefined) throw new Error('Target transaction is missing.');
+  if (initial === undefined) return null;
   const parentRow =
     initial.is_child === true && typeof initial.parent_id === 'string'
       ? asRows(

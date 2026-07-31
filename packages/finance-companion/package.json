@@ -13,6 +13,7 @@
     "#integrity/*": "./src/integrity/*.ts",
     "#security/*": "./src/security/*.ts",
     "#reviews/*": "./src/reviews/*.ts",
+    "#reconciliation/*": "./src/reconciliation/*.ts",
     "#service/*": "./src/service/*.ts",
     "#subscriptions/*": "./src/subscriptions/*.ts"
   },
