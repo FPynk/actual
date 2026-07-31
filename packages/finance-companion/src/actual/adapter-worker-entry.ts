@@ -19,6 +19,7 @@ import type {
   ActualAdapterRequest,
   ActualAdapterResponse,
   ActualTransactionV1,
+  SubscriptionScheduleSnapshotV1,
 } from '#contracts/adapter';
 
 let initialization:
@@ -199,6 +200,16 @@ async function readSnapshot(
     snapshot.categories = (await actualApi.getCategories()).map(
       projectCategory,
     );
+  }
+  if (requestedSections.has('schedules')) {
+    snapshot.schedules = (await actualApi.getSchedules())
+      .flatMap(schedule => {
+        const projectedSchedule = projectSchedule(schedule);
+        return projectedSchedule === null ? [] : [projectedSchedule];
+      })
+      .sort((left, right) =>
+        Buffer.compare(Buffer.from(left.id), Buffer.from(right.id)),
+      );
   }
   if (request.transactionRange !== undefined) {
     const accountIds =
@@ -527,6 +538,67 @@ function projectTransaction(
   };
 }
 
+function projectSchedule(
+  schedule: Awaited<ReturnType<typeof actualApi.getSchedules>>[number],
+): SubscriptionScheduleSnapshotV1 | null {
+  const recurrence = projectScheduleRecurrence(schedule.date);
+  if (recurrence === null) return null;
+  return {
+    accountId: nullableNonemptyString(schedule.account),
+    amount: projectScheduleAmount(schedule.amount),
+    amountOperator: validScheduleAmountOperator(schedule.amountOp),
+    id: requiredNonemptyString(schedule.id),
+    isCompleted: schedule.completed === true,
+    payeeId: nullableNonemptyString(schedule.payee),
+    recurrence,
+  };
+}
+
+function projectScheduleRecurrence(
+  value: Awaited<ReturnType<typeof actualApi.getSchedules>>[number]['date'],
+): SubscriptionScheduleSnapshotV1['recurrence'] | null {
+  if (typeof value === 'string') {
+    if (!isIsoDate(value)) throw new Error('Actual returned an invalid date.');
+    return { date: value, kind: 'one-time' };
+  }
+  if (value.frequency === 'daily') return null;
+  const interval = value.interval ?? 1;
+  if (
+    !['weekly', 'monthly', 'yearly'].includes(value.frequency) ||
+    !Number.isSafeInteger(interval) ||
+    interval < 1 ||
+    !isIsoDate(value.start)
+  ) {
+    throw new Error('Actual returned an invalid schedule recurrence.');
+  }
+  return {
+    frequency: value.frequency,
+    interval,
+    kind: 'recurring',
+    start: value.start,
+  };
+}
+
+function projectScheduleAmount(
+  value: Awaited<ReturnType<typeof actualApi.getSchedules>>[number]['amount'],
+): SubscriptionScheduleSnapshotV1['amount'] {
+  if (value === undefined) return null;
+  if (typeof value === 'number') return requiredNumber(value);
+  if (!Number.isSafeInteger(value.num1) || !Number.isSafeInteger(value.num2)) {
+    throw new Error('Actual returned an invalid schedule amount.');
+  }
+  return { num1: value.num1, num2: value.num2 };
+}
+
+function validScheduleAmountOperator(
+  value: unknown,
+): SubscriptionScheduleSnapshotV1['amountOperator'] {
+  if (!['is', 'isapprox', 'isbetween'].includes(value as string)) {
+    throw new Error('Actual returned an invalid schedule amount operator.');
+  }
+  return value as SubscriptionScheduleSnapshotV1['amountOperator'];
+}
+
 function asRows(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) return value.filter(isRecord);
   if (isRecord(value) && Array.isArray(value.data)) {
@@ -544,6 +616,17 @@ function requiredString(value: unknown): string {
     throw new Error('Actual returned an invalid value.');
   }
   return value;
+}
+
+function requiredNonemptyString(value: unknown): string {
+  const result = requiredString(value);
+  if (result.length === 0) throw new Error('Actual returned an invalid value.');
+  return result;
+}
+
+function nullableNonemptyString(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return requiredNonemptyString(value);
 }
 
 function nullableString(value: unknown): string | null {
@@ -603,6 +686,13 @@ function dateBefore(date: string): string {
   const value = new Date(`${date}T00:00:00Z`);
   value.setUTCDate(value.getUTCDate() - 1);
   return value.toISOString().slice(0, 10);
+}
+
+function isIsoDate(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+  );
 }
 
 function send(message: AdapterWorkerMessage): void {

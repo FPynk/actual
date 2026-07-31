@@ -5,7 +5,7 @@ export type ActualAdapterRequest =
 
 export type ReadBudgetSnapshotRequest = Readonly<{
   kind: 'read-budget-snapshot';
-  sections: readonly ('accounts' | 'payees' | 'categories')[];
+  sections: readonly ('accounts' | 'payees' | 'categories' | 'schedules')[];
   transactionRange?: Readonly<{
     startDate: string;
     endDateExclusive: string;
@@ -90,6 +90,23 @@ export type ActualTransactionV1 = Readonly<{
   tombstone: boolean;
 }>;
 
+export type SubscriptionScheduleSnapshotV1 = Readonly<{
+  id: string;
+  accountId: string | null;
+  payeeId: string | null;
+  amount: number | Readonly<{ num1: number; num2: number }> | null;
+  amountOperator: 'is' | 'isapprox' | 'isbetween';
+  recurrence:
+    | Readonly<{ kind: 'one-time'; date: string }>
+    | Readonly<{
+        kind: 'recurring';
+        frequency: 'weekly' | 'monthly' | 'yearly';
+        interval: number;
+        start: string;
+      }>;
+  isCompleted: boolean;
+}>;
+
 export type ActualBudgetSnapshotV1 = Readonly<{
   contractVersion: 1;
   budget: Readonly<{
@@ -101,6 +118,7 @@ export type ActualBudgetSnapshotV1 = Readonly<{
   payees?: readonly ActualPayeeV1[];
   categoryGroups?: readonly ActualCategoryGroupV1[];
   categories?: readonly ActualCategoryV1[];
+  schedules?: readonly SubscriptionScheduleSnapshotV1[];
   transactions?: readonly ActualTransactionV1[];
 }>;
 

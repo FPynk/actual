@@ -214,6 +214,51 @@ describe('Actual adapter', () => {
     ).rejects.toMatchObject({ code: 'adapter_unhealthy' });
   });
 
+  it('accepts the closed schedule snapshot and no raw schedule fields', async () => {
+    const schedules = [scheduleSnapshot()];
+    const adapter = createActualAdapter(configuration(), async () => ({
+      kind: 'read-budget-snapshot',
+      snapshot: {
+        ...snapshotResponse('read-budget-snapshot').snapshot,
+        schedules,
+      },
+    }));
+    await expect(
+      adapter.execute({
+        kind: 'read-budget-snapshot',
+        sections: ['schedules'],
+      }),
+    ).resolves.toMatchObject({ snapshot: { schedules } });
+  });
+
+  it.each([
+    {
+      name: 'missing',
+      response: snapshotResponse('read-budget-snapshot'),
+    },
+    {
+      name: 'malformed',
+      response: {
+        kind: 'read-budget-snapshot' as const,
+        snapshot: {
+          ...snapshotResponse('read-budget-snapshot').snapshot,
+          schedules: [{ ...scheduleSnapshot(), name: 'forbidden' }],
+        },
+      },
+    },
+  ])('rejects a $name requested schedule section', async ({ response }) => {
+    const adapter = createActualAdapter(
+      configuration(),
+      async () => response as never,
+    );
+    await expect(
+      adapter.execute({
+        kind: 'read-budget-snapshot',
+        sections: ['schedules'],
+      }),
+    ).rejects.toMatchObject({ code: 'adapter_unhealthy' });
+  });
+
   it('totally rejects missing, mistyped, and unknown request fields', async () => {
     const adapter = createActualAdapter(configuration(), async () => {
       throw new Error('worker must not start');
@@ -314,6 +359,23 @@ function bankSyncResponse(accountId: string) {
       outcomeCode: 'succeeded' as const,
       startedAt: '2026-07-31T12:00:00.000Z',
       transactionCounts: null,
+    },
+  };
+}
+
+function scheduleSnapshot() {
+  return {
+    accountId: 'account-1',
+    amount: -1_000,
+    amountOperator: 'is' as const,
+    id: 'schedule-1',
+    isCompleted: false,
+    payeeId: 'payee-1',
+    recurrence: {
+      frequency: 'monthly' as const,
+      interval: 1,
+      kind: 'recurring' as const,
+      start: '2026-01-15',
     },
   };
 }

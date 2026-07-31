@@ -13,7 +13,8 @@
     "#integrity/*": "./src/integrity/*.ts",
     "#security/*": "./src/security/*.ts",
     "#reviews/*": "./src/reviews/*.ts",
-    "#service/*": "./src/service/*.ts"
+    "#service/*": "./src/service/*.ts",
+    "#subscriptions/*": "./src/subscriptions/*.ts"
   },
   "scripts": {
     "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false && node ./scripts/copy-migrations.mjs",
