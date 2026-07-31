@@ -21,9 +21,9 @@ an automatic cross-source merge.
 | Stable ID                  | A non-empty `imported_id` supplied by an import or bank provider                            |
 | Identity group             | Incoming rows in one reconciliation call that have the same native identity                 |
 | Exact existing row         | An Actual row whose account and `imported_id` equal the incoming native identity            |
-| Ledger intent              | The normalized, rule-evaluated fields that can affect an Actual transaction                 |
-| Normalized-identical group | An identity group whose rows have the same ledger intent                                    |
-| Conflicting group          | An identity group with two or more different ledger intents                                 |
+| Pre-rule import intent     | The normalized incoming fields that can affect rule selection or an Actual transaction      |
+| Normalized-identical group | An identity group whose rows have the same pre-rule import intent                           |
+| Conflicting group          | An identity group with two or more different pre-rule import intents                        |
 | Fuzzy evidence             | Similar account, amount, payee, or date data that is not native identity                    |
 | Eligible target            | One unreconciled top-level transaction that the selected upstream path is allowed to update |
 | Review                     | A non-mutating result that needs user or later companion evaluation                         |
@@ -45,8 +45,8 @@ the row has no native stable ID.
    different stable ID in the strict file/API path.
 8. A fingerprint or fuzzy score is evidence only and never creates durable
    identity or uniqueness.
-9. Conflicting or ambiguous native identity fails closed for that identity
-   group. It does not select a convenient first row.
+9. Conflicting, ambiguous, or split-child-ineligible native identity fails
+   closed for that identity group. It does not select a convenient first row.
 10. Failure of one identity group does not prevent independent, valid groups in
     the same batch from being evaluated.
 11. Two legitimate purchases may have identical dates, amounts, and merchants.
@@ -55,10 +55,16 @@ the row has no native stable ID.
 
 ## Incoming normalization boundary
 
-Collision evaluation happens after the existing input normalizer and rules have
-resolved the account, payee, category, imported payee, integer amount, and
-split children, but before any existing-row lookup, payee creation, preview
-mutation, or ledger mutation.
+Collision and exact-existing pre-scan happen after the existing input
+normalizer has pinned the requested account and resolved the incoming payee,
+category, imported payee, integer amount, and split children, but before
+`runRules`, durable payee creation, preview generation, or ledger mutation.
+This ordering is required because a payee-name rule can create a payee while it
+runs. Quarantined rows therefore never enter the rule engine.
+
+The normalizer may allocate an in-memory pending payee identifier. It does not
+persist that payee. Existing `createNewPayees` behavior persists a pending
+payee only when a surviving add or update uses it.
 
 The identity group key is:
 
@@ -69,18 +75,19 @@ account ID + U+0000 + exact non-empty imported_id
 Rows without a stable ID do not enter an identity group and are never collapsed
 by the FIN-17 guard.
 
-### Ledger-intent projection
+### Pre-rule import-intent projection
 
 Two rows in an identity group are normalized-identical only when the following
 explicit projection is equal:
 
 ```ts
-type NativeImportLedgerIntent = {
+type NativeImportIntent = {
   account: string;
   imported_id: string;
   date: string;
   amount: number;
   payee: string | null;
+  payee_name: string | null;
   category: string | null;
   notes: string | null;
   imported_payee: string | null;
@@ -109,12 +116,15 @@ affects the generated split rows. Object property order does not affect
 equality.
 
 Projection field names are the post-normalization native transaction field
-names. Missing booleans canonicalize to false and other optional fields to
-null. A missing amount canonicalizes to `0`, matching existing reconciliation
-and storage behavior. An empty `subtransactions` array canonicalizes to `null`.
+names, plus the normalized `payee_name` retained by the existing wrapper.
+Including `payee_name` keeps rule inputs fail-closed even when two names happen
+to resolve to the same payee. Missing booleans canonicalize to false and other
+optional fields to null. A missing amount canonicalizes to `0`, matching
+existing reconciliation and storage behavior. An empty `subtransactions`
+array canonicalizes to `null`.
 
-The following diagnostic or generated fields are not part of ledger-intent
-equality:
+The following diagnostic or generated fields are not part of pre-rule
+import-intent equality:
 
 - generated transaction, payee, and sort-order identifiers;
 - `raw_synced_data`;
@@ -124,9 +134,11 @@ equality:
 
 For a normalized-identical group, the lowest incoming index is the canonical
 row. Its diagnostic payload is retained. Later group members are reported as
-duplicates and are not matched, previewed as additions, or written. This
-first-index rule makes the result deterministic without treating diagnostic
-payload differences as financial conflicts.
+duplicates and are not rule-evaluated, matched, previewed as additions, or
+written. This first-index rule makes the result deterministic without treating
+diagnostic payload differences as financial conflicts. Rows that differ before
+rules remain a conflict even if current rules would later make their resulting
+transactions equal.
 
 `forceAddTransaction` does not bypass stable-ID safety. A forced row with a
 stable ID still participates in collision and exact-existing-row checks. A
@@ -160,8 +172,17 @@ type ReconcileIdentityResult =
       accountId: string;
       importedId: string;
       incomingIndexes: number[];
-      canonicalIncomingIndex: number;
+      canonicalIncomingIndex: number | null;
       existingTransactionIds: string[];
+    }
+  | {
+      code: 'ineligible_existing_identity';
+      reason: 'split_child';
+      accountId: string;
+      importedId: string;
+      incomingIndexes: number[];
+      canonicalIncomingIndex: number;
+      existingTransactionIds: [string];
     };
 
 type ReconcileTransactionsResult = {
@@ -181,19 +202,32 @@ Rules for this result:
 - `incomingIndexes` are zero-based positions in the original `transactions`
   argument. Normalizers retain that source index for every emitted row; rows
   skipped by normalization produce no identity result.
-- A single incoming row with one or zero exact existing rows produces no
-  identity result.
-- A conflicting group produces one `conflicting_incoming_identity` result and
-  no exact-existing lookup, mutation, or previewed add/update for any member.
+- A single incoming row with zero exact rows or one eligible top-level exact
+  row produces no identity result.
+- Every group is queried once for all exact existing rows before rules run.
+- Every exact existing row found by that pre-scan is reserved for the whole
+  reconciliation call, including rows in a quarantined group. A later no-ID or
+  changed-ID fuzzy row in the same batch cannot mutate an exact row whose
+  native identity is already being evaluated.
+- More than one exact existing row takes precedence over every incoming-group
+  result and produces one `ambiguous_existing_identity` result. Its canonical
+  index is null for a conflicting incoming group and otherwise the lowest
+  incoming index.
+- A conflicting group with zero or one exact existing row produces one
+  `conflicting_incoming_identity` result and no rule evaluation, mutation, or
+  previewed add/update for any member.
+- Exactly one exact existing split child is never selected. For a single or
+  normalized-identical incoming group it produces one
+  `ineligible_existing_identity` result with reason `split_child`. This result
+  takes precedence over `duplicate_incoming_identity`.
 - A normalized-identical group first selects its lowest-index canonical row and
-  performs the exact-existing lookup for that identity. With zero or one exact
-  existing row, it produces one `duplicate_incoming_identity` result containing
-  every group index and continues only with the canonical row.
-- More than one exact existing row takes precedence over
-  `duplicate_incoming_identity`: the normalized-identical group produces only
-  one `ambiguous_existing_identity` result containing every incoming index and
-  every exact existing transaction ID. It performs no exact or fuzzy mutation
-  for the incoming group or any of those existing rows.
+  produces one `duplicate_incoming_identity` result containing every group
+  index when there is no higher-precedence result. It continues only with the
+  canonical row.
+- Result precedence for one identity group is: ambiguous existing identity,
+  conflicting incoming identity, ineligible split-child identity, then
+  duplicate incoming identity. Each group still produces at most one identity
+  result.
 - Preview and commit calls return the same identity results for the same
   starting state.
 - The import API must pass `identityResults` through unchanged. When the
@@ -204,9 +238,31 @@ Rules for this result:
 These codes are machine-readable. User-facing copy is English and must not
 include raw provider payloads.
 
+### Native import visibility
+
+The native import API passes `identityResults` through unchanged for preview
+and commit. Its validation-error return includes `identityResults: []`.
+
+The existing import modal must not silently omit a quarantined identity group.
+Preview shows a persistent, accessible English summary when any identity result
+is present, while still allowing independent valid groups to proceed. Commit
+also emits a user-visible summary in case selection changes the final batch.
+The summary may include counts and these safe reason classes only:
+
+- repeated stable-ID rows collapsed to one row;
+- conflicting stable-ID rows skipped;
+- stable IDs matching multiple existing rows skipped; and
+- stable IDs matching split details skipped.
+
+It must not render imported IDs, transaction IDs, provider payloads, notes,
+payee text, account IDs, or other transaction content. The full review queue
+and per-candidate decisions remain owned by FIN-20 and FIN-21.
+
 ## Existing-row decision table
 
-The table is evaluated after incoming collision handling.
+The exact-row portion of this table is evaluated during the pre-rule pre-scan.
+The selected eligible row, if any, is carried into later rule evaluation and
+merge processing without a second exact query.
 
 | Incoming state      | Existing state                     | Path                         | Result                                                                                                                    |
 | ------------------- | ---------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
@@ -214,6 +270,7 @@ The table is evaluated after incoming collision handling.
 | Stable ID           | No exact row                       | Current configured bank sync | Retain the upstream non-strict fuzzy behavior only as characterized by FIN-16; do not generalize it to companion identity |
 | Stable ID           | Exactly one unreconciled exact row | Either                       | Exact match; apply only the field merge contract below                                                                    |
 | Stable ID           | Exactly one reconciled exact row   | Either                       | No mutation and no duplicate add; return the existing ignored/locked preview result                                       |
+| Stable ID           | Exactly one exact split child      | Either                       | `ineligible_existing_identity` with reason `split_child`; no exact or fuzzy fallback, rules, or mutation                  |
 | Stable ID           | More than one exact row            | Either                       | `ambiguous_existing_identity`; no exact or fuzzy fallback and no mutation                                                 |
 | No stable ID        | Any                                | Either                       | Use the characterized upstream fuzzy path; never create permanent identity from the fuzzy result                          |
 | Any                 | Candidate in a different account   | Either                       | Never match                                                                                                               |
@@ -227,6 +284,13 @@ does not reclassify that heuristic as exact identity, expose it to new callers,
 or use it for cross-source reconciliation. Companion-assisted changed-ID
 continuity remains review-only until a separate provider-neutral design is
 approved.
+
+After rules run for a surviving row, reconciliation pins `trans.account` back
+to the requested `acctId` and preserves the canonical pre-rule `imported_id`
+before fuzzy matching, preview, or mutation. A rule cannot move an import or
+its reconciliation target to another account or identity. This matches the
+existing `addTransactions` account boundary. Rule-generated payees remain
+permitted only for surviving rows.
 
 ## Exact-match field merge
 
@@ -303,28 +367,30 @@ propagation follows the exact-match merge table. Incoming split children do not
 replace existing children.
 
 A split child must never be selected directly. FIN-16 includes an explicit
-regression characterization; if current upstream behavior permits a child
-selection, the hardening implementation must filter children before enabling
-the project flow.
+regression characterization of the current unsafe fuzzy selection. FIN-17
+filters split children from both strict and non-strict fuzzy candidate queries.
+An exact split-child identity is not silently filtered into an add; it returns
+`ineligible_existing_identity` and makes no mutation.
 
 ## Incoming batch decision table
 
-| Scenario                                                 | Mutation for that identity group                  | Report                                                 |
-| -------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------ |
-| One stable-ID row                                        | Continue to existing-row decision                 | None unless existing identity is ambiguous             |
-| Same stable ID, normalized-identical rows                | Evaluate the first row once                       | One `duplicate_incoming_identity` result               |
-| Same stable ID, different ledger intent                  | None                                              | One `conflicting_incoming_identity` result             |
-| Same stable ID, identical intent, one exact existing row | Update/ignore the existing row once               | Duplicate result plus normal preview                   |
-| Same stable ID, more than one exact existing row         | None                                              | One `ambiguous_existing_identity` result               |
-| Conflict group plus independent valid groups             | Conflict group does nothing; valid groups proceed | Ordered results for affected groups                    |
-| Repeated rows with no stable ID                          | No collision collapse                             | Existing fuzzy/add behavior                            |
-| Same date/amount/merchant, distinct stable IDs           | Treat as distinct identities in strict mode       | No collision result                                    |
-| Same identity in different accounts                      | Treat as two account-scoped identities            | No cross-account match                                 |
-| `forceAddTransaction` repeats a stable ID                | Do not bypass the guard                           | Duplicate, conflict, or ambiguity result as applicable |
+| Scenario                                                 | Mutation for that identity group                  | Report                                        |
+| -------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
+| One stable-ID row                                        | Continue only with an eligible existing identity  | None, ambiguity, or split-child ineligibility |
+| Same stable ID, normalized-identical rows                | Evaluate the first row once                       | One `duplicate_incoming_identity` result      |
+| Same stable ID, different pre-rule import intent         | None                                              | One `conflicting_incoming_identity` result    |
+| Same stable ID, identical intent, one exact existing row | Update/ignore the existing row once               | Duplicate result plus normal preview          |
+| Same stable ID, one exact split child                    | None                                              | One `ineligible_existing_identity` result     |
+| Same stable ID, more than one exact existing row         | None                                              | One `ambiguous_existing_identity` result      |
+| Conflict group plus independent valid groups             | Conflict group does nothing; valid groups proceed | Ordered results for affected groups           |
+| Repeated rows with no stable ID                          | No collision collapse                             | Existing fuzzy/add behavior                   |
+| Same date/amount/merchant, distinct stable IDs           | Treat as distinct identities in strict mode       | No collision result                           |
+| Same identity in different accounts                      | Treat as two account-scoped identities            | No cross-account match                        |
+| `forceAddTransaction` repeats a stable ID                | Do not bypass the guard                           | The same identity result as an unforced row   |
 
-The pre-scan is complete before any payee or transaction write. A conflicting
-group therefore cannot leave a payee created solely for one of its discarded
-rows.
+The pre-scan is complete before any rule, payee, or transaction write. A
+conflicting, ambiguous, or ineligible group therefore cannot leave a payee
+created solely for one of its discarded rows.
 
 ## Deleted rows
 
@@ -424,8 +490,11 @@ Primary implementation and test files:
 
 - `packages/loot-core/src/server/accounts/sync.ts`;
 - `packages/loot-core/src/server/accounts/sync.test.ts`; and
-- `packages/loot-core/src/server/accounts/app.ts` only as needed to pass
-  `identityResults` through the import API.
+- `packages/loot-core/src/server/accounts/app.ts` plus its focused tests to pass
+  `identityResults` through the import API;
+- `packages/desktop-client/src/accounts/mutations.ts`; and
+- the existing import modal and its focused tests for safe aggregate
+  visibility.
 
 FIN-17 regression tests must first fail against the characterized baseline and
 then pass for:
@@ -447,8 +516,17 @@ then pass for:
 13. preview and commit returning identical ordered identity results;
 14. no payee created solely for a quarantined group, including when a
     `payee_name` rule would otherwise create a new payee;
-15. a reconciled exact match staying locked; and
-16. existing deleted-row and bank-sync behavior remaining green.
+15. a rule that changes account not moving the reconciliation target;
+16. a single and repeated stable ID matching an exact split child;
+17. strict and non-strict fuzzy queries excluding split children;
+18. `forceAddTransaction` not bypassing an exact stable-ID match;
+19. exact rows in a quarantined group remaining unavailable to an independent
+    fuzzy row in the same call;
+20. a reconciled exact match staying locked;
+21. API success and validation-error result forwarding;
+22. safe aggregate import-modal copy with no raw identity or transaction
+    content; and
+23. existing deleted-row and bank-sync behavior remaining green.
 
 Every case asserts transaction counts, added and updated IDs, identity result
 codes and ordering, protected fields, cleared/reconciled state, and idempotent
