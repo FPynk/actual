@@ -5,12 +5,35 @@ import path from 'node:path';
 
 import type { FinanceCompanionConfiguration } from '#config';
 import { createFinanceCompanionHttpApplication } from '#http/server';
+import {
+  createFinanceCompanionSecurity,
+  createInMemoryLocalPrincipalRepository,
+} from '#security/local-security';
 
 const configuration: FinanceCompanionConfiguration = {
   bindAddress: '127.0.0.1',
   port: 4100,
   origin: 'http://127.0.0.1:4100',
+  dataDirectory: 'C:\\companion-data',
+  databasePath: 'C:\\companion-data\\companion.sqlite',
+  integrityAnchorPath: 'C:\\integrity.anchor',
+  integrityMacKeyFile: 'C:\\integrity.key',
+  integrityMacKey: undefined,
+  budgetKeyHash: 'a'.repeat(64),
+  budgetCurrencyCode: 'USD',
+  ownerBootstrapCredential: undefined,
+  ownerBootstrapCredentialFile: undefined,
 };
+
+const ownerCredential = Buffer.alloc(32, 7).toString('base64url');
+let security: Awaited<ReturnType<typeof createFinanceCompanionSecurity>>;
+
+beforeAll(async () => {
+  security = await createFinanceCompanionSecurity({
+    bootstrapCredential: ownerCredential,
+    localPrincipalRepository: createInMemoryLocalPrincipalRepository(),
+  });
+});
 
 describe('createFinanceCompanionHttpApplication', () => {
   it('serves the minimal health payload and static login shell without auth routes', async () => {
@@ -18,6 +41,7 @@ describe('createFinanceCompanionHttpApplication', () => {
       createFinanceCompanionHttpApplication(
         configuration,
         path.resolve(import.meta.dirname, '../..'),
+        security,
       ),
     );
     await listen(server);
@@ -29,7 +53,7 @@ describe('createFinanceCompanionHttpApplication', () => {
       expect(health.headers['access-control-allow-origin']).toBeUndefined();
       expect(health.body).toBe('{"status":"healthy","version":"0.0.1"}');
       expect(loginShell.body).toContain('Finance Companion');
-      expect(loginEndpoint.statusCode).toBe(404);
+      expect(loginEndpoint.statusCode).toBe(403);
     } finally {
       await close(server);
     }
@@ -40,6 +64,7 @@ describe('createFinanceCompanionHttpApplication', () => {
       createFinanceCompanionHttpApplication(
         { ...configuration, bindAddress: '0.0.0.0' },
         '.',
+        security,
       ),
     ).toThrow('Finance Companion only supports the 127.0.0.1 bind address.');
   });
@@ -49,6 +74,7 @@ describe('createFinanceCompanionHttpApplication', () => {
       createFinanceCompanionHttpApplication(
         configuration,
         path.resolve(import.meta.dirname, '../..'),
+        security,
       ),
     );
     await listen(server);
@@ -61,11 +87,45 @@ describe('createFinanceCompanionHttpApplication', () => {
     }
   });
 
+  it('requires exact Origin and JSON for login, then returns a strict session cookie', async () => {
+    const server = createServer(
+      createFinanceCompanionHttpApplication(
+        configuration,
+        path.resolve(import.meta.dirname, '../..'),
+        security,
+      ),
+    );
+    await listen(server);
+    try {
+      const requestBody = JSON.stringify({ credential: ownerCredential });
+      const response = await rawRequest(
+        server,
+        [
+          'POST /api/v1/session HTTP/1.1',
+          'Host: 127.0.0.1:4100',
+          'Origin: http://127.0.0.1:4100',
+          'Content-Type: application/json; charset=utf-8',
+          `Content-Length: ${Buffer.byteLength(requestBody)}`,
+          'Connection: close',
+          '',
+          requestBody,
+        ].join('\r\n'),
+      );
+      expect(response).toMatch(/^HTTP\/1\.1 201 /);
+      expect(response).toContain('HttpOnly; SameSite=Strict; Path=/');
+      expect(response).toContain('Cache-Control: no-store');
+      expect(response).not.toContain(ownerCredential);
+    } finally {
+      await close(server);
+    }
+  });
+
   it('rejects duplicate raw Host headers', async () => {
     const server = createServer(
       createFinanceCompanionHttpApplication(
         configuration,
         path.resolve(import.meta.dirname, '../..'),
+        security,
       ),
     );
     await listen(server);
@@ -82,7 +142,55 @@ describe('createFinanceCompanionHttpApplication', () => {
         ].join('\r\n'),
       );
       expect(response).toMatch(/^HTTP\/1\.1 400 /);
-      expect(response).toContain('\r\n\r\nBad Request');
+      expect(response).toContain('"code":"host_rejected"');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('returns the exact frozen internal error response without exception detail', async () => {
+    const server = createServer(
+      createFinanceCompanionHttpApplication(
+        configuration,
+        path.resolve(import.meta.dirname, '../..'),
+        {
+          ...security,
+          login: async () => {
+            throw new Error('synthetic private failure detail');
+          },
+        },
+      ),
+    );
+    await listen(server);
+    try {
+      const requestBody = JSON.stringify({ credential: ownerCredential });
+      const response = await rawRequest(
+        server,
+        [
+          'POST /api/v1/session HTTP/1.1',
+          'Host: 127.0.0.1:4100',
+          'Origin: http://127.0.0.1:4100',
+          'Content-Type: application/json; charset=utf-8',
+          `Content-Length: ${Buffer.byteLength(requestBody)}`,
+          'Connection: close',
+          '',
+          requestBody,
+        ].join('\r\n'),
+      );
+      expect(response).toMatch(/^HTTP\/1\.1 500 /);
+      const body = JSON.parse(
+        response.slice(response.indexOf('\r\n\r\n') + 4),
+      ) as {
+        code: string;
+        message: string;
+        retryable: boolean;
+      };
+      expect(body).toMatchObject({
+        code: 'internal_error',
+        message: 'The operation failed.',
+        retryable: false,
+      });
+      expect(response).not.toContain('synthetic private failure detail');
     } finally {
       await close(server);
     }
@@ -144,7 +252,7 @@ function rawRequest(server: Server, message: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const socket = createConnection({ host: '127.0.0.1', port }, () => {
-      socket.end(message);
+      socket.write(message);
     });
     socket.on('data', chunk => chunks.push(Buffer.from(chunk)));
     socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));

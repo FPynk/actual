@@ -2,6 +2,7 @@ import {
   FinanceCompanionConfigurationError,
   loadFinanceCompanionConfiguration,
 } from '#config';
+import { calculateBudgetKeyHash } from '#integrity/canonical-hash';
 
 function validEnvironment(): Record<string, string> {
   return {
@@ -28,6 +29,18 @@ describe('loadFinanceCompanionConfiguration', () => {
       bindAddress: '127.0.0.1',
       port: 4100,
       origin: 'http://127.0.0.1:4100',
+      dataDirectory: 'C:\\companion-data',
+      databasePath: 'C:\\companion-data\\companion.sqlite',
+      integrityAnchorPath: 'C:\\integrity.anchor',
+      integrityMacKeyFile: 'C:\\integrity.key',
+      integrityMacKey: undefined,
+      budgetKeyHash: calculateBudgetKeyHash(
+        'https://actual.example.test',
+        'budget-id',
+      ),
+      budgetCurrencyCode: 'USD',
+      ownerBootstrapCredential: undefined,
+      ownerBootstrapCredentialFile: undefined,
     });
   });
 
@@ -81,6 +94,18 @@ describe('loadFinanceCompanionConfiguration', () => {
       bindAddress: '127.0.0.1',
       port: 4100,
       origin: 'http://127.0.0.1:4100',
+      dataDirectory: 'C:\\companion-data',
+      databasePath: 'C:\\companion-data\\companion.sqlite',
+      integrityAnchorPath: 'C:\\integrity.anchor',
+      integrityMacKeyFile: 'C:\\integrity.key',
+      integrityMacKey: undefined,
+      budgetKeyHash: calculateBudgetKeyHash(
+        'https://actual.example.test',
+        'budget-id',
+      ),
+      budgetCurrencyCode: 'USD',
+      ownerBootstrapCredential: undefined,
+      ownerBootstrapCredentialFile: undefined,
     });
     expect(environment.FINANCE_COMPANION_ACTUAL_PASSWORD).toBe(
       'development-password',
@@ -93,6 +118,18 @@ describe('loadFinanceCompanionConfiguration', () => {
         bindAddress: '127.0.0.1',
         port: 4100,
         origin: 'http://127.0.0.1:4100',
+        dataDirectory: 'C:\\companion-data',
+        databasePath: 'C:\\companion-data\\companion.sqlite',
+        integrityAnchorPath: 'C:\\integrity.anchor',
+        integrityMacKeyFile: 'C:\\integrity.key',
+        integrityMacKey: undefined,
+        budgetKeyHash: calculateBudgetKeyHash(
+          'https://actual.example.test',
+          'budget-id',
+        ),
+        budgetCurrencyCode: 'USD',
+        ownerBootstrapCredential: 'synthetic-owner-secret',
+        ownerBootstrapCredentialFile: undefined,
       });
       for (const secretEnvironmentName of directSecretEnvironmentNames) {
         expect(process.env[secretEnvironmentName]).toBeUndefined();
@@ -126,10 +163,44 @@ describe('loadFinanceCompanionConfiguration', () => {
       FinanceCompanionConfigurationError,
     );
   });
+
+  it('accepts only a canonical 32-byte development integrity key source', () => {
+    const integrityMacKey = Buffer.alloc(32, 4).toString('base64url');
+    const configuration = loadFinanceCompanionConfiguration({
+      ...validEnvironment(),
+      FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE: undefined,
+      FINANCE_COMPANION_INTEGRITY_MAC_KEY: integrityMacKey,
+    });
+    expect(configuration.integrityMacKeyFile).toBeUndefined();
+    expect(configuration.integrityMacKey).toBe(integrityMacKey);
+    expect(() =>
+      loadFinanceCompanionConfiguration({
+        ...validEnvironment(),
+        FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE: undefined,
+        FINANCE_COMPANION_INTEGRITY_MAC_KEY: 'invalid',
+      }),
+    ).toThrow('Invalid configuration for FINANCE_COMPANION_INTEGRITY_MAC_KEY.');
+  });
+
+  it('clears the direct integrity key from process.env after loading', () => {
+    const integrityMacKey = Buffer.alloc(32, 5).toString('base64url');
+    withSyntheticProcessEnvironment(
+      {
+        FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE: undefined,
+        FINANCE_COMPANION_INTEGRITY_MAC_KEY: integrityMacKey,
+      },
+      () => {
+        expect(loadFinanceCompanionConfiguration().integrityMacKey).toBe(
+          integrityMacKey,
+        );
+        expect(process.env.FINANCE_COMPANION_INTEGRITY_MAC_KEY).toBeUndefined();
+      },
+    );
+  });
 });
 
 function withSyntheticProcessEnvironment(
-  overrides: Readonly<Record<string, string>>,
+  overrides: Readonly<Record<string, string | undefined>>,
   runAssertion: () => void,
 ): void {
   const syntheticEnvironment = {
@@ -144,7 +215,13 @@ function withSyntheticProcessEnvironment(
   );
 
   try {
-    Object.assign(process.env, syntheticEnvironment);
+    for (const [name, value] of Object.entries(syntheticEnvironment)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
     runAssertion();
   } finally {
     for (const [name, originalValue] of originalValues) {

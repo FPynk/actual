@@ -34,7 +34,7 @@ export type InitializeCompanionDatabaseRequest = Readonly<{
   anchorMacKey: Buffer;
   budgetKeyHash: string;
   budgetCurrencyCode: string;
-  ownerCredentialHash: string;
+  createOwnerCredentialHash: () => Promise<string>;
 }>;
 
 export type MigrationResult = Readonly<{
@@ -90,13 +90,16 @@ export async function initializeCompanionDatabaseAndAnchor(
         database.close();
       }
     }
+    const ownerCredentialHash = await request.createOwnerCredentialHash();
+    if (ownerCredentialHash.length === 0) {
+      throw new Error('An owner credential must be configured before startup.');
+    }
     const database = openCompanionDatabase(paths.databasePath);
     try {
-      const result = applyInitialMigrationAndInitialize(
-        database,
-        migrations,
-        request,
-      );
+      const result = applyInitialMigrationAndInitialize(database, migrations, {
+        ...request,
+        ownerCredentialHash,
+      });
       await writeNewIntegrityAnchor(
         paths.anchorPath,
         createGenerationZeroAnchor(request.budgetKeyHash),
@@ -112,7 +115,8 @@ export async function initializeCompanionDatabaseAndAnchor(
 function applyInitialMigrationAndInitialize(
   database: CompanionDatabase,
   migrations: readonly Migration[],
-  request: InitializeCompanionDatabaseRequest,
+  request: InitializeCompanionDatabaseRequest &
+    Readonly<{ ownerCredentialHash: string }>,
 ): MigrationResult {
   const migration = migrations[0];
   if (migration === undefined || migrations.length !== 1) {
@@ -363,7 +367,8 @@ function isMissingPathError(error: unknown): boolean {
 
 function initializeOrReadInstance(
   database: CompanionDatabase,
-  request: InitializeCompanionDatabaseRequest,
+  request: InitializeCompanionDatabaseRequest &
+    Readonly<{ ownerCredentialHash?: string }>,
 ): MigrationResult {
   const existing = database
     .prepare(
@@ -394,6 +399,9 @@ function initializeOrReadInstance(
   }
   const instanceId = randomUUID();
   const principalId = randomUUID();
+  if (request.ownerCredentialHash === undefined) {
+    throw new Error('An owner credential must be configured before startup.');
+  }
   database.transaction(() => {
     const createdAt = new Date().toISOString();
     database

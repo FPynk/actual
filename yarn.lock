@@ -184,6 +184,7 @@ __metadata:
     "@types/express": "npm:^5.0.6"
     "@types/node": "npm:^22.20.1"
     "@typescript/native-preview": "npm:beta"
+    argon2: "npm:^0.44.0"
     express: "npm:^5.2.1"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.1.5"

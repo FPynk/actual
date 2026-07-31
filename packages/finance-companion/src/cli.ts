@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 
 import { loadFinanceCompanionConfiguration } from './config.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
+import { createFinanceCompanionSecurity } from './security/local-security.ts';
+import type { LocalPrincipalRepository } from './security/local-security.ts';
+import { createDurableLocalPrincipalRepository } from './service/durable-principal-repository.ts';
 
 const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
@@ -31,6 +34,14 @@ export async function runFinanceCompanionCommand(
   writeStandardOutput: (message: string) => void,
   writeStandardError: (message: string) => void,
   loadConfiguration = loadFinanceCompanionConfiguration,
+  loadLocalPrincipalRepository: (
+    configuration: ReturnType<typeof loadFinanceCompanionConfiguration>,
+  ) => Promise<LocalPrincipalRepository> = configuration =>
+    createDurableLocalPrincipalRepository(
+      configuration,
+      path.resolve(import.meta.dirname, '../migrations'),
+    ),
+  startHttpServer = startFinanceCompanionHttpServer,
 ): Promise<number> {
   if (isFeatureNotImplementedCommand(command)) {
     const result: FeatureNotImplementedCommandResult = {
@@ -46,9 +57,16 @@ export async function runFinanceCompanionCommand(
     writeStandardError('{"ok":false,"code":"invalid_command"}\n');
     return 64;
   }
-  const server = await startFinanceCompanionHttpServer(
-    loadConfiguration(),
+  const configuration = loadConfiguration();
+  const security = await createFinanceCompanionSecurity({
+    bootstrapCredential: configuration.ownerBootstrapCredential,
+    bootstrapCredentialFile: configuration.ownerBootstrapCredentialFile,
+    localPrincipalRepository: await loadLocalPrincipalRepository(configuration),
+  });
+  const server = await startHttpServer(
+    configuration,
     path.resolve(import.meta.dirname, '../ui'),
+    security,
   );
   const closeServer = () =>
     void new Promise<void>(resolve => server.close(() => resolve())).then(() =>
