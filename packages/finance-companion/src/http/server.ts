@@ -9,9 +9,19 @@ import path from 'node:path';
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 
+import type { ActualAdapter } from '#actual/adapter';
 import type { FinanceCompanionConfiguration } from '#config';
+import type { SourceIdentityRepository } from '#database/source-identity-repository';
 import { calculateRequestReplayHash } from '#http/request-idempotency';
 import type { AmazonUploadSemanticRequest } from '#http/request-idempotency';
+import {
+  createReconciliationReviewCandidateDto,
+  createReconciliationReviewListDto,
+  readReconciliationReviewCandidate,
+  readReconciliationReviewEvidence,
+} from '#reconciliation-review';
+import { decideReconciliationCandidate } from '#reconciliation/candidates';
+import type { ReconciliationCandidateRepository } from '#reconciliation/candidates';
 import type { FinanceCompanionSecurity } from '#security/local-security';
 import { createFinanceCompanionHealth } from '#service/health';
 import { validateIdempotencyKey } from '#service/request-replay-repository';
@@ -26,8 +36,16 @@ const UPLOAD_TEMPORARY_DIRECTORY_PREFIX = 'finance-companion-upload-';
 type FinanceCompanionListenerConfiguration = Readonly<{
   bindAddress: string;
   budgetKeyHash: FinanceCompanionConfiguration['budgetKeyHash'];
+  budgetCurrencyCode: FinanceCompanionConfiguration['budgetCurrencyCode'];
   origin: FinanceCompanionConfiguration['origin'];
   port: number;
+}>;
+
+export type ReconciliationReviewDependencies = Readonly<{
+  adapter: ActualAdapter;
+  candidateRepository: ReconciliationCandidateRepository;
+  sourceIdentityRepository: SourceIdentityRepository;
+  now?: () => Date;
 }>;
 
 type IdempotentRequest = Request & {
@@ -40,6 +58,7 @@ export function createFinanceCompanionHttpApplication(
   security: FinanceCompanionSecurity,
   requestReplayRepository: RequestReplayRepository,
   uploadTemporaryParentDirectory = tmpdir(),
+  reconciliationReview?: ReconciliationReviewDependencies,
 ): Express {
   if (configuration.bindAddress !== '127.0.0.1') {
     throw new Error(
@@ -98,7 +117,7 @@ export function createFinanceCompanionHttpApplication(
     '/api/v1/session',
     requireExactOrigin(configuration.origin),
     requireSession(security, true),
-    (request, response) => {
+    async (request, response) => {
       security.revokeSession(readSessionId(request));
       response
         .status(204)
@@ -109,6 +128,14 @@ export function createFinanceCompanionHttpApplication(
         .end();
     },
   );
+  if (reconciliationReview !== undefined) {
+    addReconciliationReviewRoutes(
+      application,
+      configuration,
+      security,
+      reconciliationReview,
+    );
+  }
   application.post(
     '/api/v1/imports/amazon',
     requireExactOrigin(configuration.origin),
@@ -141,6 +168,11 @@ export function createFinanceCompanionHttpApplication(
   application.use(
     express.static(path.resolve(staticUiDirectory), { index: 'index.html' }),
   );
+  application.get(
+    ['/reconciliation', '/reconciliation/:reviewId'],
+    (_request, response) =>
+      response.sendFile(path.resolve(staticUiDirectory, 'index.html')),
+  );
   application.use((_request, response) => sendProblem(response, 'not_found'));
   application.use(
     (
@@ -170,6 +202,7 @@ export async function startFinanceCompanionHttpServer(
   staticUiDirectory: string,
   security: FinanceCompanionSecurity,
   requestReplayRepository: RequestReplayRepository,
+  reconciliationReview?: ReconciliationReviewDependencies,
 ): Promise<Server> {
   requestReplayRepository.recoverCompanionOnlyInterruptedRequests();
   const server = createServer(
@@ -178,6 +211,8 @@ export async function startFinanceCompanionHttpServer(
       staticUiDirectory,
       security,
       requestReplayRepository,
+      undefined,
+      reconciliationReview,
     ),
   );
   server.headersTimeout = 10 * 1000;
@@ -191,6 +226,127 @@ export async function startFinanceCompanionHttpServer(
     });
   });
   return server;
+}
+
+function addReconciliationReviewRoutes(
+  application: Express,
+  configuration: FinanceCompanionListenerConfiguration,
+  security: FinanceCompanionSecurity,
+  reconciliationReview: ReconciliationReviewDependencies,
+): void {
+  const listPath = '/api/v1/reconciliation-candidates';
+  application.get(
+    listPath,
+    requireSession(security, false),
+    (_request, response) => {
+      response.json(
+        createReconciliationReviewListDto(
+          reconciliationReview.candidateRepository,
+          configuration.budgetKeyHash,
+        ),
+      );
+    },
+  );
+  application.get(
+    `${listPath}/:reviewId`,
+    requireSession(security, false),
+    async (request, response) => {
+      const resolved = readReconciliationReviewCandidate(
+        reconciliationReview.candidateRepository,
+        request.params.reviewId,
+        configuration.budgetKeyHash,
+      );
+      if (resolved === null) {
+        sendProblem(response, 'not_found');
+        return;
+      }
+      const candidates = reconciliationReview.candidateRepository.list();
+      response.json(
+        createReconciliationReviewCandidateDto(
+          resolved,
+          candidates,
+          configuration.budgetKeyHash,
+          await readReconciliationReviewEvidence(resolved, {
+            adapter: reconciliationReview.adapter,
+            budgetKeyHash: configuration.budgetKeyHash,
+            currencyCode: configuration.budgetCurrencyCode,
+            sourceIdentityRepository:
+              reconciliationReview.sourceIdentityRepository,
+          }),
+        ),
+      );
+    },
+  );
+  application.post(
+    `${listPath}/:reviewId/decision`,
+    requireExactOrigin(configuration.origin),
+    requireSession(security, true),
+    requireJsonContentType,
+    express.json({
+      limit: JSON_LIMIT,
+      strict: true,
+      type: request => request.headers['content-type'] === JSON_CONTENT_TYPE,
+    }),
+    async (request, response) => {
+      const decision = readReconciliationDecision(request.body);
+      const resolved = readReconciliationReviewCandidate(
+        reconciliationReview.candidateRepository,
+        request.params.reviewId,
+        configuration.budgetKeyHash,
+      );
+      if (decision === null) {
+        sendProblem(response, 'invalid_request');
+        return;
+      }
+      if (resolved === null) {
+        sendProblem(response, 'not_found');
+        return;
+      }
+      const candidate = await decideReconciliationCandidate({
+        adapter: reconciliationReview.adapter,
+        candidateId: resolved.id,
+        candidateRepository: reconciliationReview.candidateRepository,
+        decidedAt: (
+          reconciliationReview.now ?? (() => new Date())
+        )().toISOString(),
+        decisionNote: decision.note,
+        status: decision.status,
+      });
+      const candidates = reconciliationReview.candidateRepository.list();
+      response.json(
+        createReconciliationReviewCandidateDto(
+          candidate,
+          candidates,
+          configuration.budgetKeyHash,
+          await readReconciliationReviewEvidence(candidate, {
+            adapter: reconciliationReview.adapter,
+            budgetKeyHash: configuration.budgetKeyHash,
+            currencyCode: configuration.budgetCurrencyCode,
+            sourceIdentityRepository:
+              reconciliationReview.sourceIdentityRepository,
+          }),
+        ),
+      );
+    },
+  );
+}
+
+function readReconciliationDecision(
+  value: unknown,
+): Readonly<{ status: 'approved' | 'rejected'; note: string | null }> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    !Object.keys(record).every(key => key === 'status' || key === 'note') ||
+    (record.status !== 'approved' && record.status !== 'rejected') ||
+    (record.note !== undefined &&
+      (typeof record.note !== 'string' || record.note.length > 1_000))
+  ) {
+    return null;
+  }
+  return { status: record.status, note: record.note ?? null };
 }
 
 function createLoopbackBoundary(

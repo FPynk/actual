@@ -23,15 +23,7 @@ export async function runConfiguredBankSyncJob(
 ): Promise<BankSyncJobSummary> {
   const principal = await principalRepository.readOwner();
   if (principal === null) throw new BankSyncJobError('configuration_error');
-  const instanceId = readCompanionInstanceId(configuration.databasePath);
-  const adapterConfiguration = await readAdapterConfiguration(
-    configuration,
-    instanceId,
-  );
-  const adapter = createActualAdapter(
-    adapterConfiguration,
-    createForkedAdapterWorkerRunner(adapterConfiguration),
-  );
+  const adapter = await createConfiguredActualAdapter(configuration);
   return runOneShotBankSyncJob(
     { ...command, principalId: principal.id },
     {
@@ -40,6 +32,20 @@ export async function runConfiguredBankSyncJob(
       repository: createSqliteBankSyncJobRepository(configuration.databasePath),
       signal,
     },
+  );
+}
+
+export async function createConfiguredActualAdapter(
+  configuration: FinanceCompanionConfiguration,
+) {
+  const instanceId = readCompanionInstanceId(configuration.databasePath);
+  const adapterConfiguration = await readAdapterConfiguration(
+    configuration,
+    instanceId,
+  );
+  return createActualAdapter(
+    adapterConfiguration,
+    createForkedAdapterWorkerRunner(adapterConfiguration),
   );
 }
 

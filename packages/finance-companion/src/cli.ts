@@ -2,10 +2,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadFinanceCompanionConfiguration } from './config.ts';
+import { openCompanionDatabase } from './database/connection.ts';
+import { createSqliteSourceIdentityRepository } from './database/source-identity-repository.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
+import { SqliteReconciliationCandidateRepository } from './reconciliation/sqlite-reconciliation-candidate-repository.ts';
 import { createFinanceCompanionSecurity } from './security/local-security.ts';
 import type { LocalPrincipalRepository } from './security/local-security.ts';
-import { runConfiguredBankSyncJob } from './service/bank-sync-cli.ts';
+import {
+  createConfiguredActualAdapter,
+  runConfiguredBankSyncJob,
+} from './service/bank-sync-cli.ts';
 import {
   bankSyncExitCode,
   BankSyncJobError,
@@ -111,15 +117,33 @@ export async function runFinanceCompanionCommand(
     bootstrapCredentialFile: configuration.ownerBootstrapCredentialFile,
     localPrincipalRepository: await loadLocalPrincipalRepository(configuration),
   });
+  const reviewDatabase =
+    startHttpServer === startFinanceCompanionHttpServer
+      ? openCompanionDatabase(configuration.databasePath, true)
+      : undefined;
   const server = await startHttpServer(
     configuration,
     path.resolve(import.meta.dirname, '../ui'),
     security,
     createSqliteRequestReplayRepository(configuration.databasePath),
+    reviewDatabase === undefined
+      ? undefined
+      : {
+          adapter: await createConfiguredActualAdapter(configuration),
+          candidateRepository: new SqliteReconciliationCandidateRepository(
+            reviewDatabase,
+          ),
+          sourceIdentityRepository: createSqliteSourceIdentityRepository(
+            configuration.databasePath,
+          ),
+        },
   );
   const closeServer = () =>
-    void new Promise<void>(resolve => server.close(() => resolve())).then(() =>
-      process.exit(0),
+    void new Promise<void>(resolve => server.close(() => resolve())).then(
+      () => {
+        reviewDatabase?.close();
+        process.exit(0);
+      },
     );
   process.once('SIGINT', closeServer);
   process.once('SIGTERM', closeServer);
