@@ -52,6 +52,9 @@ import { ReportTopbar } from '#components/reports/ReportTopbar';
 import type { SavedStatus } from '#components/reports/SaveReportMenu';
 import { setSessionReport } from '#components/reports/setSessionReport';
 import { createCustomSpreadsheet } from '#components/reports/spreadsheets/custom-spreadsheet';
+import { calculateExpenditureMetrics } from '#components/reports/spreadsheets/expenditure-metrics';
+import type { ExpenditureMetrics } from '#components/reports/spreadsheets/expenditure-metrics';
+import { fetchExpenditureMetricRows } from '#components/reports/spreadsheets/expenditureMetricsQuery';
 import { createGroupedSpreadsheet } from '#components/reports/spreadsheets/grouped-spreadsheet';
 import { useReport } from '#components/reports/useReport';
 import { calculateHasWarning, fromDateRepr } from '#components/reports/util';
@@ -64,6 +67,7 @@ import { useNavigate } from '#hooks/useNavigate';
 import { usePayees } from '#hooks/usePayees';
 import { useReport as useCustomReport } from '#hooks/useReport';
 import { useRuleConditionFilters } from '#hooks/useRuleConditionFilters';
+import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 
 /**
@@ -601,8 +605,50 @@ function CustomReportInner({
     graphType,
     firstDayOfWeekIdx,
   ]);
+  const getExpenditureMetrics = useMemo(() => {
+    return async (
+      _spreadsheet: ReturnType<typeof useSpreadsheet>,
+      setData: (data: ExpenditureMetrics | 'error') => void,
+    ) => {
+      if (!viewSummary) {
+        return;
+      }
+
+      try {
+        const { filters } = await send('make-filters-from-conditions', {
+          conditions: conditions.filter(condition => !condition.customName),
+        });
+        const rows = await fetchExpenditureMetricRows({
+          startDate,
+          endDate,
+          conditionsOpKey: conditionsOp === 'or' ? '$or' : '$and',
+          filters,
+          currency: format.currency.code,
+          showHiddenCategories,
+          showUncategorized,
+        });
+
+        setData(calculateExpenditureMetrics({ startDate, endDate, rows }));
+      } catch {
+        setData('error');
+      }
+    };
+  }, [
+    viewSummary,
+    conditions,
+    conditionsOp,
+    startDate,
+    endDate,
+    format.currency.code,
+    showHiddenCategories,
+    showUncategorized,
+  ]);
   const graphData = useReport('default', getGraphData);
   const groupedData = useReport('grouped', getGroupData);
+  const expenditureMetrics = useReport<ExpenditureMetrics | 'error'>(
+    'expenditure-metrics',
+    getExpenditureMetrics,
+  );
 
   const data: DataEntity | null = graphData
     ? { ...graphData, groupedData }
@@ -1009,7 +1055,7 @@ function CustomReportInner({
             id="custom-report-content"
             style={{
               backgroundColor: theme.tableBackground,
-              flexDirection: 'row',
+              flexDirection: isNarrowWidth ? 'column' : 'row',
               flex: '1 0 auto',
             }}
           >
@@ -1069,12 +1115,13 @@ function CustomReportInner({
                 )}
               </View>
             </View>
-            {(viewLegend || viewSummary) && data && !isNarrowWidth && (
+            {(viewLegend || viewSummary) && data && (
               <View
                 style={{
                   padding: 10,
-                  minWidth: 300,
+                  minWidth: isNarrowWidth ? undefined : 300,
                   textAlign: 'center',
+                  width: isNarrowWidth ? '100%' : undefined,
                 }}
               >
                 {viewSummary && (
@@ -1085,6 +1132,7 @@ function CustomReportInner({
                     data={data}
                     interval={interval}
                     intervalsCount={intervals.length}
+                    expenditureMetrics={expenditureMetrics}
                   />
                 )}
                 {viewLegend && (

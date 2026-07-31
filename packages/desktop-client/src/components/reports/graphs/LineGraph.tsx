@@ -23,6 +23,7 @@ import {
 } from 'recharts';
 
 import { FinancialText } from '#components/FinancialText';
+import { PrivacyFilter } from '#components/PrivacyFilter';
 import { useRechartsAnimation } from '#components/reports/chart-theme';
 import { Container } from '#components/reports/Container';
 import { getCustomTick } from '#components/reports/getCustomTick';
@@ -113,7 +114,9 @@ const CustomTooltip = ({
                     left={displayName}
                     right={
                       <FinancialText>
-                        {format(p.value, 'financial')}
+                        <PrivacyFilter>
+                          {format(p.value, 'financial')}
+                        </PrivacyFilter>
                       </FinancialText>
                     }
                     style={{
@@ -129,7 +132,11 @@ const CustomTooltip = ({
             <AlignedText
               left={t('Total')}
               right={
-                <FinancialText>{format(sumTotals, 'financial')}</FinancialText>
+                <FinancialText>
+                  <PrivacyFilter>
+                    {format(sumTotals, 'financial')}
+                  </PrivacyFilter>
+                </FinancialText>
               }
               style={{
                 fontWeight: 600,
