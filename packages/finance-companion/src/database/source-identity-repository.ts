@@ -95,13 +95,15 @@ export function createSqliteSourceIdentityRepository(
     recordObservation: observation =>
       withDatabase(databasePath, database =>
         database
-          .transaction(() => recordSourceObservation(database, observation))
+          .transaction(() =>
+            recordSourceObservationInTransaction(database, observation),
+          )
           .immediate(),
       ),
   };
 }
 
-function recordSourceObservation(
+export function recordSourceObservationInTransaction(
   database: ReturnType<typeof openCompanionDatabase>,
   observation: SourceObservation,
 ): SourceObservationResult {
