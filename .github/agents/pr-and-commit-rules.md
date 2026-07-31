@@ -21,8 +21,6 @@ yourself.
   placeholder comments as-is, and leave every checklist box unchecked. The human
   who tested the change fills in the Description, Related issue(s), Testing, and
   Checklist sections.
-- **Exception**: if a human **explicitly asks** you to fill it out, do so **in
-  Chinese**, using Chinese characters (简体中文) for all content you add.
 
 ## GitHub comment, review and issue prefix
 
