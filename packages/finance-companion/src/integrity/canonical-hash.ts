@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-type CanonicalJsonValue =
+export type CanonicalJsonValue =
   | null
   | boolean
   | number
@@ -8,7 +8,7 @@ type CanonicalJsonValue =
   | readonly CanonicalJsonValue[]
   | CanonicalJsonObject;
 
-type CanonicalJsonObject = Readonly<{
+export type CanonicalJsonObject = Readonly<{
   [key: string]: CanonicalJsonValue;
 }>;
 

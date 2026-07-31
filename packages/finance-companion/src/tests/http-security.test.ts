@@ -13,6 +13,8 @@ import {
   createInMemoryLocalPrincipalRepository,
 } from '#security/local-security';
 
+import { createTestRequestReplayRepository } from './fixtures/request-replay-repository.ts';
+
 const configuration: FinanceCompanionConfiguration = {
   bindAddress: '127.0.0.1',
   port: 4100,
@@ -44,6 +46,7 @@ beforeAll(async () => {
       configuration,
       path.resolve(import.meta.dirname, '../..'),
       security,
+      createTestRequestReplayRepository(),
       uploadTemporaryParentDirectory,
     ),
   );
@@ -296,6 +299,7 @@ function authenticatedUpload(
       `Origin: ${configuration.origin}`,
       `Cookie: ${session.cookie}`,
       `X-Finance-CSRF: ${session.csrfToken}`,
+      'Idempotency-Key: security-boundary-key',
       `Content-Type: multipart/form-data; boundary=${boundary}`,
     ]),
   );

@@ -47,10 +47,10 @@ describe('FIN-11 companion database lifecycle', () => {
     await rm(temporaryDirectory, { recursive: true, force: true });
   });
 
-  it('initializes migration 001, a stable principal, and a generation-zero anchor', async () => {
+  it('initializes migrations 001 and 002, a stable principal, and a generation-zero anchor', async () => {
     const initialized = await initializeCompanionDatabaseAndAnchor(request);
     expect(initialized).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       writeCapabilityState: 'disabled',
     });
 
@@ -63,10 +63,12 @@ describe('FIN-11 companion database lifecycle', () => {
       ).toEqual({ count: 1 });
       expect(
         database
-          .prepare('SELECT version, checksum FROM schema_migrations')
+          .prepare(
+            'SELECT version, checksum FROM schema_migrations ORDER BY version DESC',
+          )
           .get(),
       ).toMatchObject({
-        version: 1,
+        version: 2,
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     } finally {
@@ -80,7 +82,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedBudgetKeyHash: request.budgetKeyHash,
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
-    ).resolves.toEqual({ schemaVersion: 1, writeCapabilityState: 'disabled' });
+    ).resolves.toEqual({ schemaVersion: 2, writeCapabilityState: 'disabled' });
   });
 
   it('fails closed and records recovery_required when the anchor cannot be proven', async () => {
@@ -95,7 +97,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -124,7 +126,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -142,11 +144,11 @@ describe('FIN-11 companion database lifecycle', () => {
       expectedCurrencyCode: request.budgetCurrencyCode,
     };
     await expect(createCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       budgetKeyHash: request.budgetKeyHash,
     });
     await expect(verifyCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
     });
     await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
       'explicit destructive-capability authorization',

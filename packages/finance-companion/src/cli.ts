@@ -6,6 +6,7 @@ import { startFinanceCompanionHttpServer } from './http/server.ts';
 import { createFinanceCompanionSecurity } from './security/local-security.ts';
 import type { LocalPrincipalRepository } from './security/local-security.ts';
 import { createDurableLocalPrincipalRepository } from './service/durable-principal-repository.ts';
+import { createSqliteRequestReplayRepository } from './service/request-replay-repository.ts';
 
 const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
@@ -67,6 +68,7 @@ export async function runFinanceCompanionCommand(
     configuration,
     path.resolve(import.meta.dirname, '../ui'),
     security,
+    createSqliteRequestReplayRepository(configuration.databasePath),
   );
   const closeServer = () =>
     void new Promise<void>(resolve => server.close(() => resolve())).then(() =>

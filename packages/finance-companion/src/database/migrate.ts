@@ -96,7 +96,7 @@ export async function initializeCompanionDatabaseAndAnchor(
     }
     const database = openCompanionDatabase(paths.databasePath);
     try {
-      const result = applyInitialMigrationAndInitialize(database, migrations, {
+      const result = applyInitialMigrationsAndInitialize(database, migrations, {
         ...request,
         ownerCredentialHash,
       });
@@ -112,32 +112,25 @@ export async function initializeCompanionDatabaseAndAnchor(
   });
 }
 
-function applyInitialMigrationAndInitialize(
+function applyInitialMigrationsAndInitialize(
   database: CompanionDatabase,
   migrations: readonly Migration[],
   request: InitializeCompanionDatabaseRequest &
     Readonly<{ ownerCredentialHash: string }>,
 ): MigrationResult {
-  const migration = migrations[0];
-  if (migration === undefined || migrations.length !== 1) {
-    throw new Error('FIN-11 initialization requires only migration 001.');
-  }
   return database
     .transaction(() => {
-      database.exec(migration.sql);
-      database
-        .prepare(
-          'INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)',
-        )
-        .run(
-          migration.version,
-          migration.name,
-          new Date().toISOString(),
-          migration.checksum,
-        );
+      const firstMigration = migrations[0];
+      if (firstMigration === undefined || firstMigration.version !== 1) {
+        throw new Error('Companion initialization requires migration 001.');
+      }
+      applyMigration(database, firstMigration);
       const result = initializeOrReadInstance(database, request);
+      for (const migration of migrations.slice(1)) {
+        applyMigration(database, migration);
+      }
       verifySqliteDatabase(database);
-      return result;
+      return { ...result, schemaVersion: schemaVersion(database) };
     })
     .immediate();
 }
@@ -187,21 +180,28 @@ function applyVerifiedMigrations(
     if (appliedVersions.has(migration.version)) continue;
     database
       .transaction(() => {
-        database.exec(migration.sql);
-        database
-          .prepare(
-            'INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)',
-          )
-          .run(
-            migration.version,
-            migration.name,
-            new Date().toISOString(),
-            migration.checksum,
-          );
+        applyMigration(database, migration);
         verifySqliteDatabase(database);
       })
       .immediate();
   }
+}
+
+function applyMigration(
+  database: CompanionDatabase,
+  migration: Migration,
+): void {
+  database.exec(migration.sql);
+  database
+    .prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)',
+    )
+    .run(
+      migration.version,
+      migration.name,
+      new Date().toISOString(),
+      migration.checksum,
+    );
 }
 
 function verifyAppliedMigrationHistory(
@@ -402,28 +402,26 @@ function initializeOrReadInstance(
   if (request.ownerCredentialHash === undefined) {
     throw new Error('An owner credential must be configured before startup.');
   }
-  database.transaction(() => {
-    const createdAt = new Date().toISOString();
-    database
-      .prepare(
-        'INSERT INTO companion_instance (singleton_key, instance_id, budget_key_hash, budget_currency_code, write_capability_state, write_capability_generation, write_capability_event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(
-        'main',
-        instanceId,
-        request.budgetKeyHash,
-        request.budgetCurrencyCode,
-        'disabled',
-        0,
-        null,
-        createdAt,
-      );
-    database
-      .prepare(
-        'INSERT INTO local_principals (id, credential_hash, created_at, rotated_at) VALUES (?, ?, ?, ?)',
-      )
-      .run(principalId, request.ownerCredentialHash, createdAt, null);
-  })();
+  const createdAt = new Date().toISOString();
+  database
+    .prepare(
+      'INSERT INTO companion_instance (singleton_key, instance_id, budget_key_hash, budget_currency_code, write_capability_state, write_capability_generation, write_capability_event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(
+      'main',
+      instanceId,
+      request.budgetKeyHash,
+      request.budgetCurrencyCode,
+      'disabled',
+      0,
+      null,
+      createdAt,
+    );
+  database
+    .prepare(
+      'INSERT INTO local_principals (id, credential_hash, created_at, rotated_at) VALUES (?, ?, ?, ?)',
+    )
+    .run(principalId, request.ownerCredentialHash, createdAt, null);
   return {
     schemaVersion: schemaVersion(database),
     instanceId,
