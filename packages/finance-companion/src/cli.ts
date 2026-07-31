@@ -5,6 +5,16 @@ import { loadFinanceCompanionConfiguration } from './config.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
 import { createFinanceCompanionSecurity } from './security/local-security.ts';
 import type { LocalPrincipalRepository } from './security/local-security.ts';
+import { runConfiguredBankSyncJob } from './service/bank-sync-cli.ts';
+import {
+  bankSyncExitCode,
+  BankSyncJobError,
+  parseBankSyncCommandArguments,
+} from './service/bank-sync.ts';
+import type {
+  BankSyncJobSummary,
+  ParsedBankSyncCommand,
+} from './service/bank-sync.ts';
 import { createDurableLocalPrincipalRepository } from './service/durable-principal-repository.ts';
 import { createSqliteRequestReplayRepository } from './service/request-replay-repository.ts';
 
@@ -12,7 +22,6 @@ const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
   'test:adapter',
   'test:e2e',
-  'job:bank-sync',
   'db:migrate',
   'owner:rotate',
   'backup:create',
@@ -43,6 +52,11 @@ export async function runFinanceCompanionCommand(
       path.resolve(import.meta.dirname, '../migrations'),
     ),
   startHttpServer = startFinanceCompanionHttpServer,
+  commandArguments: readonly string[] = [],
+  runBankSync?: (
+    command_: ParsedBankSyncCommand,
+    signal: AbortSignal,
+  ) => Promise<BankSyncJobSummary>,
 ): Promise<number> {
   if (isFeatureNotImplementedCommand(command)) {
     const result: FeatureNotImplementedCommandResult = {
@@ -53,6 +67,39 @@ export async function runFinanceCompanionCommand(
     };
     writeStandardError(`${JSON.stringify(result)}\n`);
     return 78;
+  }
+  if (command === 'job:bank-sync') {
+    const cancellation = new AbortController();
+    const cancel = () => cancellation.abort();
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
+    try {
+      const parsedCommand = parseBankSyncCommandArguments(commandArguments);
+      let summary: BankSyncJobSummary;
+      if (runBankSync === undefined) {
+        const configuration = loadConfiguration();
+        summary = await runConfiguredBankSyncJob(
+          configuration,
+          await loadLocalPrincipalRepository(configuration),
+          parsedCommand,
+          cancellation.signal,
+        );
+      } else {
+        summary = await runBankSync(parsedCommand, cancellation.signal);
+      }
+      writeStandardOutput(`${JSON.stringify(summary)}\n`);
+      return bankSyncExitCode(summary);
+    } catch (error) {
+      const code =
+        error instanceof BankSyncJobError ? error.code : 'configuration_error';
+      writeStandardError(`${JSON.stringify({ code, ok: false })}\n`);
+      return code === 'adapter_unavailable' || code === 'operation_in_progress'
+        ? 69
+        : 64;
+    } finally {
+      process.removeListener('SIGINT', cancel);
+      process.removeListener('SIGTERM', cancel);
+    }
   }
   if (command !== 'start') {
     writeStandardError('{"ok":false,"code":"invalid_command"}\n');
@@ -94,6 +141,10 @@ if (
     process.argv[2],
     message => process.stdout.write(message),
     message => process.stderr.write(message),
+    undefined,
+    undefined,
+    undefined,
+    process.argv.slice(3),
   ).then(exitCode => {
     process.exitCode = exitCode;
   });

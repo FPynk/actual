@@ -30,8 +30,13 @@ let initialization:
   | undefined;
 let isRequestRunning = false;
 let isFinalized = false;
+const bankSyncCancellation = new AbortController();
 
 process.on('message', (message: AdapterWorkerParentMessage) => {
+  if (message.kind === 'cancel') {
+    bankSyncCancellation.abort();
+    return;
+  }
   if (message.kind === 'start' && initialization === undefined) {
     void initializeWorker(message);
     return;
@@ -169,7 +174,11 @@ async function executeRequest(
   }
   return {
     kind: request.kind,
-    result: await runAccountBankSync(request.accountId),
+    result: await runAccountBankSync(
+      request.accountId,
+      initialization?.message.bankSyncRetryJitterMilliseconds,
+      bankSyncCancellation.signal,
+    ),
   };
 }
 
@@ -280,8 +289,32 @@ async function readTransactionTarget(id: string) {
   };
 }
 
-async function runAccountBankSync(accountId: string) {
+type BankSyncWorkerDependencies = Readonly<{
+  readAccountRows: () => Promise<Record<string, unknown>[]>;
+  runBankSync: (accountId: string) => Promise<void>;
+  sync: () => Promise<void>;
+}>;
+
+const actualBankSyncDependencies: BankSyncWorkerDependencies = {
+  readAccountRows,
+  runBankSync: async accountId => {
+    await actualApi.runBankSync({ accountId });
+  },
+  sync: async () => {
+    await actualApi.sync();
+  },
+};
+
+export async function runAccountBankSync(
+  accountId: string,
+  injectedJitter: readonly [number, number] | undefined,
+  cancellationSignal: AbortSignal,
+  dependencies: BankSyncWorkerDependencies = actualBankSyncDependencies,
+) {
   const startedAt = new Date().toISOString();
+  if (cancellationSignal.aborted) {
+    return canceledBankSyncResult(accountId, startedAt);
+  }
   let outcomeCode:
     | 'succeeded'
     | 'authentication-required'
@@ -289,34 +322,89 @@ async function runAccountBankSync(accountId: string) {
     | 'timed-out'
     | 'configuration-error'
     | 'provider-error' = 'succeeded';
-  try {
-    await actualApi.runBankSync({ accountId });
-  } catch {
-    const account = (await readAccountRows()).find(row => row.id === accountId);
-    outcomeCode = mapBankSyncFailure(account?.bank_sync_status);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0 && cancellationSignal.aborted) {
+      return canceledBankSyncResult(accountId, startedAt);
+    }
+    outcomeCode = 'succeeded';
+    try {
+      await dependencies.runBankSync(accountId);
+    } catch {
+      const account = (await dependencies.readAccountRows()).find(
+        row => row.id === accountId,
+      );
+      outcomeCode = mapBankSyncFailure(account?.bank_sync_status);
+    }
+    try {
+      await dependencies.sync();
+    } catch {
+      return {
+        accountId,
+        completedAt: new Date().toISOString(),
+        contractVersion: 1 as const,
+        finalSyncCode: 'outcome-unknown' as const,
+        outcomeCode: 'outcome-unknown' as const,
+        startedAt,
+        transactionCounts: null,
+      };
+    }
+    if (
+      !['rate-limited', 'timed-out', 'provider-error'].includes(outcomeCode) ||
+      attempt === 2
+    ) {
+      break;
+    }
+    if (cancellationSignal.aborted) {
+      return canceledBankSyncResult(accountId, startedAt);
+    }
+    const jitter = injectedJitter?.[attempt] ?? Math.floor(Math.random() * 251);
+    const retryDelayCompleted = await waitForRetry(
+      (attempt === 0 ? 1000 : 2000) + jitter,
+      cancellationSignal,
+    );
+    if (!retryDelayCompleted) {
+      return canceledBankSyncResult(accountId, startedAt);
+    }
   }
-  try {
-    await actualApi.sync();
-    return {
-      accountId,
-      completedAt: new Date().toISOString(),
-      contractVersion: 1 as const,
-      finalSyncCode: 'succeeded' as const,
-      outcomeCode,
-      startedAt,
-      transactionCounts: null,
+  return {
+    accountId,
+    completedAt: new Date().toISOString(),
+    contractVersion: 1 as const,
+    finalSyncCode: 'succeeded' as const,
+    outcomeCode,
+    startedAt,
+    transactionCounts: null,
+  };
+}
+
+function canceledBankSyncResult(accountId: string, startedAt: string) {
+  return {
+    accountId,
+    completedAt: new Date().toISOString(),
+    contractVersion: 1 as const,
+    finalSyncCode: 'not-attempted' as const,
+    outcomeCode: 'canceled' as const,
+    startedAt,
+    transactionCounts: null,
+  };
+}
+
+async function waitForRetry(
+  milliseconds: number,
+  cancellationSignal: AbortSignal,
+): Promise<boolean> {
+  if (cancellationSignal.aborted) return false;
+  return new Promise<boolean>(resolve => {
+    const canceled = () => {
+      clearTimeout(timer);
+      resolve(false);
     };
-  } catch {
-    return {
-      accountId,
-      completedAt: new Date().toISOString(),
-      contractVersion: 1 as const,
-      finalSyncCode: 'failed' as const,
-      outcomeCode: 'final-sync-failed' as const,
-      startedAt,
-      transactionCounts: null,
-    };
-  }
+    const timer = setTimeout(() => {
+      cancellationSignal.removeEventListener('abort', canceled);
+      resolve(true);
+    }, milliseconds);
+    cancellationSignal.addEventListener('abort', canceled, { once: true });
+  });
 }
 
 async function readAccountRows(): Promise<Record<string, unknown>[]> {

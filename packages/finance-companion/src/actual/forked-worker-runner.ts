@@ -21,7 +21,7 @@ export function createForkedAdapterWorkerRunner(
     import.meta.url,
   ),
 ): AdapterWorkerRunner {
-  return (operation, signal) =>
+  return (operation, signal, cancellationSignal, onTerminalResponse) =>
     new Promise((resolve, reject) => {
       const child = fork(fileURLToPath(workerEntry), [], {
         env: { NODE_ENV: process.env.NODE_ENV ?? 'production' },
@@ -55,7 +55,11 @@ export function createForkedAdapterWorkerRunner(
           Math.floor(configuration.workerExitTimeoutMilliseconds / 2),
         );
       };
+      const cancel = () => {
+        if (!didExit && child.connected) child.send({ kind: 'cancel' });
+      };
       signal.addEventListener('abort', abort, { once: true });
+      cancellationSignal?.addEventListener('abort', cancel, { once: true });
       child.once('error', () => {
         terminalResponse = {
           kind: 'problem',
@@ -90,6 +94,14 @@ export function createForkedAdapterWorkerRunner(
             return;
           }
           terminalResponse = message;
+          if (message.kind === 'result') {
+            try {
+              onTerminalResponse?.(message.response);
+            } catch {
+              failProtocol();
+              return;
+            }
+          }
           settle();
           return;
         }
@@ -114,6 +126,7 @@ export function createForkedAdapterWorkerRunner(
       });
       child.send(startMessage(configuration, operation));
       if (signal.aborted) abort();
+      if (cancellationSignal?.aborted) cancel();
 
       function failProtocol(): void {
         protocolFailed = true;
@@ -128,6 +141,7 @@ export function createForkedAdapterWorkerRunner(
         if (didSettle || !didExit) return;
         didSettle = true;
         signal.removeEventListener('abort', abort);
+        cancellationSignal?.removeEventListener('abort', cancel);
         if (forcedKillTimeout !== undefined) clearTimeout(forcedKillTimeout);
         if (
           !protocolFailed &&
@@ -140,11 +154,18 @@ export function createForkedAdapterWorkerRunner(
           resolve(terminalResponse.response);
           return;
         }
-        reject(
-          terminalResponse?.kind === 'problem'
+        const didProveCleanShutdown =
+          didReceiveReady &&
+          didReceiveShutdown &&
+          exitCode === 0 &&
+          exitSignal === null;
+        const error =
+          didProveCleanShutdown && terminalResponse?.kind === 'problem'
             ? new ActualAdapterError(terminalResponse.code)
-            : new ActualAdapterError('adapter_unhealthy'),
-        );
+            : new ActualAdapterError('adapter_unhealthy');
+        error.bankSyncWorkBegan =
+          operation.request.kind === 'run-account-bank-sync' && didReceiveReady;
+        reject(error);
       }
     });
 }
@@ -184,6 +205,7 @@ function startMessage(
     operationOwnerMarker: operation.operationOwnerMarker,
     ownershipNonce: operation.ownershipNonce,
     workerOperationId: operation.workerOperationId,
+    bankSyncRetryJitterMilliseconds: operation.bankSyncRetryJitterMilliseconds,
   };
 }
 

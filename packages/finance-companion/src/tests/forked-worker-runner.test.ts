@@ -53,6 +53,55 @@ describe('forked Actual adapter worker runner', () => {
     });
   });
 
+  it('keeps all retry attempts inside one fork and one bounded lifecycle', async () => {
+    const actualApiDirectory = await mkdtemp(
+      path.join(tmpdir(), 'finance-runner-bank-retry-'),
+    );
+    const retryConfiguration: ActualAdapterConfiguration = {
+      ...configuration,
+      actualApiDirectory,
+      hardTimeoutMilliseconds: 500,
+      softTimeoutMilliseconds: 250,
+    };
+    await writeFile(
+      path.join(actualApiDirectory, 'owner.json'),
+      canonicalJson({
+        budgetBindingHash: configuration.budgetBindingHash,
+        companionInstanceId: configuration.companionInstanceId,
+        directoryNonce: configuration.actualApiDirectoryNonce,
+        formatVersion: 1,
+      }),
+    );
+    try {
+      const adapter = createActualAdapter(
+        retryConfiguration,
+        createForkedAdapterWorkerRunner(
+          retryConfiguration,
+          new URL(
+            './fixtures/adapter-worker-bank-sync-retry.ts',
+            import.meta.url,
+          ),
+        ),
+      );
+      await expect(
+        adapter.execute(
+          { kind: 'run-account-bank-sync', accountId: 'account-1' },
+          {
+            bankSyncRetryJitterMilliseconds: [3, 3],
+            jobRunId: '33333333-3333-4333-8333-333333333333',
+            workerOperationId: '44444444-4444-4444-8444-444444444444',
+          },
+        ),
+      ).resolves.toMatchObject({
+        kind: 'run-account-bank-sync',
+        result: { outcomeCode: 'succeeded' },
+      });
+      expect(adapter.getActiveOperationStatus()).toBeNull();
+    } finally {
+      await rm(actualApiDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a result when shutdown completion is missing', async () => {
     const runner = createForkedAdapterWorkerRunner(
       configuration,

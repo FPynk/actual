@@ -167,8 +167,13 @@ export type AdapterProblemCode =
   | 'actual_conflict';
 
 export class ActualAdapterError extends Error {
-  constructor(readonly code: AdapterProblemCode) {
+  readonly code: AdapterProblemCode;
+  bankSyncWorkBegan = false;
+  quarantineBundleHash: string | undefined;
+
+  constructor(code: AdapterProblemCode) {
     super(code);
+    this.code = code;
     this.name = 'ActualAdapterError';
   }
 }
