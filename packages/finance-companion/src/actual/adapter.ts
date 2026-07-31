@@ -590,7 +590,12 @@ function validateRequest(
     if (!Array.isArray(request.sections)) {
       throw new ActualAdapterError('invalid_adapter_request');
     }
-    const knownSections = new Set(['accounts', 'payees', 'categories']);
+    const knownSections = new Set([
+      'accounts',
+      'payees',
+      'categories',
+      'schedules',
+    ]);
     if (
       new Set(request.sections).size !== request.sections.length ||
       request.sections.some(
@@ -887,6 +892,7 @@ function isValidSnapshot(
       'payees',
       'categoryGroups',
       'categories',
+      'schedules',
       'transactions',
     ])
   ) {
@@ -922,6 +928,12 @@ function isValidSnapshot(
       'categories',
       request.sections.includes('categories'),
       isValidCategory,
+    ) &&
+    hasExpectedArray(
+      value,
+      'schedules',
+      request.sections.includes('schedules'),
+      isValidSchedule,
     ) &&
     hasExpectedArray(
       value,
@@ -1007,6 +1019,64 @@ function isValidCategoryGroup(value: unknown): boolean {
     typeof value.isIncome === 'boolean' &&
     typeof value.hidden === 'boolean'
   );
+}
+
+function isValidSchedule(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id',
+      'accountId',
+      'payeeId',
+      'amount',
+      'amountOperator',
+      'recurrence',
+      'isCompleted',
+    ]) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    isNullableNonemptyString(value.accountId) &&
+    isNullableNonemptyString(value.payeeId) &&
+    isValidScheduleAmount(value.amount) &&
+    ['is', 'isapprox', 'isbetween'].includes(value.amountOperator as string) &&
+    isValidScheduleRecurrence(value.recurrence) &&
+    typeof value.isCompleted === 'boolean'
+  );
+}
+
+function isValidScheduleAmount(value: unknown): boolean {
+  return (
+    value === null ||
+    Number.isSafeInteger(value) ||
+    (isRecord(value) &&
+      hasExactKeys(value, ['num1', 'num2']) &&
+      Number.isSafeInteger(value.num1) &&
+      Number.isSafeInteger(value.num2))
+  );
+}
+
+function isValidScheduleRecurrence(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'one-time') {
+    return (
+      hasExactKeys(value, ['kind', 'date']) &&
+      typeof value.date === 'string' &&
+      isIsoDate(value.date)
+    );
+  }
+  return (
+    value.kind === 'recurring' &&
+    hasExactKeys(value, ['kind', 'frequency', 'interval', 'start']) &&
+    ['weekly', 'monthly', 'yearly'].includes(value.frequency as string) &&
+    Number.isSafeInteger(value.interval) &&
+    (value.interval as number) > 0 &&
+    typeof value.start === 'string' &&
+    isIsoDate(value.start)
+  );
+}
+
+function isNullableNonemptyString(value: unknown): boolean {
+  return value === null || (typeof value === 'string' && value.length > 0);
 }
 
 function isValidCategory(value: unknown): boolean {
