@@ -16,6 +16,9 @@ const commands = [
   'integrity:verify',
   'smoke:container',
 ] as const;
+const scaffoldPackageScriptCommands = commands.filter(
+  command => command !== 'test:db',
+);
 
 describe('runFinanceCompanionCommand', () => {
   it.each(commands)(
@@ -43,33 +46,10 @@ describe('runFinanceCompanionCommand', () => {
     },
   );
 
-  it.each(commands)(
+  it.each(scaffoldPackageScriptCommands)(
     'runs the real %s package script with no extra output',
     command => {
-      const repositoryRoot = path.resolve(import.meta.dirname, '../../../..');
-      const yarnRelease = path.join(
-        repositoryRoot,
-        '.yarn/releases/yarn-4.17.1.cjs',
-      );
-      const result = spawnSync(
-        process.execPath,
-        [
-          yarnRelease,
-          'workspace',
-          '@actual-app/finance-companion',
-          'run',
-          command,
-        ],
-        {
-          cwd: repositoryRoot,
-          encoding: 'utf8',
-          env: {
-            PATH: process.env.PATH,
-            SYSTEMROOT: process.env.SYSTEMROOT,
-            FINANCE_COMPANION_MISSPELLED_SECURITY_SETTING: 'must-not-be-read',
-          },
-        },
-      );
+      const result = runPackageScript(command);
       const expected = JSON.stringify({
         ok: false,
         code: 'feature_not_implemented',
@@ -81,4 +61,33 @@ describe('runFinanceCompanionCommand', () => {
       expect(result.stderr).toBe(`${expected}\n`);
     },
   );
+
+  it('runs the implemented test:db package gate', () => {
+    const result = runPackageScript('test:db');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Test Files');
+    expect(result.stdout).toContain('passed');
+    expect(result.stderr).toBe('');
+  });
 });
+
+function runPackageScript(command: (typeof commands)[number]) {
+  const repositoryRoot = path.resolve(import.meta.dirname, '../../../..');
+  const yarnRelease = path.join(
+    repositoryRoot,
+    '.yarn/releases/yarn-4.17.1.cjs',
+  );
+  return spawnSync(
+    process.execPath,
+    [yarnRelease, 'workspace', '@actual-app/finance-companion', 'run', command],
+    {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        SYSTEMROOT: process.env.SYSTEMROOT,
+        FINANCE_COMPANION_MISSPELLED_SECURITY_SETTING: 'must-not-be-read',
+      },
+    },
+  );
+}

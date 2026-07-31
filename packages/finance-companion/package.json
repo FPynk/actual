@@ -6,14 +6,16 @@
   "imports": {
     "#cli": "./src/cli.ts",
     "#config": "./src/config.ts",
+    "#database/*": "./src/database/*.ts",
     "#http/*": "./src/http/*.ts",
+    "#integrity/*": "./src/integrity/*.ts",
     "#service/*": "./src/service/*.ts"
   },
   "scripts": {
     "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "test": "vitest --run",
-    "test:db": "node --experimental-strip-types ./src/cli.ts test:db",
+    "test:db": "vitest --run src/tests/database.test.ts src/tests/database-safety.test.ts",
     "test:adapter": "node --experimental-strip-types ./src/cli.ts test:adapter",
     "test:e2e": "node --experimental-strip-types ./src/cli.ts test:e2e",
     "start": "yarn build && node ./dist/service/cli.js start",
@@ -27,9 +29,11 @@
     "smoke:container": "node --experimental-strip-types ./src/cli.ts smoke:container"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.1",
     "@typescript/native-preview": "beta",
