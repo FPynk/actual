@@ -46,6 +46,19 @@ export type SourceObservationResult =
       requiresReview: true;
     }>;
 
+export type SourceTransactionForReconciliation = Readonly<{
+  id: string;
+  actualAccountId: string;
+  externalTransactionId: string | null;
+  amount: number;
+  transactionDate: string;
+  postedDate: string | null;
+  bookingStatus: SourceBookingStatus;
+  importedPayee: string | null;
+  normalizedPayeeKey: string | null;
+  fingerprint: string;
+}>;
+
 export type SourceIdentityRepository = Readonly<{
   createSourceNamespace: (
     sourceNamespace: CreateSourceNamespace,
@@ -53,6 +66,7 @@ export type SourceIdentityRepository = Readonly<{
   recordObservation: (
     observation: SourceObservation,
   ) => SourceObservationResult;
+  readReconciliationSources: () => readonly SourceTransactionForReconciliation[];
 }>;
 
 type SourceTransactionRow = Readonly<{
@@ -100,7 +114,66 @@ export function createSqliteSourceIdentityRepository(
           )
           .immediate(),
       ),
+    readReconciliationSources: () =>
+      withDatabase(databasePath, database =>
+        (
+          database
+            .prepare(
+              `SELECT
+              id,
+              actual_account_id AS actualAccountId,
+              external_transaction_id AS externalTransactionId,
+              amount,
+              transaction_date AS transactionDate,
+              posted_date AS postedDate,
+              booking_status AS bookingStatus,
+              imported_payee AS importedPayee,
+              normalized_payee_key AS normalizedPayeeKey,
+              fingerprint
+            FROM source_transactions
+            WHERE actual_transaction_id IS NULL
+              AND state IN ('unmatched', 'candidate')
+            ORDER BY id`,
+            )
+            .all() as readonly SourceTransactionForReconciliation[]
+        ).map(validateSourceTransactionForReconciliation),
+      ),
   };
+}
+
+function validateSourceTransactionForReconciliation(
+  sourceTransaction: SourceTransactionForReconciliation,
+): SourceTransactionForReconciliation {
+  if (
+    typeof sourceTransaction.id !== 'string' ||
+    sourceTransaction.id.length === 0 ||
+    typeof sourceTransaction.actualAccountId !== 'string' ||
+    sourceTransaction.actualAccountId.length === 0 ||
+    !Number.isSafeInteger(sourceTransaction.amount) ||
+    !isIsoDate(sourceTransaction.transactionDate) ||
+    (sourceTransaction.postedDate !== null &&
+      !isIsoDate(sourceTransaction.postedDate)) ||
+    !['unknown', 'pending', 'posted'].includes(
+      sourceTransaction.bookingStatus,
+    ) ||
+    (sourceTransaction.importedPayee !== null &&
+      typeof sourceTransaction.importedPayee !== 'string') ||
+    (sourceTransaction.normalizedPayeeKey !== null &&
+      typeof sourceTransaction.normalizedPayeeKey !== 'string') ||
+    !/^[0-9a-f]{64}$/.test(sourceTransaction.fingerprint) ||
+    (sourceTransaction.externalTransactionId !== null &&
+      typeof sourceTransaction.externalTransactionId !== 'string')
+  ) {
+    throw new Error('Stored reconciliation source transaction is invalid.');
+  }
+  return sourceTransaction;
+}
+
+function isIsoDate(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value
+  );
 }
 
 export function recordSourceObservationInTransaction(

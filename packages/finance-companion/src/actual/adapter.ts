@@ -887,6 +887,7 @@ function validateResponse(
     response.kind === 'read-actual-target' &&
     request.kind === 'read-actual-target'
   ) {
+    if (response.target === null) return;
     if (
       !isRecord(response.target) ||
       !hasExactKeys(response.target, [
