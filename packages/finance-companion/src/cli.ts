@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 import { loadFinanceCompanionConfiguration } from './config.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
+import { createFinanceCompanionSecurity } from './security/local-security.ts';
+import type { LocalPrincipalRepository } from './security/local-security.ts';
 
 const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
@@ -31,6 +33,7 @@ export async function runFinanceCompanionCommand(
   writeStandardOutput: (message: string) => void,
   writeStandardError: (message: string) => void,
   loadConfiguration = loadFinanceCompanionConfiguration,
+  loadLocalPrincipalRepository: () => Promise<LocalPrincipalRepository> = unavailableLocalPrincipalRepository,
 ): Promise<number> {
   if (isFeatureNotImplementedCommand(command)) {
     const result: FeatureNotImplementedCommandResult = {
@@ -46,9 +49,16 @@ export async function runFinanceCompanionCommand(
     writeStandardError('{"ok":false,"code":"invalid_command"}\n');
     return 64;
   }
+  const configuration = loadConfiguration();
+  const security = await createFinanceCompanionSecurity({
+    bootstrapCredential: configuration.ownerBootstrapCredential,
+    bootstrapCredentialFile: configuration.ownerBootstrapCredentialFile,
+    localPrincipalRepository: await loadLocalPrincipalRepository(),
+  });
   const server = await startFinanceCompanionHttpServer(
-    loadConfiguration(),
+    configuration,
     path.resolve(import.meta.dirname, '../ui'),
+    security,
   );
   const closeServer = () =>
     void new Promise<void>(resolve => server.close(() => resolve())).then(() =>
@@ -58,6 +68,12 @@ export async function runFinanceCompanionCommand(
   process.once('SIGTERM', closeServer);
   writeStandardOutput('');
   return 0;
+}
+
+async function unavailableLocalPrincipalRepository(): Promise<LocalPrincipalRepository> {
+  throw new Error(
+    'The local principal repository is unavailable until database lifecycle integration is complete.',
+  );
 }
 
 function isFeatureNotImplementedCommand(

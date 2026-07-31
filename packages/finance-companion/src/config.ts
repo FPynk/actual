@@ -35,6 +35,8 @@ export type FinanceCompanionConfiguration = Readonly<{
   bindAddress: '127.0.0.1';
   port: number;
   origin: string;
+  ownerBootstrapCredential: string | undefined;
+  ownerBootstrapCredentialFile: string | undefined;
 }>;
 
 export class FinanceCompanionConfigurationError extends Error {
@@ -170,7 +172,15 @@ function parseFinanceCompanionConfiguration(
   ) {
     throw invalid('FINANCE_COMPANION_LOG_LEVEL');
   }
-  return { bindAddress, port, origin };
+  return {
+    bindAddress,
+    port,
+    origin,
+    ownerBootstrapCredential:
+      environment.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL,
+    ownerBootstrapCredentialFile:
+      environment.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL_FILE,
+  };
 }
 
 function clearDirectSecretsFromProcessEnvironment(

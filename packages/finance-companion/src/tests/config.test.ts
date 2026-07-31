@@ -28,6 +28,8 @@ describe('loadFinanceCompanionConfiguration', () => {
       bindAddress: '127.0.0.1',
       port: 4100,
       origin: 'http://127.0.0.1:4100',
+      ownerBootstrapCredential: undefined,
+      ownerBootstrapCredentialFile: undefined,
     });
   });
 
@@ -81,6 +83,8 @@ describe('loadFinanceCompanionConfiguration', () => {
       bindAddress: '127.0.0.1',
       port: 4100,
       origin: 'http://127.0.0.1:4100',
+      ownerBootstrapCredential: undefined,
+      ownerBootstrapCredentialFile: undefined,
     });
     expect(environment.FINANCE_COMPANION_ACTUAL_PASSWORD).toBe(
       'development-password',
@@ -93,6 +97,8 @@ describe('loadFinanceCompanionConfiguration', () => {
         bindAddress: '127.0.0.1',
         port: 4100,
         origin: 'http://127.0.0.1:4100',
+        ownerBootstrapCredential: 'synthetic-owner-secret',
+        ownerBootstrapCredentialFile: undefined,
       });
       for (const secretEnvironmentName of directSecretEnvironmentNames) {
         expect(process.env[secretEnvironmentName]).toBeUndefined();
