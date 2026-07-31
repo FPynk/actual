@@ -1,0 +1,37 @@
+{
+  "orders": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-2",
+      "orderDate": "2026-01-01",
+      "currencyCode": "USD",
+      "itemSubtotal": 2000,
+      "taxTotal": 0,
+      "shippingTotal": 0,
+      "discountTotal": 0,
+      "giftCardTotal": 0,
+      "refundTotal": 0,
+      "orderTotal": 2000
+    }
+  ],
+  "shipments": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-2",
+      "externalShipmentId": "SHIP-2A",
+      "shipmentDate": "2026-01-02",
+      "shipmentTotal": 1000,
+      "orderedItemSignatures": ["A"]
+    },
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-2",
+      "externalShipmentId": "SHIP-2B",
+      "shipmentDate": "2026-01-03",
+      "shipmentTotal": 1000,
+      "orderedItemSignatures": ["B"]
+    }
+  ],
+  "items": [],
+  "refunds": []
+}

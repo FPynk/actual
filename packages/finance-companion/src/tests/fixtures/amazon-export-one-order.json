@@ -1,0 +1,47 @@
+{
+  "orders": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-1",
+      "orderDate": "2026-01-01",
+      "currencyCode": "USD",
+      "itemSubtotal": 1000,
+      "taxTotal": 80,
+      "shippingTotal": 0,
+      "discountTotal": 0,
+      "giftCardTotal": 0,
+      "refundTotal": 0,
+      "orderTotal": 1080
+    }
+  ],
+  "shipments": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-1",
+      "externalShipmentId": "SHIP-1",
+      "shipmentDate": "2026-01-02",
+      "shipmentTotal": 1080,
+      "orderedItemSignatures": ["SKU-1"]
+    }
+  ],
+  "items": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-1",
+      "shipmentKey": "shipment/SHIP-1",
+      "externalItemId": "ITEM-1",
+      "asin": "ASIN-1",
+      "sku": null,
+      "seller": "Synthetic seller",
+      "title": "Synthetic item",
+      "quantity": 1,
+      "unitAmount": 1000,
+      "taxAmount": 80,
+      "shippingAmount": 0,
+      "discountAmount": 0,
+      "refundAmount": 0,
+      "currencyCode": "USD"
+    }
+  ],
+  "refunds": []
+}

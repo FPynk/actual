@@ -243,7 +243,7 @@ describe('FIN-11 database safety gates', () => {
           expectedCurrencyCode: initialization.budgetCurrencyCode,
         }),
       ).resolves.toEqual({
-        schemaVersion: 4,
+        schemaVersion: 5,
         writeCapabilityState: 'recovery_required',
       });
     },
