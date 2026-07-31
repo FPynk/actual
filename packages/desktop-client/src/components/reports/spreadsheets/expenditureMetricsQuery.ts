@@ -1,8 +1,8 @@
-import { q } from "@actual-app/core/shared/query";
+import { q } from '@actual-app/core/shared/query';
 
-import { aqlQuery } from "#queries/aqlQuery";
+import { aqlQuery } from '#queries/aqlQuery';
 
-import type { ExpenditureMetricRow } from "./expenditure-metrics";
+import type { ExpenditureMetricRow } from './expenditure-metrics';
 
 type ExpenditureMetricQueryRow = {
   date: string;
@@ -10,6 +10,9 @@ type ExpenditureMetricQueryRow = {
   isParent: boolean;
   transferAccount: string | null;
   accountOffBudget: boolean;
+  category: string | null;
+  categoryHidden: boolean;
+  categoryGroupHidden: boolean;
 };
 
 export function makeExpenditureMetricsQuery({
@@ -23,17 +26,20 @@ export function makeExpenditureMetricsQuery({
   conditionsOpKey: string;
   filters: unknown[];
 }) {
-  return q("transactions")
+  return q('transactions')
     .filter({ [conditionsOpKey]: filters })
     .filter({
       $and: [{ date: { $gte: startDate } }, { date: { $lte: endDate } }],
     })
     .select([
-      "date",
-      "amount",
-      { isParent: { $id: "$is_parent" } },
-      { transferAccount: { $id: "$payee.transfer_acct.id" } },
-      { accountOffBudget: { $id: "$account.offbudget" } },
+      'date',
+      'amount',
+      { isParent: { $id: '$is_parent' } },
+      { transferAccount: { $id: '$payee.transfer_acct.id' } },
+      { accountOffBudget: { $id: '$account.offbudget' } },
+      { category: { $id: '$category.id' } },
+      { categoryHidden: { $id: '$category.hidden' } },
+      { categoryGroupHidden: { $id: '$category.group.hidden' } },
     ]);
 }
 
@@ -43,12 +49,16 @@ export async function fetchExpenditureMetricRows({
   conditionsOpKey,
   filters,
   currency,
+  showHiddenCategories,
+  showUncategorized,
 }: {
   startDate: string;
   endDate: string;
   conditionsOpKey: string;
   filters: unknown[];
   currency: string;
+  showHiddenCategories: boolean;
+  showUncategorized: boolean;
 }): Promise<ExpenditureMetricRow[]> {
   const { data } = await aqlQuery(
     makeExpenditureMetricsQuery({
@@ -56,15 +66,24 @@ export async function fetchExpenditureMetricRows({
       endDate,
       conditionsOpKey,
       filters,
-    })
+    }),
   );
 
-  return data.map((row: ExpenditureMetricQueryRow) => ({
-    date: row.date,
-    amount: row.amount,
-    currency,
-    isParent: row.isParent,
-    isTransfer: Boolean(row.transferAccount),
-    isOffBudget: Boolean(row.isOffBudget),
-  }));
+  return data
+    .filter(
+      (row: ExpenditureMetricQueryRow) =>
+        (showHiddenCategories ||
+          (row.categoryHidden !== true && row.categoryGroupHidden !== true)) &&
+        (showUncategorized ||
+          row.category !== null ||
+          row.accountOffBudget === true),
+    )
+    .map((row: ExpenditureMetricQueryRow) => ({
+      date: row.date,
+      amount: row.amount,
+      currency,
+      isParent: row.isParent,
+      isTransfer: Boolean(row.transferAccount),
+      isOffBudget: Boolean(row.accountOffBudget),
+    }));
 }

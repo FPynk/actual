@@ -1,4 +1,4 @@
-import React from 'react';
+import type { ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { styles } from '@actual-app/components/styles';
@@ -13,6 +13,8 @@ import type {
 
 import { FinancialText } from '#components/FinancialText';
 import { PrivacyFilter } from '#components/PrivacyFilter';
+import { LineGraph } from '#components/reports/graphs/LineGraph';
+import type { ExpenditureMetrics } from '#components/reports/spreadsheets/expenditure-metrics';
 import { useFormat } from '#hooks/useFormat';
 import { useLocale } from '#hooks/useLocale';
 
@@ -25,7 +27,183 @@ type ReportSummaryProps = {
   balanceTypeOp: balanceTypeOpType;
   interval: string;
   intervalsCount: number;
+  expenditureMetrics?: ExpenditureMetrics | 'error' | null;
 };
+
+function createRollingExpenditureData(
+  expenditureMetrics: ExpenditureMetrics,
+): DataEntity {
+  const lastAmount =
+    expenditureMetrics.rolling30Days[
+      expenditureMetrics.rolling30Days.length - 1
+    ]?.amount ?? 0;
+
+  return {
+    data: [],
+    intervalData: expenditureMetrics.rolling30Days.map(({ date, amount }) => ({
+      date,
+      totalAssets: 0,
+      totalDebts: amount,
+      netAssets: amount > 0 ? amount : 0,
+      netDebts: amount < 0 ? amount : 0,
+      totalTotals: amount,
+      totalBudgeted: amount,
+    })),
+    legend: [
+      {
+        name: 'Rolling 30-day expenditure',
+        id: null,
+        color: 'var(--color-chartQual1)',
+        dataKey: 'totalDebts',
+      },
+    ],
+    totalAssets: 0,
+    totalDebts: lastAmount,
+    netAssets: lastAmount > 0 ? lastAmount : 0,
+    netDebts: lastAmount < 0 ? lastAmount : 0,
+    totalTotals: lastAmount,
+    totalBudgeted: lastAmount,
+  };
+}
+
+type ExpenditureMetricCardProps = {
+  label: ReactNode;
+  value: ReactNode;
+  detail?: ReactNode;
+};
+
+function ExpenditureMetricCard({
+  label,
+  value,
+  detail,
+}: ExpenditureMetricCardProps) {
+  return (
+    <View
+      style={{
+        backgroundColor: theme.tableBackground,
+        flex: '1 1 120px',
+        minWidth: 120,
+        padding: 10,
+      }}
+    >
+      <Text style={{ ...styles.smallText, fontWeight: 600 }}>{label}</Text>
+      <FinancialText style={{ ...styles.largeText, fontWeight: 700 }}>
+        <PrivacyFilter>{value}</PrivacyFilter>
+      </FinancialText>
+      {detail && <Text style={{ ...styles.smallText }}>{detail}</Text>}
+    </View>
+  );
+}
+
+function ExpenditureMetricsSummary({
+  expenditureMetrics,
+}: {
+  expenditureMetrics: ExpenditureMetrics;
+}) {
+  const { t } = useTranslation();
+  const format = useFormat();
+
+  if (expenditureMetrics.state === 'multi-currency') {
+    return (
+      <View
+        style={{
+          backgroundColor: theme.pageBackground,
+          marginTop: 10,
+          padding: 15,
+        }}
+      >
+        <Text style={{ ...styles.mediumText, fontWeight: 600 }}>
+          <Trans>Expenditure metrics</Trans>
+        </Text>
+        <Text>
+          <Trans>
+            Expenditure metrics are unavailable for reports with multiple
+            currencies.
+          </Trans>
+        </Text>
+      </View>
+    );
+  }
+
+  const monthOverMonth = expenditureMetrics.monthOverMonth;
+  const monthOverMonthValue =
+    monthOverMonth.change == null
+      ? t('No comparison')
+      : format(monthOverMonth.change, 'financial-with-sign');
+  const monthOverMonthDetail =
+    monthOverMonth.state === 'zero-prior'
+      ? t('No prior spending')
+      : monthOverMonth.percent == null
+        ? t('No comparison')
+        : format(monthOverMonth.percent, 'percentage');
+
+  return (
+    <View
+      style={{
+        backgroundColor: theme.pageBackground,
+        marginTop: 10,
+        padding: 10,
+      }}
+    >
+      <Text
+        style={{
+          ...styles.mediumText,
+          fontWeight: 600,
+          marginBottom: 8,
+        }}
+      >
+        <Trans>Expenditure metrics</Trans>
+      </Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <ExpenditureMetricCard
+          label={<Trans>Total expenditure</Trans>}
+          value={format(expenditureMetrics.total ?? 0, 'financial')}
+          detail={<Trans>For this time period</Trans>}
+        />
+        <ExpenditureMetricCard
+          label={<Trans>Average per day</Trans>}
+          value={format(expenditureMetrics.averagePerDay ?? 0, 'financial')}
+        />
+        <ExpenditureMetricCard
+          label={<Trans>Average per week</Trans>}
+          value={format(expenditureMetrics.averagePerWeek ?? 0, 'financial')}
+        />
+        <ExpenditureMetricCard
+          label={<Trans>Median expense</Trans>}
+          value={
+            expenditureMetrics.medianExpense == null
+              ? t('No expenses')
+              : format(expenditureMetrics.medianExpense, 'financial')
+          }
+        />
+        <ExpenditureMetricCard
+          label={<Trans>Month over month</Trans>}
+          value={monthOverMonthValue}
+          detail={monthOverMonthDetail}
+        />
+      </View>
+      <Text
+        style={{
+          ...styles.smallText,
+          fontWeight: 600,
+          marginBottom: 4,
+          marginTop: 12,
+        }}
+      >
+        <Trans>Rolling 30-day expenditure</Trans>
+      </Text>
+      <LineGraph
+        data={createRollingExpenditureData(expenditureMetrics)}
+        filters={[]}
+        groupBy="Interval"
+        balanceTypeOp="totalDebts"
+        interval="Daily"
+        showTooltip
+        style={{ height: 180 }}
+      />
+    </View>
+  );
+}
 
 export function ReportSummary({
   startDate,
@@ -34,6 +212,7 @@ export function ReportSummary({
   balanceTypeOp,
   interval,
   intervalsCount,
+  expenditureMetrics,
 }: ReportSummaryProps) {
   const locale = useLocale();
   const { t } = useTranslation();
@@ -183,6 +362,35 @@ export function ReportSummary({
           </Trans>
         </Text>
       </View>
+      {expenditureMetrics === null && (
+        <View
+          style={{
+            backgroundColor: theme.pageBackground,
+            marginTop: 10,
+            padding: 15,
+          }}
+        >
+          <Text>
+            <Trans>Calculating expenditure metrics...</Trans>
+          </Text>
+        </View>
+      )}
+      {expenditureMetrics === 'error' && (
+        <View
+          style={{
+            backgroundColor: theme.pageBackground,
+            marginTop: 10,
+            padding: 15,
+          }}
+        >
+          <Text>
+            <Trans>Expenditure metrics could not be calculated.</Trans>
+          </Text>
+        </View>
+      )}
+      {expenditureMetrics && expenditureMetrics !== 'error' && (
+        <ExpenditureMetricsSummary expenditureMetrics={expenditureMetrics} />
+      )}
     </View>
   );
 }
