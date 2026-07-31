@@ -13,6 +13,7 @@ import {
 import type { CompanionBackupRequest } from '#database/backup';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { InitializeCompanionDatabaseRequest } from '#database/migrate';
+import { sha256 } from '#integrity/canonical-hash';
 import { verifyCompanionIntegrity } from '#integrity/verify';
 
 describe('FIN-11 database safety gates', () => {
@@ -91,6 +92,37 @@ describe('FIN-11 database safety gates', () => {
     ).rejects.toThrow('Exclusive maintenance is required');
     expect(existsSync(initialization.databasePath)).toBe(false);
     expect(existsSync(initialization.anchorPath)).toBe(false);
+  });
+
+  it('refuses an existing migration-001-only database instead of forward migrating it', async () => {
+    const migration = await readFile(
+      path.join(
+        initialization.migrationsDirectory,
+        '001-instance-and-principal.sql',
+      ),
+      'utf8',
+    );
+    const database = new Database(initialization.databasePath);
+    try {
+      database.exec(migration);
+      database
+        .prepare(
+          'INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)',
+        )
+        .run(
+          1,
+          '001-instance-and-principal.sql',
+          new Date().toISOString(),
+          sha256(Buffer.from(migration, 'utf8')),
+        );
+    } finally {
+      database.close();
+    }
+    await writeFile(initialization.anchorPath, 'existing-anchor');
+
+    await expect(
+      initializeCompanionDatabaseAndAnchor(initialization),
+    ).rejects.toThrow('migration state is incomplete');
   });
 
   it.each([
@@ -211,7 +243,7 @@ describe('FIN-11 database safety gates', () => {
           expectedCurrencyCode: initialization.budgetCurrencyCode,
         }),
       ).resolves.toEqual({
-        schemaVersion: 1,
+        schemaVersion: 2,
         writeCapabilityState: 'recovery_required',
       });
     },

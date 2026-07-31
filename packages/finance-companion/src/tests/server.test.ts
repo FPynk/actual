@@ -4,11 +4,16 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 
 import type { FinanceCompanionConfiguration } from '#config';
-import { createFinanceCompanionHttpApplication } from '#http/server';
+import {
+  createFinanceCompanionHttpApplication,
+  startFinanceCompanionHttpServer,
+} from '#http/server';
 import {
   createFinanceCompanionSecurity,
   createInMemoryLocalPrincipalRepository,
 } from '#security/local-security';
+
+import { createTestRequestReplayRepository } from './fixtures/request-replay-repository.ts';
 
 const configuration: FinanceCompanionConfiguration = {
   bindAddress: '127.0.0.1',
@@ -42,6 +47,7 @@ describe('createFinanceCompanionHttpApplication', () => {
         configuration,
         path.resolve(import.meta.dirname, '../..'),
         security,
+        createTestRequestReplayRepository(),
       ),
     );
     await listen(server);
@@ -65,8 +71,26 @@ describe('createFinanceCompanionHttpApplication', () => {
         { ...configuration, bindAddress: '0.0.0.0' },
         '.',
         security,
+        createTestRequestReplayRepository(),
       ),
     ).toThrow('Finance Companion only supports the 127.0.0.1 bind address.');
+  });
+
+  it('recovers companion-only replay state before accepting HTTP work', async () => {
+    const requestReplayRepository = {
+      ...createTestRequestReplayRepository(),
+      recoverCompanionOnlyInterruptedRequests: () => {
+        throw new Error('synthetic recovery failure');
+      },
+    };
+    await expect(
+      startFinanceCompanionHttpServer(
+        { ...configuration, port: 4101 },
+        path.resolve(import.meta.dirname, '../..'),
+        security,
+        requestReplayRepository,
+      ),
+    ).rejects.toThrow('synthetic recovery failure');
   });
 
   it('requires the exact configured host', async () => {
@@ -75,6 +99,7 @@ describe('createFinanceCompanionHttpApplication', () => {
         configuration,
         path.resolve(import.meta.dirname, '../..'),
         security,
+        createTestRequestReplayRepository(),
       ),
     );
     await listen(server);
@@ -93,6 +118,7 @@ describe('createFinanceCompanionHttpApplication', () => {
         configuration,
         path.resolve(import.meta.dirname, '../..'),
         security,
+        createTestRequestReplayRepository(),
       ),
     );
     await listen(server);
@@ -126,6 +152,7 @@ describe('createFinanceCompanionHttpApplication', () => {
         configuration,
         path.resolve(import.meta.dirname, '../..'),
         security,
+        createTestRequestReplayRepository(),
       ),
     );
     await listen(server);
@@ -159,6 +186,7 @@ describe('createFinanceCompanionHttpApplication', () => {
             throw new Error('synthetic private failure detail');
           },
         },
+        createTestRequestReplayRepository(),
       ),
     );
     await listen(server);

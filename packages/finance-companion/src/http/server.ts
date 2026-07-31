@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdtemp, open, readdir, rmdir, unlink } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -10,8 +10,12 @@ import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 
 import type { FinanceCompanionConfiguration } from '#config';
+import { calculateRequestReplayHash } from '#http/request-idempotency';
+import type { AmazonUploadSemanticRequest } from '#http/request-idempotency';
 import type { FinanceCompanionSecurity } from '#security/local-security';
 import { createFinanceCompanionHealth } from '#service/health';
+import { validateIdempotencyKey } from '#service/request-replay-repository';
+import type { RequestReplayRepository } from '#service/request-replay-repository';
 
 const SESSION_COOKIE_NAME = 'finance_companion_session';
 const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
@@ -21,14 +25,20 @@ const UPLOAD_TEMPORARY_DIRECTORY_PREFIX = 'finance-companion-upload-';
 
 type FinanceCompanionListenerConfiguration = Readonly<{
   bindAddress: string;
+  budgetKeyHash: FinanceCompanionConfiguration['budgetKeyHash'];
   origin: FinanceCompanionConfiguration['origin'];
   port: number;
 }>;
+
+type IdempotentRequest = Request & {
+  financeCompanionAmazonUpload?: AmazonUploadSemanticRequest;
+};
 
 export function createFinanceCompanionHttpApplication(
   configuration: FinanceCompanionListenerConfiguration,
   staticUiDirectory: string,
   security: FinanceCompanionSecurity,
+  requestReplayRepository: RequestReplayRepository,
   uploadTemporaryParentDirectory = tmpdir(),
 ): Express {
   if (configuration.bindAddress !== '127.0.0.1') {
@@ -104,7 +114,14 @@ export function createFinanceCompanionHttpApplication(
     requireExactOrigin(configuration.origin),
     requireSession(security, true),
     requireAmazonUpload(uploadTemporaryParentDirectory),
-    (_request, response) => sendProblem(response, 'feature_not_implemented'),
+    requireRequestReplay(
+      configuration,
+      requestReplayRepository,
+      'amazon-import/v1',
+      request => request.financeCompanionAmazonUpload,
+    ),
+    (_request, response) =>
+      sendIdempotentProblem(response, 'feature_not_implemented'),
   );
   application.use('/api', (request, response) => {
     if (isMutation(request.method)) {
@@ -152,12 +169,15 @@ export async function startFinanceCompanionHttpServer(
   configuration: FinanceCompanionListenerConfiguration,
   staticUiDirectory: string,
   security: FinanceCompanionSecurity,
+  requestReplayRepository: RequestReplayRepository,
 ): Promise<Server> {
+  requestReplayRepository.recoverCompanionOnlyInterruptedRequests();
   const server = createServer(
     createFinanceCompanionHttpApplication(
       configuration,
       staticUiDirectory,
       security,
+      requestReplayRepository,
     ),
   );
   server.headersTimeout = 10 * 1000;
@@ -236,6 +256,7 @@ function requireSession(
       sendProblem(response, 'forbidden');
       return;
     }
+    response.locals.financeCompanionPrincipalId = session.principalId;
     next();
   };
 }
@@ -262,16 +283,18 @@ function requireAmazonUpload(uploadTemporaryParentDirectory: string) {
       return;
     }
     try {
-      const isAllowed = await streamAndValidateAmazonUpload(
+      const semanticRequest = await streamAndValidateAmazonUpload(
         request,
         declaredLength,
         boundary,
         uploadTemporaryParentDirectory,
       );
-      if (!isAllowed) {
+      if (semanticRequest === null) {
         sendProblem(response, 'invalid_request');
         return;
       }
+      (request as IdempotentRequest).financeCompanionAmazonUpload =
+        semanticRequest;
       next();
     } catch (error) {
       sendProblem(
@@ -281,6 +304,57 @@ function requireAmazonUpload(uploadTemporaryParentDirectory: string) {
           : 'invalid_request',
       );
     }
+  };
+}
+
+function requireRequestReplay(
+  configuration: FinanceCompanionListenerConfiguration,
+  repository: RequestReplayRepository,
+  operationId: string,
+  readSemanticRequest: (
+    request: IdempotentRequest,
+  ) => AmazonUploadSemanticRequest | undefined,
+) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    const idempotencyKey = validateIdempotencyKey(
+      readExactlyOneHeader(request.rawHeaders, 'idempotency-key'),
+    );
+    const semanticRequest = readSemanticRequest(request as IdempotentRequest);
+    const principalId = response.locals.financeCompanionPrincipalId;
+    if (
+      idempotencyKey === null ||
+      semanticRequest === undefined ||
+      typeof principalId !== 'string'
+    ) {
+      sendProblem(response, 'invalid_request');
+      return;
+    }
+    const decision = repository.begin({
+      budgetKeyHash: configuration.budgetKeyHash,
+      principalId,
+      invocationKind: 'local_http',
+      operationId,
+      idempotencyKey,
+      requestHash: calculateRequestReplayHash(semanticRequest),
+    });
+    if (decision.kind === 'conflict') {
+      sendProblem(response, 'idempotency_conflict');
+      return;
+    }
+    if (decision.kind === 'in_progress') {
+      response.setHeader('Retry-After', '1');
+      sendProblem(response, 'operation_in_progress');
+      return;
+    }
+    if (decision.kind === 'replay') {
+      response
+        .status(decision.response.status)
+        .type(decision.response.contentType)
+        .json(decision.response.body);
+      return;
+    }
+    response.locals.financeCompanionReplay = { repository, ...decision };
+    next();
   };
 }
 
@@ -346,6 +420,37 @@ function sendProblem(
     });
 }
 
+function sendIdempotentProblem(
+  response: Response,
+  code: 'feature_not_implemented',
+): void {
+  const problem = problemDefinitions[code];
+  const body = {
+    code,
+    requestId: randomUUID(),
+    message: problem.message,
+    retryable: problem.retryable,
+  };
+  const replay = response.locals.financeCompanionReplay as
+    | Readonly<{ replayId: string; repository: RequestReplayRepository }>
+    | undefined;
+  try {
+    replay?.repository.complete(replay.replayId, {
+      status: problem.status,
+      contentType: 'application/problem+json',
+      body,
+    });
+  } catch {
+    sendProblem(response, 'internal_error');
+    return;
+  }
+  response
+    .setHeader('Cache-Control', 'no-store')
+    .status(problem.status)
+    .type('application/problem+json')
+    .json(body);
+}
+
 const problemDefinitions = {
   invalid_request: {
     status: 400,
@@ -402,6 +507,16 @@ const problemDefinitions = {
     message: 'The operation failed.',
     retryable: false,
   },
+  idempotency_conflict: {
+    status: 409,
+    message: 'The idempotency key was reused for a different request.',
+    retryable: false,
+  },
+  operation_in_progress: {
+    status: 409,
+    message: 'The operation is already in progress.',
+    retryable: true,
+  },
 } as const;
 
 function isRequestTooLargeError(error: unknown): boolean {
@@ -438,7 +553,7 @@ async function streamAndValidateAmazonUpload(
   declaredLength: number,
   boundary: string,
   uploadTemporaryParentDirectory: string,
-): Promise<boolean> {
+): Promise<AmazonUploadSemanticRequest | null> {
   const temporaryDirectory = await mkdtemp(
     path.join(
       uploadTemporaryParentDirectory,
@@ -463,7 +578,7 @@ async function streamAndValidateAmazonUpload(
       }
       await fileHandle.write(chunk);
     }
-    if (receivedLength !== declaredLength) return false;
+    if (receivedLength !== declaredLength) return null;
     return await isAllowedAmazonUpload(fileHandle, receivedLength, boundary);
   } finally {
     try {
@@ -508,7 +623,7 @@ async function isAllowedAmazonUpload(
   fileHandle: FileHandle,
   fileLength: number,
   boundary: string,
-): Promise<boolean> {
+): Promise<AmazonUploadSemanticRequest | null> {
   const openingBoundary = Buffer.from(`--${boundary}\r\n`, 'ascii');
   const closingBoundary = Buffer.from(`\r\n--${boundary}--\r\n`, 'ascii');
   const initialLength = Math.min(
@@ -521,19 +636,19 @@ async function isAllowedAmazonUpload(
     initialRead.bytesRead !== initial.length ||
     !initial.subarray(0, openingBoundary.length).equals(openingBoundary)
   ) {
-    return false;
+    return null;
   }
   const headerStart = openingBoundary.length;
   const headerTerminator = initial.indexOf('\r\n\r\n', headerStart, 'ascii');
   if (headerTerminator < 0 || headerTerminator - headerStart > 8 * 1024) {
-    return false;
+    return null;
   }
   const headers = initial
     .subarray(headerStart, headerTerminator)
     .toString('ascii');
   const headerLines = headers.split('\r\n');
   if (headerLines.length !== 2 || Buffer.byteLength(headers) > 8 * 1024) {
-    return false;
+    return null;
   }
   const disposition = headerLines.find(line =>
     /^content-disposition:/i.test(line),
@@ -550,11 +665,11 @@ async function isAllowedAmazonUpload(
     !filename.toLowerCase().endsWith('.csv') ||
     contentType?.toLowerCase() !== 'content-type: text/csv'
   ) {
-    return false;
+    return null;
   }
   const bodyStart = headerTerminator + 4;
   const bodyLength = fileLength - bodyStart - closingBoundary.length;
-  if (bodyLength < 0) return false;
+  if (bodyLength < 0) return null;
   const actualClosingBoundary = Buffer.alloc(closingBoundary.length);
   const closingRead = await fileHandle.read(
     actualClosingBoundary,
@@ -571,7 +686,7 @@ async function isAllowedAmazonUpload(
       Buffer.from(`--${boundary}`, 'ascii'),
     )) !== 2
   ) {
-    return false;
+    return null;
   }
   const signatureBytes = Buffer.alloc(Math.min(bodyLength, 262));
   const signatureRead = await fileHandle.read(
@@ -580,10 +695,38 @@ async function isAllowedAmazonUpload(
     signatureBytes.length,
     bodyStart,
   );
-  return (
-    signatureRead.bytesRead === signatureBytes.length &&
-    !hasArchiveSignature(signatureBytes)
-  );
+  if (
+    signatureRead.bytesRead !== signatureBytes.length ||
+    hasArchiveSignature(signatureBytes)
+  ) {
+    return null;
+  }
+  return {
+    adapterVersion: 'amazon-import/v1',
+    mediaKind: 'text/csv',
+    byteHash: await hashFileRange(fileHandle, bodyStart, bodyLength),
+  };
+}
+
+async function hashFileRange(
+  fileHandle: FileHandle,
+  position: number,
+  length: number,
+): Promise<string> {
+  const hash = createHash('sha256');
+  let remaining = length;
+  let offset = position;
+  while (remaining > 0) {
+    const chunk = Buffer.alloc(Math.min(64 * 1024, remaining));
+    const result = await fileHandle.read(chunk, 0, chunk.length, offset);
+    if (result.bytesRead === 0) {
+      throw new Error('The upload ended unexpectedly.');
+    }
+    hash.update(chunk.subarray(0, result.bytesRead));
+    offset += result.bytesRead;
+    remaining -= result.bytesRead;
+  }
+  return hash.digest('hex');
 }
 
 function hasUnsafeFilenameCharacter(filename: string): boolean {
