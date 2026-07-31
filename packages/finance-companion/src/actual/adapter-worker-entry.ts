@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import * as actualApi from '@actual-app/api';
+import * as actualApiModule from '@actual-app/api';
 
 import type {
   AdapterWorkerMessage,
@@ -21,6 +21,43 @@ import type {
   ActualTransactionV1,
   SubscriptionScheduleSnapshotV1,
 } from '#contracts/adapter';
+
+type ActualApiQuery = Readonly<{
+  filter: (criteria: Record<string, unknown>) => ActualApiQuery;
+  options: (options: { splits: 'grouped' }) => ActualApiQuery;
+  select: (fields: '*') => ActualApiQuery;
+  serialize: () => unknown;
+}>;
+
+type ActualApiRuntime = Readonly<{
+  aqlQuery: (query: ActualApiQuery) => Promise<unknown>;
+  downloadBudget: (
+    budgetId: string,
+    options: { password: string | undefined },
+  ) => Promise<unknown>;
+  getCategories: () => Promise<unknown>;
+  getCategoryGroups: () => Promise<unknown>;
+  getPayees: () => Promise<unknown>;
+  getPreferences: () => Promise<unknown>;
+  getSchedules: () => Promise<unknown>;
+  getTransactions: (
+    accountId: string,
+    startDate: string,
+    endDate: string,
+  ) => Promise<unknown>;
+  init: (configuration: {
+    dataDir: string;
+    password: string;
+    serverURL: string;
+    verbose: boolean;
+  }) => Promise<unknown>;
+  q: (table: 'accounts' | 'transactions') => ActualApiQuery;
+  runBankSync: (options: { accountId: string }) => Promise<unknown>;
+  shutdown: () => Promise<unknown>;
+  sync: () => Promise<unknown>;
+}>;
+
+const actualApi = actualApiModule as unknown as ActualApiRuntime;
 
 let initialization:
   | Readonly<{
@@ -103,7 +140,9 @@ async function runWorkerRequest(
     await actualApi.downloadBudget(message.configuration.actualBudgetId, {
       password: message.configuration.actualBudgetEncryptionPassword,
     });
-    const preferences = await actualApi.getPreferences();
+    const preferences = preferencesForCurrency(
+      await actualApi.getPreferences(),
+    );
     const currencyCode = effectiveCurrencyCode(preferences);
     if (currencyCode !== message.configuration.actualBudgetCurrency) {
       throw new Error('Budget currency changed.');
@@ -200,18 +239,20 @@ async function readSnapshot(
     snapshot.accounts = (await readAccountRows()).map(projectAccount);
   }
   if (requestedSections.has('payees')) {
-    snapshot.payees = (await actualApi.getPayees()).map(projectPayee);
+    snapshot.payees = requiredRows(await actualApi.getPayees()).map(
+      projectPayee,
+    );
   }
   if (requestedSections.has('categories')) {
-    snapshot.categoryGroups = (await actualApi.getCategoryGroups()).map(
-      projectCategoryGroup,
-    );
-    snapshot.categories = (await actualApi.getCategories()).map(
+    snapshot.categoryGroups = requiredRows(
+      await actualApi.getCategoryGroups(),
+    ).map(projectCategoryGroup);
+    snapshot.categories = requiredRows(await actualApi.getCategories()).map(
       projectCategory,
     );
   }
   if (requestedSections.has('schedules')) {
-    snapshot.schedules = (await actualApi.getSchedules())
+    snapshot.schedules = requiredRows(await actualApi.getSchedules())
       .flatMap(schedule => {
         const projectedSchedule = projectSchedule(schedule);
         return projectedSchedule === null ? [] : [projectedSchedule];
@@ -234,7 +275,7 @@ async function readSnapshot(
       ),
     );
     const projected = transactions.flatMap(rows =>
-      rows.map(projectTransaction),
+      requiredRows(rows).map(projectTransaction),
     );
     if (projected.length > 10_000) throw new Error('Snapshot exceeds limit.');
     snapshot.transactions = projected;
@@ -627,7 +668,7 @@ function projectTransaction(
 }
 
 function projectSchedule(
-  schedule: Awaited<ReturnType<typeof actualApi.getSchedules>>[number],
+  schedule: Record<string, unknown>,
 ): SubscriptionScheduleSnapshotV1 | null {
   const recurrence = projectScheduleRecurrence(schedule.date);
   if (recurrence === null) return null;
@@ -643,39 +684,55 @@ function projectSchedule(
 }
 
 function projectScheduleRecurrence(
-  value: Awaited<ReturnType<typeof actualApi.getSchedules>>[number]['date'],
+  value: unknown,
 ): SubscriptionScheduleSnapshotV1['recurrence'] | null {
   if (typeof value === 'string') {
     if (!isIsoDate(value)) throw new Error('Actual returned an invalid date.');
     return { date: value, kind: 'one-time' };
   }
-  if (value.frequency === 'daily') return null;
+  if (!isRecord(value)) {
+    throw new Error('Actual returned an invalid schedule recurrence.');
+  }
+  const frequency = value.frequency;
+  if (frequency === 'daily') return null;
   const interval = value.interval ?? 1;
+  const start = value.start;
   if (
-    !['weekly', 'monthly', 'yearly'].includes(value.frequency) ||
+    (frequency !== 'weekly' &&
+      frequency !== 'monthly' &&
+      frequency !== 'yearly') ||
+    typeof interval !== 'number' ||
     !Number.isSafeInteger(interval) ||
     interval < 1 ||
-    !isIsoDate(value.start)
+    typeof start !== 'string' ||
+    !isIsoDate(start)
   ) {
     throw new Error('Actual returned an invalid schedule recurrence.');
   }
   return {
-    frequency: value.frequency,
+    frequency,
     interval,
     kind: 'recurring',
-    start: value.start,
+    start,
   };
 }
 
 function projectScheduleAmount(
-  value: Awaited<ReturnType<typeof actualApi.getSchedules>>[number]['amount'],
+  value: unknown,
 ): SubscriptionScheduleSnapshotV1['amount'] {
   if (value === undefined) return null;
   if (typeof value === 'number') return requiredNumber(value);
-  if (!Number.isSafeInteger(value.num1) || !Number.isSafeInteger(value.num2)) {
+  const num1 = isRecord(value) ? value.num1 : undefined;
+  const num2 = isRecord(value) ? value.num2 : undefined;
+  if (
+    typeof num1 !== 'number' ||
+    !Number.isSafeInteger(num1) ||
+    typeof num2 !== 'number' ||
+    !Number.isSafeInteger(num2)
+  ) {
     throw new Error('Actual returned an invalid schedule amount.');
   }
-  return { num1: value.num1, num2: value.num2 };
+  return { num1, num2 };
 }
 
 function validScheduleAmountOperator(
@@ -695,8 +752,41 @@ function asRows(value: unknown): Record<string, unknown>[] {
   return [];
 }
 
+function requiredRows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Actual returned invalid rows.');
+  }
+  return value.map(requiredRecord);
+}
+
+function preferencesForCurrency(value: unknown): {
+  defaultCurrencyCode?: string;
+  'flags.currency'?: string;
+} {
+  if (!isRecord(value)) {
+    throw new Error('Actual returned invalid preferences.');
+  }
+  return {
+    defaultCurrencyCode:
+      typeof value.defaultCurrencyCode === 'string'
+        ? value.defaultCurrencyCode
+        : undefined,
+    'flags.currency':
+      typeof value['flags.currency'] === 'string'
+        ? value['flags.currency']
+        : undefined,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function requiredRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error('Actual returned an invalid record.');
+  }
+  return value;
 }
 
 function requiredString(value: unknown): string {

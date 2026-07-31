@@ -295,7 +295,9 @@ describe('subscription scan state', () => {
         },
       ],
       repository: {
-        persistCandidates: candidates => persistedScans.push(candidates),
+        persistCandidates: candidates => {
+          persistedScans.push(candidates);
+        },
         readCandidates: () => [],
       },
     });
