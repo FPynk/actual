@@ -9,6 +9,7 @@ export type AdapterWorkerStartMessage = Readonly<{
   operationOwnerMarker: string;
   ownershipNonce: string;
   workerOperationId: string;
+  bankSyncRetryJitterMilliseconds?: readonly [number, number];
   configuration: Readonly<{
     actualApiDirectory: string;
     actualApiDirectoryNonce: string;
@@ -26,6 +27,7 @@ export type AdapterWorkerStartMessage = Readonly<{
 export type AdapterWorkerParentMessage =
   | AdapterWorkerStartMessage
   | Readonly<{ kind: 'request'; request: ActualAdapterRequest }>
+  | Readonly<{ kind: 'cancel' }>
   | Readonly<{ kind: 'terminate' }>;
 
 export type AdapterWorkerMessage =

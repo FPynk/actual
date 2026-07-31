@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   lstat,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -13,6 +14,7 @@ import path from 'node:path';
 import { ActualAdapterQueue } from '#actual/adapter-queue';
 import { calculateBudgetBindingHash } from '#actual/budget-binding';
 import { canonicalJson } from '#actual/canonical-json';
+import { reclaimActualApiLockAfterWorkerExit } from '#actual/operation-lock';
 import type {
   ActualAdapterRequest,
   ActualAdapterResponse,
@@ -35,7 +37,14 @@ export type ActualAdapterConfiguration = Readonly<{
   actualBudgetEncryptionPassword?: string;
 }>;
 
-export type AdapterExecutionContext = Readonly<{ jobRunId?: string }>;
+export type AdapterExecutionContext = Readonly<{
+  jobRunId?: string;
+  workerOperationId?: string;
+  bankSyncRetryJitterMilliseconds?: readonly [number, number];
+  cancellationSignal?: AbortSignal;
+  onQuarantine?: (quarantineBundleHash: string) => void;
+  onSafetyOutcome?: (outcome: 'canceled' | 'outcome-unknown') => void;
+}>;
 
 export type AdapterOperation = Readonly<{
   request: ActualAdapterRequest;
@@ -43,11 +52,14 @@ export type AdapterOperation = Readonly<{
   ownershipNonce: string;
   operationDirectory: string;
   operationOwnerMarker: string;
+  bankSyncRetryJitterMilliseconds?: readonly [number, number];
 }>;
 
 export type AdapterWorkerRunner = (
   operation: AdapterOperation,
   signal: AbortSignal,
+  cancellationSignal?: AbortSignal,
+  onTerminalResponse?: (response: ActualAdapterResponse) => void,
 ) => Promise<ActualAdapterResponse>;
 
 export type ActualAdapter = Readonly<{
@@ -88,7 +100,14 @@ export function createActualAdapter(
       validateRequest(request, context);
       const ownedRequest = structuredClone(request);
       const ownedContext =
-        context === undefined ? undefined : structuredClone(context);
+        context === undefined
+          ? undefined
+          : {
+              jobRunId: context.jobRunId,
+              workerOperationId: context.workerOperationId,
+              bankSyncRetryJitterMilliseconds:
+                context.bankSyncRetryJitterMilliseconds,
+            };
       if (health === 'unhealthy') {
         throw new ActualAdapterError('adapter_unhealthy');
       }
@@ -101,10 +120,29 @@ export function createActualAdapter(
         const controller = new AbortController();
         let mayCleanOperation = true;
         let mustQuarantineOperation = false;
+        let operationFailure: unknown;
         activeOperationStatus = 'running';
         try {
           const response = await runWithDeadlines(
-            runWorker(operation, controller.signal),
+            runWorker(
+              operation,
+              controller.signal,
+              context?.cancellationSignal,
+              response => {
+                validateResponse(
+                  configuration,
+                  ownedRequest,
+                  response,
+                  ownedContext,
+                );
+                if (
+                  response.kind === 'run-account-bank-sync' &&
+                  response.result.outcomeCode === 'outcome-unknown'
+                ) {
+                  context?.onSafetyOutcome?.(response.result.outcomeCode);
+                }
+              },
+            ),
             controller,
             configuration.softTimeoutMilliseconds,
             configuration.hardTimeoutMilliseconds,
@@ -112,17 +150,38 @@ export function createActualAdapter(
             () => {
               activeOperationStatus = 'pending-timeout';
             },
+            () => context?.onSafetyOutcome?.('outcome-unknown'),
           );
           validateResponse(configuration, ownedRequest, response, ownedContext);
           assertWithinIpcLimit(response);
+          if (
+            response.kind === 'run-account-bank-sync' &&
+            response.result.outcomeCode === 'canceled'
+          ) {
+            context?.onSafetyOutcome?.('canceled');
+          }
+          if (
+            response.kind === 'run-account-bank-sync' &&
+            response.result.outcomeCode === 'outcome-unknown'
+          ) {
+            mustQuarantineOperation = true;
+          }
           return response;
         } catch (error) {
+          operationFailure = error;
           if (error instanceof WorkerExitUnprovenError) {
             mayCleanOperation = false;
           }
           if (
             error instanceof ActualAdapterError &&
             error.code === 'adapter_timeout'
+          ) {
+            mustQuarantineOperation = true;
+          }
+          if (
+            error instanceof ActualAdapterError &&
+            error.code === 'adapter_unhealthy' &&
+            error.bankSyncWorkBegan
           ) {
             mustQuarantineOperation = true;
           }
@@ -139,7 +198,18 @@ export function createActualAdapter(
           if (mayCleanOperation) {
             if (mustQuarantineOperation) {
               try {
-                await quarantineOwnedOperation(configuration, operation);
+                const quarantineBundleHash = await quarantineOwnedOperation(
+                  configuration,
+                  operation,
+                );
+                if (operationFailure instanceof ActualAdapterError) {
+                  operationFailure.quarantineBundleHash = quarantineBundleHash;
+                }
+                context?.onQuarantine?.(quarantineBundleHash);
+                await reclaimActualApiLockAfterWorkerExit(
+                  configuration.actualApiDirectory,
+                  configuration.actualApiDirectoryNonce,
+                );
                 if (health === 'healthy') {
                   health = 'degraded';
                 }
@@ -178,7 +248,7 @@ async function createOperation(
   request: ActualAdapterRequest,
   context: AdapterExecutionContext | undefined,
 ): Promise<AdapterOperation> {
-  const workerOperationId = randomUUID();
+  const workerOperationId = context?.workerOperationId ?? randomUUID();
   const ownershipNonce = randomBytes(32).toString('base64url');
   const operationRoot = await ensureManagedParent(
     configuration,
@@ -216,6 +286,7 @@ async function createOperation(
     ownershipNonce,
     operationDirectory,
     operationOwnerMarker: marker,
+    bankSyncRetryJitterMilliseconds: context?.bankSyncRetryJitterMilliseconds,
   };
 }
 
@@ -304,7 +375,7 @@ async function removeOwnedOperation(
 async function quarantineOwnedOperation(
   configuration: ActualAdapterConfiguration,
   operation: AdapterOperation,
-): Promise<void> {
+): Promise<string> {
   const identity = deriveExpectedOperationIdentity(configuration, operation);
   const operationRoot = await ensureManagedParent(
     configuration,
@@ -342,6 +413,79 @@ async function quarantineOwnedOperation(
     operation,
   );
   await assertPathAbsent(identity.operationDirectory);
+  return quarantineBundleHash(quarantineDirectory, identity.rootName);
+}
+
+async function quarantineBundleHash(
+  quarantineDirectory: string,
+  rootName: string,
+): Promise<string> {
+  const entries: Readonly<{
+    relativePath: string;
+    type: 0 | 1;
+    content: Buffer;
+  }>[] = await readQuarantineEntries(quarantineDirectory, '');
+  const rootNameBytes = Buffer.from(rootName, 'utf8');
+  const rootNameLength = Buffer.alloc(2);
+  rootNameLength.writeUInt16BE(rootNameBytes.length);
+  const entryCount = Buffer.alloc(4);
+  entryCount.writeUInt32BE(entries.length);
+  const encodedEntries = entries.flatMap(entry => {
+    const pathBytes = Buffer.from(entry.relativePath, 'utf8');
+    const header = Buffer.alloc(13);
+    header.writeUInt8(entry.type, 0);
+    header.writeUInt32BE(pathBytes.length, 1);
+    header.writeBigUInt64BE(BigInt(entry.content.length), 5);
+    return [header, pathBytes, entry.content];
+  });
+  const bundle = Buffer.concat([
+    Buffer.from('FCQTR001', 'ascii'),
+    rootNameLength,
+    rootNameBytes,
+    entryCount,
+    ...encodedEntries,
+  ]);
+  return createHash('sha256')
+    .update('finance-companion/operation-quarantine-bundle/v1\0')
+    .update(bundle)
+    .digest('hex');
+}
+
+async function readQuarantineEntries(
+  directory: string,
+  relativeParent: string,
+): Promise<Readonly<{ relativePath: string; type: 0 | 1; content: Buffer }>[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const result: Array<{
+    relativePath: string;
+    type: 0 | 1;
+    content: Buffer;
+  }> = [];
+  for (const entry of entries) {
+    const relativePath = relativeParent
+      ? `${relativeParent}/${entry.name}`
+      : entry.name;
+    const entryPath = path.join(directory, entry.name);
+    const status = await lstat(entryPath);
+    if (status.isSymbolicLink()) {
+      throw new ActualAdapterError('adapter_unhealthy');
+    }
+    if (status.isDirectory()) {
+      result.push({ relativePath, type: 0, content: Buffer.alloc(0) });
+      result.push(...(await readQuarantineEntries(entryPath, relativePath)));
+      continue;
+    }
+    if (!status.isFile() || status.nlink !== 1) {
+      throw new ActualAdapterError('adapter_unhealthy');
+    }
+    result.push({ relativePath, type: 1, content: await readFile(entryPath) });
+  }
+  return result.sort((left, right) =>
+    Buffer.compare(
+      Buffer.from(left.relativePath),
+      Buffer.from(right.relativePath),
+    ),
+  );
 }
 
 async function ensureManagedParent(
@@ -498,6 +642,7 @@ async function runWithDeadlines(
   hardTimeoutMilliseconds: number,
   workerExitTimeoutMilliseconds: number,
   reportSoftTimeout: () => void,
+  reportHardTimeout: () => void,
 ): Promise<ActualAdapterResponse> {
   let softTimeout: NodeJS.Timeout | undefined;
   let hardTimeout: NodeJS.Timeout | undefined;
@@ -514,6 +659,11 @@ async function runWithDeadlines(
       hardTimeout = setTimeout(() => {
         void (async () => {
           didReachHardDeadline = true;
+          try {
+            reportHardTimeout();
+          } catch {
+            // The worker must still be terminated if durable reporting fails.
+          }
           controller.abort();
           const joined = await Promise.race([
             operation.then(
@@ -540,9 +690,15 @@ async function runWithDeadlines(
         response => {
           if (!didReachHardDeadline) settle(() => resolve(response));
         },
-        () => {
+        error => {
           if (!didReachHardDeadline) {
-            settle(() => reject(new ActualAdapterError('adapter_unhealthy')));
+            settle(() =>
+              reject(
+                error instanceof ActualAdapterError
+                  ? error
+                  : new ActualAdapterError('adapter_unhealthy'),
+              ),
+            );
           }
         },
       );
@@ -665,6 +821,22 @@ function validateRequest(
     request.accountId.length === 0 ||
     context?.jobRunId === undefined ||
     !isUuid(context.jobRunId)
+  ) {
+    throw new ActualAdapterError('invalid_adapter_request');
+  }
+  if (
+    context.workerOperationId !== undefined &&
+    !isUuid(context.workerOperationId)
+  ) {
+    throw new ActualAdapterError('invalid_adapter_request');
+  }
+  if (
+    context.bankSyncRetryJitterMilliseconds !== undefined &&
+    (!Array.isArray(context.bankSyncRetryJitterMilliseconds) ||
+      context.bankSyncRetryJitterMilliseconds.length !== 2 ||
+      context.bankSyncRetryJitterMilliseconds.some(
+        value => !Number.isInteger(value) || value < 0 || value > 250,
+      ))
   ) {
     throw new ActualAdapterError('invalid_adapter_request');
   }

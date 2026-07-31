@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -7,12 +7,12 @@ import path from 'node:path';
 import { runFinanceCompanionCommand } from '#cli';
 import type { FinanceCompanionConfiguration } from '#config';
 import type { FinanceCompanionSecurity } from '#security/local-security';
+import { BankSyncJobError } from '#service/bank-sync';
 
 const commands = [
   'test:db',
   'test:adapter',
   'test:e2e',
-  'job:bank-sync',
   'db:migrate',
   'owner:rotate',
   'backup:create',
@@ -77,7 +77,102 @@ describe('runFinanceCompanionCommand', () => {
       expect(result.stdout).toContain('passed');
       expect(result.stderr).toBe('');
     },
+    15_000,
   );
+
+  it('writes one bank-sync summary and its deterministic exit code', async () => {
+    const standardOutput: string[] = [];
+    const standardError: string[] = [];
+    const summary = {
+      accountResults: [],
+      completedAt: '2026-07-31T12:00:01.000Z',
+      id: '11111111-1111-4111-8111-111111111111',
+      kind: 'bank-sync' as const,
+      retryable: false,
+      startedAt: '2026-07-31T12:00:00.000Z',
+      status: 'skipped' as const,
+    };
+
+    const exitCode = await runFinanceCompanionCommand(
+      'job:bank-sync',
+      message => standardOutput.push(message),
+      message => standardError.push(message),
+      undefined,
+      undefined,
+      undefined,
+      ['--scheduler', '--idempotency-key', 'a-valid-idempotency-key'],
+      async command_ => {
+        expect(command_).toEqual({
+          accountIds: null,
+          idempotencyKey: 'a-valid-idempotency-key',
+          invocationKind: 'scheduler',
+        });
+        return summary;
+      },
+    );
+
+    expect(exitCode).toBe(0);
+    expect(standardOutput).toEqual([`${JSON.stringify(summary)}\n`]);
+    expect(standardError).toEqual([]);
+  });
+
+  it('maps an in-progress bank-sync job to unavailable exit 69', async () => {
+    const standardError: string[] = [];
+    const exitCode = await runFinanceCompanionCommand(
+      'job:bank-sync',
+      () => undefined,
+      message => standardError.push(message),
+      undefined,
+      undefined,
+      undefined,
+      ['--idempotency-key', 'a-valid-idempotency-key'],
+      async () => {
+        throw new BankSyncJobError('operation_in_progress');
+      },
+    );
+    expect(exitCode).toBe(69);
+    expect(standardError.join('')).toContain('operation_in_progress');
+  });
+
+  it('translates a spawned CLI SIGTERM into a persisted cancellation result', async () => {
+    const fixture = path.resolve(
+      import.meta.dirname,
+      'fixtures/bank-sync-cli-signal.ts',
+    );
+    const result = await new Promise<
+      Readonly<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>
+    >(resolve => {
+      const child = spawn(
+        process.execPath,
+        ['--experimental-strip-types', fixture],
+        {
+          cwd: path.resolve(import.meta.dirname, '../../../..'),
+          env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT },
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        },
+      );
+      let stdout = '';
+      let stderr = '';
+      if (child.stdout === null || child.stderr === null) {
+        throw new Error('The spawned CLI output pipes are unavailable.');
+      }
+      child.stdout.setEncoding('utf8').on('data', value => {
+        stdout += value;
+      });
+      child.stderr.setEncoding('utf8').on('data', value => {
+        stderr += value;
+      });
+      child.once('message', () => child.send('SIGTERM'));
+      child.once('exit', code => resolve({ code, stderr, stdout }));
+    });
+    expect(result.code).toBe(130);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 'canceled' });
+  });
 
   it('initializes the durable owner repository before starting the server', async () => {
     const temporaryDirectory = await mkdtemp(

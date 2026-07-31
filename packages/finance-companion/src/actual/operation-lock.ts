@@ -67,6 +67,24 @@ export async function acquireActualApiLock(
   };
 }
 
+export async function reclaimActualApiLockAfterWorkerExit(
+  actualApiDirectory: string,
+  directoryOwnershipNonce: string,
+): Promise<void> {
+  const lockDirectory = path.join(
+    actualApiDirectory,
+    'locks',
+    'actual-api.lock',
+  );
+  try {
+    await lstat(lockDirectory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  await reclaimStaleLock(lockDirectory, directoryOwnershipNonce);
+}
+
 async function writeLock(
   lockDirectory: string,
   owner: LockOwner,

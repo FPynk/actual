@@ -50,6 +50,16 @@ export type FinanceCompanionConfiguration = Readonly<{
   budgetCurrencyCode: string;
   ownerBootstrapCredential: string | undefined;
   ownerBootstrapCredentialFile: string | undefined;
+  actualApiDirectory?: string;
+  actualServerUrl?: string;
+  actualBudgetId?: string;
+  actualPassword?: string;
+  actualPasswordFile?: string;
+  actualBudgetEncryptionPassword?: string;
+  actualBudgetEncryptionPasswordFile?: string;
+  adapterSoftTimeoutMilliseconds?: number;
+  adapterHardTimeoutMilliseconds?: number;
+  workerExitTimeoutMilliseconds?: number;
 }>;
 
 export class FinanceCompanionConfigurationError extends Error {
@@ -225,6 +235,37 @@ function parseFinanceCompanionConfiguration(
       environment.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL,
     ownerBootstrapCredentialFile:
       environment.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL_FILE,
+    actualApiDirectory: path.resolve(
+      required(environment, 'FINANCE_COMPANION_ACTUAL_API_DIR'),
+    ),
+    actualServerUrl,
+    actualBudgetId,
+    actualPassword: environment.FINANCE_COMPANION_ACTUAL_PASSWORD,
+    actualPasswordFile:
+      environment.FINANCE_COMPANION_ACTUAL_PASSWORD_FILE === undefined
+        ? undefined
+        : path.resolve(environment.FINANCE_COMPANION_ACTUAL_PASSWORD_FILE),
+    actualBudgetEncryptionPassword:
+      environment.FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD,
+    actualBudgetEncryptionPasswordFile:
+      environment.FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE ===
+      undefined
+        ? undefined
+        : path.resolve(
+            environment.FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE,
+          ),
+    adapterSoftTimeoutMilliseconds: softTimeout,
+    adapterHardTimeoutMilliseconds: hardTimeout,
+    workerExitTimeoutMilliseconds: integer(
+      valueOrDefault(
+        environment,
+        'FINANCE_COMPANION_WORKER_EXIT_TIMEOUT_MS',
+        '30000',
+      ),
+      'FINANCE_COMPANION_WORKER_EXIT_TIMEOUT_MS',
+      1,
+      Number.MAX_SAFE_INTEGER,
+    ),
   };
 }
 

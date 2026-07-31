@@ -41,6 +41,16 @@ describe('loadFinanceCompanionConfiguration', () => {
       budgetCurrencyCode: 'USD',
       ownerBootstrapCredential: undefined,
       ownerBootstrapCredentialFile: undefined,
+      actualApiDirectory: 'C:\\actual-api',
+      actualServerUrl: 'https://actual.example.test',
+      actualBudgetId: 'budget-id',
+      actualPassword: 'development-password',
+      actualPasswordFile: undefined,
+      actualBudgetEncryptionPassword: undefined,
+      actualBudgetEncryptionPasswordFile: undefined,
+      adapterSoftTimeoutMilliseconds: 120000,
+      adapterHardTimeoutMilliseconds: 180000,
+      workerExitTimeoutMilliseconds: 30000,
     });
   });
 
@@ -106,6 +116,16 @@ describe('loadFinanceCompanionConfiguration', () => {
       budgetCurrencyCode: 'USD',
       ownerBootstrapCredential: undefined,
       ownerBootstrapCredentialFile: undefined,
+      actualApiDirectory: 'C:\\actual-api',
+      actualServerUrl: 'https://actual.example.test',
+      actualBudgetId: 'budget-id',
+      actualPassword: 'development-password',
+      actualPasswordFile: undefined,
+      actualBudgetEncryptionPassword: undefined,
+      actualBudgetEncryptionPasswordFile: undefined,
+      adapterSoftTimeoutMilliseconds: 120000,
+      adapterHardTimeoutMilliseconds: 180000,
+      workerExitTimeoutMilliseconds: 30000,
     });
     expect(environment.FINANCE_COMPANION_ACTUAL_PASSWORD).toBe(
       'development-password',
@@ -130,6 +150,16 @@ describe('loadFinanceCompanionConfiguration', () => {
         budgetCurrencyCode: 'USD',
         ownerBootstrapCredential: 'synthetic-owner-secret',
         ownerBootstrapCredentialFile: undefined,
+        actualApiDirectory: 'C:\\actual-api',
+        actualServerUrl: 'https://actual.example.test',
+        actualBudgetId: 'budget-id',
+        actualPassword: 'development-password',
+        actualPasswordFile: undefined,
+        actualBudgetEncryptionPassword: 'synthetic-budget-secret',
+        actualBudgetEncryptionPasswordFile: undefined,
+        adapterSoftTimeoutMilliseconds: 120000,
+        adapterHardTimeoutMilliseconds: 180000,
+        workerExitTimeoutMilliseconds: 30000,
       });
       for (const secretEnvironmentName of directSecretEnvironmentNames) {
         expect(process.env[secretEnvironmentName]).toBeUndefined();
