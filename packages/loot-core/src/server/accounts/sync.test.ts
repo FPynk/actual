@@ -1344,7 +1344,7 @@ describe('Account sync', () => {
     ).toBe(-10_000);
   });
 
-  test('characterizes current FIN-17 baseline: fuzzy matching can select a split child directly', async () => {
+  test('does not fuzzy-match a split child directly', async () => {
     const accountId = 'characterized-split-child-account';
     await prepareLocalAccount(accountId);
     const payeeId = await db.insertPayee({
@@ -1378,8 +1378,8 @@ describe('Account sync', () => {
       },
     ]);
 
-    expect(result.added).toEqual([]);
-    expect(result.updated).toEqual(['split-child-baseline-target']);
+    expect(result.added).toHaveLength(1);
+    expect(result.updated).toEqual([]);
     const splitChildBaselineTransactions = await getAllTransactions();
     expect(
       splitChildBaselineTransactions.find(
@@ -1390,7 +1390,157 @@ describe('Account sync', () => {
       splitChildBaselineTransactions.find(
         transaction => transaction.id === 'split-child-baseline-target',
       ),
-    ).toMatchObject({ id: 'split-child-baseline-target', cleared: 1 });
+    ).toMatchObject({ id: 'split-child-baseline-target', cleared: 0 });
+  });
+
+  test('collapses identical incoming stable IDs before rules and writes', async () => {
+    const accountId = 'duplicate-incoming-identity-account';
+    await prepareLocalAccount(accountId);
+
+    const transactions = [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'duplicate-stable-id',
+        payee_name: 'Duplicate payee',
+      },
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'duplicate-stable-id',
+        payee_name: 'Duplicate payee',
+      },
+    ];
+
+    const preview = await reconcileTransactions(
+      accountId,
+      transactions,
+      false,
+      true,
+      true,
+    );
+    const commit = await reconcileTransactions(accountId, transactions);
+
+    expect(preview.identityResults).toEqual([
+      {
+        code: 'duplicate_incoming_identity',
+        accountId,
+        importedId: 'duplicate-stable-id',
+        incomingIndexes: [0, 1],
+        canonicalIncomingIndex: 0,
+        existingTransactionIds: [],
+      },
+    ]);
+    expect(commit.identityResults).toEqual(preview.identityResults);
+    expect(commit.added).toHaveLength(1);
+    expect((await getAllPayees()).map(payee => payee.name)).toEqual([
+      'Duplicate Payee',
+    ]);
+  });
+
+  test('quarantines conflicting incoming stable IDs without creating payees', async () => {
+    const accountId = 'conflicting-incoming-identity-account';
+    await prepareLocalAccount(accountId);
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'conflicting-stable-id',
+        payee_name: 'First conflicting payee',
+      },
+      {
+        date: '2024-04-05',
+        amount: -1_235,
+        imported_id: 'conflicting-stable-id',
+        payee_name: 'Second conflicting payee',
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.identityResults).toEqual([
+      {
+        code: 'conflicting_incoming_identity',
+        accountId,
+        importedId: 'conflicting-stable-id',
+        incomingIndexes: [0, 1],
+        canonicalIncomingIndex: null,
+        existingTransactionIds: [],
+      },
+    ]);
+    expect(await getAllPayees()).toEqual([]);
+  });
+
+  test('quarantines ambiguous and split-child exact identities', async () => {
+    const accountId = 'exact-identity-account';
+    await prepareLocalAccount(accountId);
+    await db.insertTransaction({
+      id: 'ambiguous-one',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'ambiguous-stable-id',
+    });
+    await db.insertTransaction({
+      id: 'ambiguous-two',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      imported_id: 'ambiguous-stable-id',
+    });
+    await db.insertTransaction({
+      id: 'split-identity-parent',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      is_parent: true,
+    });
+    await db.insertTransaction({
+      id: 'split-identity-child',
+      account: accountId,
+      amount: -1_234,
+      date: '2024-04-05',
+      parent_id: 'split-identity-parent',
+      is_child: true,
+      imported_id: 'split-child-stable-id',
+    });
+
+    const result = await reconcileTransactions(accountId, [
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'ambiguous-stable-id',
+      },
+      {
+        date: '2024-04-05',
+        amount: -1_234,
+        imported_id: 'split-child-stable-id',
+        forceAddTransaction: true,
+      },
+    ]);
+
+    expect(result.added).toEqual([]);
+    expect(result.updated).toEqual([]);
+    expect(result.identityResults).toEqual([
+      {
+        code: 'ambiguous_existing_identity',
+        accountId,
+        importedId: 'ambiguous-stable-id',
+        incomingIndexes: [0],
+        canonicalIncomingIndex: 0,
+        existingTransactionIds: ['ambiguous-one', 'ambiguous-two'],
+      },
+      {
+        code: 'ineligible_existing_identity',
+        reason: 'split_child',
+        accountId,
+        importedId: 'split-child-stable-id',
+        incomingIndexes: [1],
+        canonicalIncomingIndex: 1,
+        existingTransactionIds: ['split-identity-child'],
+      },
+    ]);
   });
 
   test('characterizes updateDates for a normal exact match and a split parent', async () => {

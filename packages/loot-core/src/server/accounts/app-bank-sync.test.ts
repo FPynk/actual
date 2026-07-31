@@ -158,6 +158,7 @@ describe('accountsBankSync', () => {
       added: [],
       updated: [],
       updatedPreview: [],
+      identityResults: [],
     });
 
     const result = await accountsBankSyncHandler({ ids: ['acct1'] });
@@ -294,7 +295,12 @@ describe('bank sync handlers must not nest mutators', () => {
 
     vi.mocked(bankSync.syncAccount).mockImplementation(async () => {
       await runMutator(async () => undefined);
-      return { added: [], updated: [], updatedPreview: [] };
+      return {
+        added: [],
+        updated: [],
+        updatedPreview: [],
+        identityResults: [],
+      };
     });
 
     let timer: ReturnType<typeof setTimeout> | undefined;

@@ -1659,6 +1659,7 @@ async function importTransactions({
       added: reconciled.added,
       updated: reconciled.updated,
       updatedPreview: reconciled.updatedPreview,
+      identityResults: reconciled.identityResults,
     };
   } catch (err) {
     if (err instanceof TransactionError) {
@@ -1667,6 +1668,7 @@ async function importTransactions({
         added: [],
         updated: [],
         updatedPreview: [],
+        identityResults: [],
       };
     }
 

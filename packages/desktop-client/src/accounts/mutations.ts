@@ -211,6 +211,47 @@ type ImportPreviewTransactionsPayload = {
   reimportDeleted?: boolean;
 };
 
+type ImportIdentityResult = {
+  code:
+    | 'duplicate_incoming_identity'
+    | 'conflicting_incoming_identity'
+    | 'ambiguous_existing_identity'
+    | 'ineligible_existing_identity';
+};
+
+type TranslationFunction = ReturnType<typeof useTranslation>['t'];
+
+function getIdentityResultsSummary(
+  identityResults: ImportIdentityResult[],
+  t: TranslationFunction,
+) {
+  const countByCode = new Map<string, number>();
+  identityResults.forEach(result => {
+    countByCode.set(result.code, (countByCode.get(result.code) ?? 0) + 1);
+  });
+
+  return [
+    [
+      'duplicate_incoming_identity',
+      'Repeated stable-ID rows collapsed to one row',
+    ],
+    ['conflicting_incoming_identity', 'Conflicting stable-ID rows skipped'],
+    [
+      'ambiguous_existing_identity',
+      'Stable IDs matching multiple existing rows skipped',
+    ],
+    [
+      'ineligible_existing_identity',
+      'Stable IDs matching split details skipped',
+    ],
+  ]
+    .flatMap(([code, message]) => {
+      const count = countByCode.get(code);
+      return count ? [t('{{count}}: {{message}}', { count, message })] : [];
+    })
+    .join('. ');
+}
+
 export function useImportPreviewTransactionsMutation() {
   const queryClient = useQueryClient();
   const dispatch = useDispatch();
@@ -222,15 +263,16 @@ export function useImportPreviewTransactionsMutation() {
       transactions,
       reimportDeleted,
     }: ImportPreviewTransactionsPayload) => {
-      const { errors = [], updatedPreview } = await send(
-        'transactions-import',
-        {
-          accountId,
-          transactions,
-          isPreview: true,
-          opts: reimportDeleted !== undefined ? { reimportDeleted } : undefined,
-        },
-      );
+      const {
+        errors = [],
+        updatedPreview,
+        identityResults = [],
+      } = await send('transactions-import', {
+        accountId,
+        transactions,
+        isPreview: true,
+        opts: reimportDeleted !== undefined ? { reimportDeleted } : undefined,
+      });
 
       errors.forEach(error => {
         dispatch(
@@ -243,7 +285,7 @@ export function useImportPreviewTransactionsMutation() {
         );
       });
 
-      return updatedPreview;
+      return { updatedPreview, identityResults };
     },
     onSuccess: () => invalidateQueries(queryClient),
     onError: error => {
@@ -278,22 +320,19 @@ export function useImportTransactionsMutation() {
       reconcile,
       reimportDeleted,
     }: ImportTransactionsPayload) => {
-      if (!reconcile) {
-        await send('api/transactions-add', {
-          accountId,
-          transactions,
-        });
-
-        return true;
-      }
-
       const {
         errors = [],
         added,
         updated,
+        identityResults = [],
       } = await send('transactions-import', {
         accountId,
-        transactions,
+        transactions: reconcile
+          ? transactions
+          : transactions.map(transaction => ({
+              ...transaction,
+              forceAddTransaction: true,
+            })),
         isPreview: false,
         opts: reimportDeleted !== undefined ? { reimportDeleted } : undefined,
       });
@@ -309,6 +348,21 @@ export function useImportTransactionsMutation() {
         );
       });
 
+      const identityResultsSummary = getIdentityResultsSummary(
+        identityResults,
+        t,
+      );
+      if (identityResultsSummary) {
+        dispatch(
+          addNotification({
+            notification: {
+              type: 'message',
+              message: identityResultsSummary,
+            },
+          }),
+        );
+      }
+
       dispatch(
         setNewTransactions({
           newTransactions: added,
@@ -322,7 +376,10 @@ export function useImportTransactionsMutation() {
         }),
       );
 
-      return added.length > 0 || updated.length > 0;
+      return {
+        didChange: added.length > 0 || updated.length > 0,
+        identityResults,
+      };
     },
     onSuccess: () => invalidateQueries(queryClient),
     onError: error => {

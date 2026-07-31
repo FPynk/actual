@@ -279,6 +279,9 @@ export function ImportTransactionsModal({
 
   const [clearOnImport, setClearOnImport] = useState(true);
   const [startDate, setStartDate] = useState('');
+  const [identityResults, setIdentityResults] = useState<
+    Array<{ code: string }>
+  >([]);
   const lastParseRef = useRef<LastParse | null>(null);
 
   const getImportPreview = useCallback(
@@ -773,7 +776,7 @@ export function ImportTransactionsModal({
         reimportDeleted,
       },
       {
-        onSuccess: async didChange => {
+        onSuccess: async ({ didChange }) => {
           if (didChange) {
             void queryClient.invalidateQueries(payeeQueries.list());
           }
@@ -822,12 +825,16 @@ export function ImportTransactionsModal({
         reimportDeleted,
       },
       {
-        onSuccess: previewTrx => {
-          const matchedUpdateMap = previewTrx.reduce((map, entry) => {
-            // @ts-expect-error - entry.transaction might not have trx_id property
-            map[entry.transaction.trx_id] = entry;
-            return map;
-          }, {});
+        onSuccess: previewResult => {
+          setIdentityResults(previewResult.identityResults);
+          const matchedUpdateMap = previewResult.updatedPreview.reduce(
+            (map, entry) => {
+              // @ts-expect-error - entry.transaction might not have trx_id property
+              map[entry.transaction.trx_id] = entry;
+              return map;
+            },
+            {},
+          );
 
           const previewTransactions = filteredTransactions
             .filter(trans => !trans.isMatchedTransaction)
@@ -925,6 +932,29 @@ export function ImportTransactionsModal({
     });
   }
 
+  const identitySummary = [
+    [
+      'duplicate_incoming_identity',
+      'Repeated stable-ID rows collapsed to one row',
+    ],
+    ['conflicting_incoming_identity', 'Conflicting stable-ID rows skipped'],
+    [
+      'ambiguous_existing_identity',
+      'Stable IDs matching multiple existing rows skipped',
+    ],
+    [
+      'ineligible_existing_identity',
+      'Stable IDs matching split details skipped',
+    ],
+  ]
+    .flatMap(([code, message]) => {
+      const count = identityResults.filter(
+        result => result.code === code,
+      ).length;
+      return count ? [t('{{count}}: {{message}}', { count, message })] : [];
+    })
+    .join('. ');
+
   return (
     <Modal
       name="import-transactions"
@@ -948,6 +978,11 @@ export function ImportTransactionsModal({
                 </strong>{' '}
                 {error.message}
               </Text>
+            </View>
+          )}
+          {identitySummary && (
+            <View role="status" aria-live="polite" style={{ marginBottom: 10 }}>
+              <Text>{identitySummary}</Text>
             </View>
           )}
           {(!error || !error.parsed) && (

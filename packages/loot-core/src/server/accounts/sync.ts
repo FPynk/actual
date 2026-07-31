@@ -421,7 +421,8 @@ async function normalizeTransactions(
   const payeesToCreate = new Map();
 
   const normalized = [];
-  for (let trans of transactions) {
+  for (const [incomingIndex, incomingTransaction] of transactions.entries()) {
+    let trans = incomingTransaction;
     // Validate the date because we do some stuff with it. The db
     // layer does better validation, but this will give nicer errors
     if (trans.date == null) {
@@ -472,6 +473,7 @@ async function normalizeTransactions(
     trans.category = trans.category ?? null;
 
     normalized.push({
+      incomingIndex,
       payee_name,
       subtransactions: subtransactions
         ? subtransactions.map(t => ({ ...t, account: acctId }))
@@ -510,7 +512,7 @@ async function normalizeBankSyncTransactions(transactions, acctId) {
 
   const categoryIds = new Set((await db.getCategories()).map(c => c.id));
   const normalized = [];
-  for (const trans of transactions) {
+  for (const [incomingIndex, trans] of transactions.entries()) {
     trans.cleared = Boolean(trans.booked);
 
     if (!importPending && !trans.cleared) continue;
@@ -552,6 +554,7 @@ async function normalizeBankSyncTransactions(transactions, acctId) {
     trans.payee = await resolvePayee(trans, payeeName, payeesToCreate);
 
     normalized.push({
+      incomingIndex,
       payee_name: payeeName,
       trans: {
         amount: amountToInteger(trans.amount),
@@ -593,7 +596,198 @@ export type ReconcileTransactionsResult = {
     ignored?: boolean;
     tombstone?: boolean;
   }>;
+  identityResults: ReconcileIdentityResult[];
 };
+
+export type ReconcileIdentityResult =
+  | {
+      code: 'duplicate_incoming_identity';
+      accountId: string;
+      importedId: string;
+      incomingIndexes: number[];
+      canonicalIncomingIndex: number;
+      existingTransactionIds: [];
+    }
+  | {
+      code: 'conflicting_incoming_identity';
+      accountId: string;
+      importedId: string;
+      incomingIndexes: number[];
+      canonicalIncomingIndex: null;
+      existingTransactionIds: [];
+    }
+  | {
+      code: 'ambiguous_existing_identity';
+      accountId: string;
+      importedId: string;
+      incomingIndexes: number[];
+      canonicalIncomingIndex: number | null;
+      existingTransactionIds: string[];
+    }
+  | {
+      code: 'ineligible_existing_identity';
+      reason: 'split_child';
+      accountId: string;
+      importedId: string;
+      incomingIndexes: number[];
+      canonicalIncomingIndex: number;
+      existingTransactionIds: [string];
+    };
+
+function hasStableImportedId(importedId) {
+  return importedId !== null && importedId !== undefined && importedId !== '';
+}
+
+function getNativeImportIntent(normalizedTransaction) {
+  const { trans, payee_name, subtransactions } = normalizedTransaction;
+  return JSON.stringify({
+    account: trans.account,
+    imported_id: trans.imported_id,
+    date: trans.date,
+    amount: trans.amount ?? 0,
+    payee: trans.payee ?? null,
+    payee_name: payee_name ?? null,
+    category: trans.category ?? null,
+    notes: trans.notes ?? null,
+    imported_payee: trans.imported_payee ?? null,
+    cleared: trans.cleared ?? false,
+    starting_balance_flag: trans.starting_balance_flag ?? false,
+    forceUpcoming: trans.forceUpcoming ?? false,
+    schedule: trans.schedule ?? null,
+    transfer_id: trans.transfer_id ?? null,
+    tombstone: trans.tombstone ?? false,
+    forceAddTransaction: trans.forceAddTransaction ?? false,
+    subtransactions:
+      subtransactions?.length > 0
+        ? subtransactions.map(subtransaction => ({
+            account: subtransaction.account,
+            amount: subtransaction.amount ?? 0,
+            payee: subtransaction.payee ?? null,
+            category: subtransaction.category ?? null,
+            notes: subtransaction.notes ?? null,
+            cleared: subtransaction.cleared ?? false,
+            transfer_id: subtransaction.transfer_id ?? null,
+          }))
+        : null,
+  });
+}
+
+async function prepareNativeIdentityMatches(
+  acctId,
+  normalized,
+  reimportDeleted,
+) {
+  const identityGroups = new Map();
+  for (const normalizedTransaction of normalized) {
+    const importedId = normalizedTransaction.trans.imported_id;
+    if (!hasStableImportedId(importedId)) continue;
+
+    const identityKey = `${acctId}\0${importedId}`;
+    const group = identityGroups.get(identityKey) ?? {
+      importedId,
+      normalizedTransactions: [],
+    };
+    group.normalizedTransactions.push(normalizedTransaction);
+    identityGroups.set(identityKey, group);
+  }
+
+  const excludedIncomingIndexes = new Set<number>();
+  const exactMatchesByIncomingIndex = new Map();
+  const preScannedIncomingIndexes = new Set<number>();
+  const reservedExactTransactionIds = new Set<string>();
+  const identityResults: ReconcileIdentityResult[] = [];
+  const table = reimportDeleted ? 'v_transactions' : 'v_transactions_internal';
+
+  const orderedGroups = [...identityGroups.values()].sort(
+    (left, right) =>
+      left.normalizedTransactions[0].incomingIndex -
+      right.normalizedTransactions[0].incomingIndex,
+  );
+
+  for (const { importedId, normalizedTransactions } of orderedGroups) {
+    const incomingIndexes = normalizedTransactions.map(
+      transaction => transaction.incomingIndex,
+    );
+    const exactMatches = await db.all<db.DbViewTransaction>(
+      `SELECT * FROM ${table} WHERE imported_id = ? AND account = ? ORDER BY id ASC`,
+      [importedId, acctId],
+    );
+    exactMatches.forEach(transaction =>
+      reservedExactTransactionIds.add(transaction.id),
+    );
+
+    const intents = new Set(normalizedTransactions.map(getNativeImportIntent));
+    const hasConflictingIntent = intents.size > 1;
+    const canonicalIncomingIndex = incomingIndexes[0];
+    preScannedIncomingIndexes.add(canonicalIncomingIndex);
+    const quarantineGroup = () =>
+      incomingIndexes.forEach(index => excludedIncomingIndexes.add(index));
+
+    if (exactMatches.length > 1) {
+      quarantineGroup();
+      identityResults.push({
+        code: 'ambiguous_existing_identity',
+        accountId: acctId,
+        importedId,
+        incomingIndexes,
+        canonicalIncomingIndex: hasConflictingIntent
+          ? null
+          : canonicalIncomingIndex,
+        existingTransactionIds: exactMatches.map(transaction => transaction.id),
+      });
+    } else if (hasConflictingIntent) {
+      quarantineGroup();
+      identityResults.push({
+        code: 'conflicting_incoming_identity',
+        accountId: acctId,
+        importedId,
+        incomingIndexes,
+        canonicalIncomingIndex: null,
+        existingTransactionIds: [],
+      });
+    } else if (exactMatches[0]?.is_child) {
+      quarantineGroup();
+      identityResults.push({
+        code: 'ineligible_existing_identity',
+        reason: 'split_child',
+        accountId: acctId,
+        importedId,
+        incomingIndexes,
+        canonicalIncomingIndex,
+        existingTransactionIds: [exactMatches[0].id],
+      });
+    } else {
+      if (normalizedTransactions.length > 1) {
+        normalizedTransactions.slice(1).forEach(transaction => {
+          excludedIncomingIndexes.add(transaction.incomingIndex);
+        });
+        identityResults.push({
+          code: 'duplicate_incoming_identity',
+          accountId: acctId,
+          importedId,
+          incomingIndexes,
+          canonicalIncomingIndex,
+          existingTransactionIds: [],
+        });
+      }
+
+      if (exactMatches[0]) {
+        exactMatchesByIncomingIndex.set(
+          canonicalIncomingIndex,
+          exactMatches[0],
+        );
+      }
+    }
+  }
+
+  return {
+    excludedIncomingIndexes,
+    exactMatchesByIncomingIndex,
+    identityResults,
+    preScannedIncomingIndexes,
+    reservedExactTransactionIds,
+  };
+}
 
 export async function reconcileTransactions(
   acctId,
@@ -617,6 +811,7 @@ export async function reconcileTransactions(
     transactionsStep1,
     transactionsStep2,
     transactionsStep3,
+    identityResults,
   } = await matchTransactions(
     acctId,
     transactions,
@@ -627,7 +822,10 @@ export async function reconcileTransactions(
 
   // Finally, generate & commit the changes
   for (const { trans, subtransactions, match } of transactionsStep3) {
-    if (match && !trans.forceAddTransaction) {
+    if (
+      match &&
+      (!trans.forceAddTransaction || hasStableImportedId(trans.imported_id))
+    ) {
       // Skip updating already reconciled (locked) transactions
       if (match.reconciled) {
         updatedPreview.push({ transaction: trans, ignored: true });
@@ -752,6 +950,7 @@ export async function reconcileTransactions(
     added: added.map(trans => trans.id),
     updated: updated.map(trans => trans.id),
     updatedPreview,
+    identityResults,
   };
 }
 
@@ -783,6 +982,13 @@ export async function matchTransactions(
     transactions,
     acctId,
   );
+  const {
+    excludedIncomingIndexes,
+    exactMatchesByIncomingIndex,
+    identityResults,
+    preScannedIncomingIndexes,
+    reservedExactTransactionIds,
+  } = await prepareNativeIdentityMatches(acctId, normalized, reimportDeleted);
 
   // The first pass runs the rules, and preps data for fuzzy matching
   const accounts: db.DbAccount[] = await db.getAccounts();
@@ -790,25 +996,34 @@ export async function matchTransactions(
 
   const transactionsStep1 = [];
   for (const {
+    incomingIndex,
     payee_name,
     trans: originalTrans,
     subtransactions,
   } of normalized) {
+    if (excludedIncomingIndexes.has(incomingIndex)) continue;
+
     // Run the rules
     const trans = await runRules(originalTrans, accountsMap);
+    trans.account = acctId;
+    trans.imported_id = originalTrans.imported_id;
 
-    let match = null;
+    let match = exactMatchesByIncomingIndex.get(incomingIndex) ?? null;
     let fuzzyDataset = null;
 
     // First, match with an existing transaction's imported_id. This
     // is the highest fidelity match and should always be attempted
     // first.
-    if (trans.imported_id) {
+    if (
+      !match &&
+      hasStableImportedId(trans.imported_id) &&
+      !preScannedIncomingIndexes.has(incomingIndex)
+    ) {
       const table = reimportDeleted
         ? 'v_transactions'
         : 'v_transactions_internal';
-      match = await db.first<db.DbTransaction>(
-        `SELECT * FROM ${table} WHERE imported_id = ? AND account = ?`,
+      match = await db.first<db.DbViewTransaction>(
+        `SELECT * FROM ${table} WHERE imported_id = ? AND account = ? AND is_child = 0`,
         [trans.imported_id, acctId],
       );
 
@@ -849,7 +1064,7 @@ export async function matchTransactions(
           WHERE
             -- If both ids are set, and we didn't match earlier then skip dedup
             (imported_id IS NULL OR ? IS NULL)
-            AND date >= ? AND date <= ? AND amount = ?
+            AND is_child = 0 AND date >= ? AND date <= ? AND amount = ?
             AND account = ?`,
           [
             trans.imported_id || null,
@@ -878,7 +1093,7 @@ export async function matchTransactions(
         >(
           `SELECT id, is_parent, date, imported_id, payee, imported_payee, category, notes, reconciled, cleared, amount
           FROM v_transactions
-          WHERE date >= ? AND date <= ? AND amount = ? AND account = ?`,
+          WHERE is_child = 0 AND date >= ? AND date <= ? AND amount = ? AND account = ?`,
           [sevenDaysBefore, sevenDaysAfter, trans.amount || 0, acctId],
         );
       }
@@ -922,7 +1137,10 @@ export async function matchTransactions(
     if (!data.match && data.fuzzyDataset) {
       // Try to find one where the payees match.
       const match = data.fuzzyDataset.find(
-        row => !hasMatched.has(row.id) && data.trans.payee === row.payee,
+        row =>
+          !hasMatched.has(row.id) &&
+          !reservedExactTransactionIds.has(row.id) &&
+          data.trans.payee === row.payee,
       );
 
       if (match) {
@@ -939,7 +1157,10 @@ export async function matchTransactions(
   // around the same date with the same amount.
   const transactionsStep3 = transactionsStep2.map(data => {
     if (!data.match && data.fuzzyDataset) {
-      const match = data.fuzzyDataset.find(row => !hasMatched.has(row.id));
+      const match = data.fuzzyDataset.find(
+        row =>
+          !hasMatched.has(row.id) && !reservedExactTransactionIds.has(row.id),
+      );
       if (match) {
         hasMatched.add(match.id);
         return { ...data, match };
@@ -953,6 +1174,7 @@ export async function matchTransactions(
     transactionsStep1,
     transactionsStep2,
     transactionsStep3,
+    identityResults,
   };
 }
 
