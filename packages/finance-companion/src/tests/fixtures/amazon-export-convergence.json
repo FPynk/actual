@@ -1,0 +1,58 @@
+{
+  "orders": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-CONVERGE",
+      "orderDate": "2026-02-01",
+      "currencyCode": "USD",
+      "itemSubtotal": 1500,
+      "taxTotal": 120,
+      "shippingTotal": 0,
+      "discountTotal": 0,
+      "giftCardTotal": 0,
+      "refundTotal": 500,
+      "orderTotal": 1620
+    }
+  ],
+  "shipments": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-CONVERGE",
+      "externalShipmentId": "SHIP-CONVERGE",
+      "shipmentDate": "2026-02-02",
+      "shipmentTotal": 1620,
+      "orderedItemSignatures": ["ASIN-CONVERGE"]
+    }
+  ],
+  "items": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-CONVERGE",
+      "shipmentKey": "shipment/SHIP-CONVERGE",
+      "externalItemId": "ITEM-CONVERGE",
+      "asin": "ASIN-CONVERGE",
+      "sku": null,
+      "seller": "Synthetic seller",
+      "title": "Synthetic converging item",
+      "quantity": 1,
+      "unitAmount": 1500,
+      "taxAmount": 120,
+      "shippingAmount": 0,
+      "discountAmount": 0,
+      "refundAmount": 500,
+      "currencyCode": "USD"
+    }
+  ],
+  "refunds": [
+    {
+      "marketplace": "amazon.com",
+      "externalOrderId": "ORDER-CONVERGE",
+      "itemKey": "item/ITEM-CONVERGE",
+      "externalRefundId": "REFUND-CONVERGE",
+      "refundDate": "2026-02-10",
+      "amount": 500,
+      "currencyCode": "USD",
+      "reason": "Synthetic return"
+    }
+  ]
+}
