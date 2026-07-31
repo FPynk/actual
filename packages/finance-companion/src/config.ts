@@ -1,3 +1,7 @@
+import path from 'node:path';
+
+import { calculateBudgetKeyHash } from '#integrity/canonical-hash';
+
 const CONFIGURATION_NAMES = [
   'FINANCE_COMPANION_BIND_ADDRESS',
   'FINANCE_COMPANION_PORT',
@@ -6,6 +10,7 @@ const CONFIGURATION_NAMES = [
   'FINANCE_COMPANION_ACTUAL_API_DIR',
   'FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH',
   'FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE',
+  'FINANCE_COMPANION_INTEGRITY_MAC_KEY',
   'FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE',
   'FINANCE_COMPANION_ACTUAL_SERVER_URL',
   'FINANCE_COMPANION_ACTUAL_BUDGET_ID',
@@ -29,12 +34,20 @@ const DIRECT_SECRET_ENVIRONMENT_NAMES = [
   'FINANCE_COMPANION_ACTUAL_PASSWORD',
   'FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD',
   'FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL',
+  'FINANCE_COMPANION_INTEGRITY_MAC_KEY',
 ] as const;
 
 export type FinanceCompanionConfiguration = Readonly<{
   bindAddress: '127.0.0.1';
   port: number;
   origin: string;
+  dataDirectory: string;
+  databasePath: string;
+  integrityAnchorPath: string;
+  integrityMacKeyFile: string | undefined;
+  integrityMacKey: string | undefined;
+  budgetKeyHash: string;
+  budgetCurrencyCode: string;
   ownerBootstrapCredential: string | undefined;
   ownerBootstrapCredentialFile: string | undefined;
 }>;
@@ -96,11 +109,11 @@ function parseFinanceCompanionConfiguration(
     'FINANCE_COMPANION_DATA_DIR',
     'FINANCE_COMPANION_ACTUAL_API_DIR',
     'FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH',
-    'FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE',
   ]) {
     pathSyntax(required(environment, name), name);
   }
   for (const name of [
+    'FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE',
     'FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE',
     'FINANCE_COMPANION_ACTUAL_PASSWORD_FILE',
     'FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE',
@@ -108,13 +121,20 @@ function parseFinanceCompanionConfiguration(
   ]) {
     if (environment[name] !== undefined) pathSyntax(environment[name], name);
   }
-  serverUrl(required(environment, 'FINANCE_COMPANION_ACTUAL_SERVER_URL'));
-  required(environment, 'FINANCE_COMPANION_ACTUAL_BUDGET_ID');
-  if (
-    !/^[A-Z]{3}$/.test(
-      required(environment, 'FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY'),
-    )
-  ) {
+  const actualServerUrl = required(
+    environment,
+    'FINANCE_COMPANION_ACTUAL_SERVER_URL',
+  );
+  serverUrl(actualServerUrl);
+  const actualBudgetId = required(
+    environment,
+    'FINANCE_COMPANION_ACTUAL_BUDGET_ID',
+  );
+  const budgetCurrencyCode = required(
+    environment,
+    'FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY',
+  );
+  if (!/^[A-Z]{3}$/.test(budgetCurrencyCode)) {
     throw invalid('FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY');
   }
   exactlyOne(
@@ -127,6 +147,14 @@ function parseFinanceCompanionConfiguration(
     'FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE',
     'FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD',
   );
+  exactlyOne(
+    environment,
+    'FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE',
+    'FINANCE_COMPANION_INTEGRITY_MAC_KEY',
+  );
+  if (environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY !== undefined) {
+    integrityMacKey(environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY);
+  }
   atMostOne(
     environment,
     'FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL_FILE',
@@ -176,6 +204,23 @@ function parseFinanceCompanionConfiguration(
     bindAddress,
     port,
     origin,
+    dataDirectory: path.resolve(
+      required(environment, 'FINANCE_COMPANION_DATA_DIR'),
+    ),
+    databasePath: path.resolve(
+      required(environment, 'FINANCE_COMPANION_DATA_DIR'),
+      'companion.sqlite',
+    ),
+    integrityAnchorPath: path.resolve(
+      required(environment, 'FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH'),
+    ),
+    integrityMacKeyFile:
+      environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE === undefined
+        ? undefined
+        : path.resolve(environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE),
+    integrityMacKey: environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY,
+    budgetKeyHash: calculateBudgetKeyHash(actualServerUrl, actualBudgetId),
+    budgetCurrencyCode,
     ownerBootstrapCredential:
       environment.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL,
     ownerBootstrapCredentialFile:
@@ -247,6 +292,20 @@ function integer(
     throw invalid(name);
   }
   return parsed;
+}
+function integrityMacKey(value: string): void {
+  const decoded = Buffer.from(value, 'base64url');
+  try {
+    if (
+      !/^[A-Za-z0-9_-]{43}$/.test(value) ||
+      decoded.length !== 32 ||
+      decoded.toString('base64url') !== value
+    ) {
+      throw invalid('FINANCE_COMPANION_INTEGRITY_MAC_KEY');
+    }
+  } finally {
+    decoded.fill(0);
+  }
 }
 function serverUrl(value: string): void {
   try {

@@ -15,7 +15,7 @@
     "#service/*": "./src/service/*.ts"
   },
   "scripts": {
-    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false",
+    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false && node ./scripts/copy-migrations.mjs",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "test": "vitest --run",
     "test:db": "vitest --run src/tests/database.test.ts src/tests/database-safety.test.ts",

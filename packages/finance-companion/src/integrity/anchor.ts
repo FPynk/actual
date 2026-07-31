@@ -1,5 +1,16 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { open, readFile, rename, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import type { Stats } from 'node:fs';
+import {
+  lstat,
+  open,
+  readFile,
+  realpath,
+  rename,
+  unlink,
+} from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import path from 'node:path';
 
 import { canonicalJson, sha256 } from './canonical-hash.ts';
 
@@ -21,6 +32,7 @@ export type AuthenticatedIntegrityAnchorV1 = Readonly<{
 }>;
 
 const anchorPrefix = 'finance-companion/integrity-anchor/v1\0';
+const MAXIMUM_INTEGRITY_MAC_KEY_BYTES = 4096;
 
 export function createGenerationZeroAnchor(
   budgetKeyHash: string,
@@ -39,8 +51,66 @@ export function createGenerationZeroAnchor(
 }
 
 export async function readIntegrityMacKey(keyPath: string): Promise<Buffer> {
-  const key = await readFile(keyPath);
-  if (key.length < 32) throw new Error('The integrity key is invalid.');
+  if (process.platform === 'win32') {
+    throw new Error('The integrity key is invalid.');
+  }
+
+  let key: Buffer | undefined;
+  let file: FileHandle | undefined;
+  try {
+    const absoluteKeyPath = path.resolve(keyPath);
+    const absoluteParentPath = path.dirname(absoluteKeyPath);
+    const parentStatus = await lstat(absoluteParentPath);
+    if (!parentStatus.isDirectory() || parentStatus.isSymbolicLink()) {
+      throw new Error('The integrity key is invalid.');
+    }
+    const canonicalParentPath = await realpath(absoluteParentPath);
+    if (!hasSamePath(absoluteParentPath, canonicalParentPath)) {
+      throw new Error('The integrity key is invalid.');
+    }
+    const canonicalKeyPath = path.join(
+      canonicalParentPath,
+      path.basename(absoluteKeyPath),
+    );
+    const expectedUid = process.geteuid?.();
+    if (expectedUid === undefined) {
+      throw new Error('The integrity key is invalid.');
+    }
+    const beforeOpen = await lstat(canonicalKeyPath);
+    assertRestrictedIntegrityMacKeyFile(beforeOpen, expectedUid);
+    file = await open(
+      canonicalKeyPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    const openedFile = await file.stat();
+    assertRestrictedIntegrityMacKeyFile(openedFile, expectedUid);
+    assertSameFile(beforeOpen, openedFile);
+    key = await readBoundedIntegrityMacKey(file);
+    const afterRead = await lstat(canonicalKeyPath);
+    assertRestrictedIntegrityMacKeyFile(afterRead, expectedUid);
+    assertSameFile(beforeOpen, afterRead);
+    assertSameFile(openedFile, afterRead);
+    await file.close();
+    file = undefined;
+    return key;
+  } catch {
+    key?.fill(0);
+    throw new Error('The integrity key is invalid.');
+  } finally {
+    await file?.close().catch(() => undefined);
+  }
+}
+
+export function decodeIntegrityMacKey(encodedKey: string): Buffer {
+  const key = Buffer.from(encodedKey, 'base64url');
+  if (
+    !/^[A-Za-z0-9_-]{43}$/.test(encodedKey) ||
+    key.length !== 32 ||
+    key.toString('base64url') !== encodedKey
+  ) {
+    key.fill(0);
+    throw new Error('The integrity key is invalid.');
+  }
   return key;
 }
 
@@ -223,4 +293,57 @@ function isHash(value: unknown): value is string {
 
 function isNullableHash(value: unknown): value is string | null {
   return value === null || isHash(value);
+}
+
+function hasSamePath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const normalized = path.normalize(value);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function assertRestrictedIntegrityMacKeyFile(
+  fileStatus: Stats,
+  expectedUid: number,
+): void {
+  const permissions = fileStatus.mode & 0o777;
+  if (
+    !fileStatus.isFile() ||
+    fileStatus.isSymbolicLink() ||
+    fileStatus.uid !== expectedUid ||
+    fileStatus.nlink !== 1 ||
+    (permissions !== 0o400 && permissions !== 0o600)
+  ) {
+    throw new Error('The integrity key is invalid.');
+  }
+}
+
+function assertSameFile(left: Stats, right: Stats): void {
+  if (left.dev !== right.dev || left.ino !== right.ino) {
+    throw new Error('The integrity key is invalid.');
+  }
+}
+
+async function readBoundedIntegrityMacKey(file: FileHandle): Promise<Buffer> {
+  const bytes = Buffer.alloc(MAXIMUM_INTEGRITY_MAC_KEY_BYTES + 1);
+  try {
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(
+        bytes,
+        length,
+        bytes.length - length,
+        length,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length < 32 || length > MAXIMUM_INTEGRITY_MAC_KEY_BYTES) {
+      throw new Error('The integrity key is invalid.');
+    }
+    return Buffer.from(bytes.subarray(0, length));
+  } finally {
+    bytes.fill(0);
+  }
 }

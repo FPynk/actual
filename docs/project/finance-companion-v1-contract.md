@@ -201,29 +201,30 @@ socket, or starting a child worker. Unknown `FINANCE_COMPANION_*` keys are
 reported by name only and rejected, so a misspelled security setting cannot be
 silently ignored.
 
-| Key                                                        | Required                                                      | Validation and use                                                                                |
-| ---------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `FINANCE_COMPANION_BIND_ADDRESS`                           | No; defaults to `127.0.0.1`                                   | The only accepted value is exactly `127.0.0.1`                                                    |
-| `FINANCE_COMPANION_PORT`                                   | No; defaults to `4100`                                        | Integer `1024..65535`                                                                             |
-| `FINANCE_COMPANION_ORIGIN`                                 | No; derived from address and port                             | If supplied, must equal `http://127.0.0.1:<port>` exactly                                         |
-| `FINANCE_COMPANION_DATA_DIR`                               | Yes                                                           | Companion SQLite and service-owned data; existing real directory, not a symlink/reparse point     |
-| `FINANCE_COMPANION_ACTUAL_API_DIR`                         | Yes                                                           | Dedicated Actual API root; distinct from and not nested under any other configured root           |
-| `FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH`                  | Yes                                                           | Anchor file outside the data and Actual API roots and their restore domain                        |
-| `FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE`                 | Yes                                                           | Read-only file containing at least 32 random bytes; never captured in a backup                    |
-| `FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE`             | Required for backup create, verify, and restore               | Permission-restricted file containing exactly 32 random bytes; never captured in a backup         |
-| `FINANCE_COMPANION_ACTUAL_SERVER_URL`                      | Yes                                                           | Absolute `http` or `https` URL; credentials and fragments rejected                                |
-| `FINANCE_COMPANION_ACTUAL_BUDGET_ID`                       | Yes                                                           | Non-empty opaque Actual budget identifier; logged only through its domain-separated hash          |
-| `FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY`                 | Yes                                                           | Three uppercase ASCII letters; must match the opened budget                                       |
-| `FINANCE_COMPANION_ACTUAL_PASSWORD_FILE`                   | Exactly one password source                                   | Preferred permission-restricted file; contents never stored in companion SQLite                   |
-| `FINANCE_COMPANION_ACTUAL_PASSWORD`                        | Exactly one password source                                   | Development-only alternative; value is redacted and removed from `process.env` after loading      |
-| `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE` | Optional; mutually exclusive with the environment alternative | Preferred permission-restricted file for the budget's separate end-to-end encryption password     |
-| `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD`      | Optional development alternative                              | Removed from `process.env` after loading; absence means the configured budget must be unencrypted |
-| `FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL_FILE`        | Required only before the first principal                      | Preferred permission-restricted file with 32 or more random bytes                                 |
-| `FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL`             | Development-only bootstrap alternative                        | Mutually exclusive with the file; removed from `process.env` after hashing                        |
-| `FINANCE_COMPANION_ADAPTER_SOFT_TIMEOUT_MS`                | No; defaults to `120000`                                      | Positive integer smaller than the hard deadline                                                   |
-| `FINANCE_COMPANION_ADAPTER_HARD_TIMEOUT_MS`                | No; defaults to `180000`                                      | Positive integer; reaching it starts child termination                                            |
-| `FINANCE_COMPANION_WORKER_EXIT_TIMEOUT_MS`                 | No; defaults to `30000`                                       | Maximum time to prove child exit after termination                                                |
-| `FINANCE_COMPANION_LOG_LEVEL`                              | No; defaults to `info`                                        | `error`, `warn`, `info`, or `debug`; debug still uses the same allowlist                          |
+| Key                                                        | Required                                                      | Validation and use                                                                                                                    |
+| ---------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `FINANCE_COMPANION_BIND_ADDRESS`                           | No; defaults to `127.0.0.1`                                   | The only accepted value is exactly `127.0.0.1`                                                                                        |
+| `FINANCE_COMPANION_PORT`                                   | No; defaults to `4100`                                        | Integer `1024..65535`                                                                                                                 |
+| `FINANCE_COMPANION_ORIGIN`                                 | No; derived from address and port                             | If supplied, must equal `http://127.0.0.1:<port>` exactly                                                                             |
+| `FINANCE_COMPANION_DATA_DIR`                               | Yes                                                           | Companion SQLite and service-owned data; existing real directory, not a symlink/reparse point                                         |
+| `FINANCE_COMPANION_ACTUAL_API_DIR`                         | Yes                                                           | Dedicated Actual API root; distinct from and not nested under any other configured root                                               |
+| `FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH`                  | Yes                                                           | Anchor file outside the data and Actual API roots and their restore domain                                                            |
+| `FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE`                 | Yes, except Windows development                               | POSIX 0400/0600 single-link file owned by the service identity containing at least 32 random bytes; never captured in a backup        |
+| `FINANCE_COMPANION_INTEGRITY_MAC_KEY`                      | Windows development only; mutually exclusive with the file    | Exactly 32 random bytes as canonical unpadded base64url; removed from `process.env` after loading and never used in production/Ubuntu |
+| `FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE`             | Required for backup create, verify, and restore               | Permission-restricted file containing exactly 32 random bytes; never captured in a backup                                             |
+| `FINANCE_COMPANION_ACTUAL_SERVER_URL`                      | Yes                                                           | Absolute `http` or `https` URL; credentials and fragments rejected                                                                    |
+| `FINANCE_COMPANION_ACTUAL_BUDGET_ID`                       | Yes                                                           | Non-empty opaque Actual budget identifier; logged only through its domain-separated hash                                              |
+| `FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY`                 | Yes                                                           | Three uppercase ASCII letters; must match the opened budget                                                                           |
+| `FINANCE_COMPANION_ACTUAL_PASSWORD_FILE`                   | Exactly one password source                                   | Preferred permission-restricted file; contents never stored in companion SQLite                                                       |
+| `FINANCE_COMPANION_ACTUAL_PASSWORD`                        | Exactly one password source                                   | Development-only alternative; value is redacted and removed from `process.env` after loading                                          |
+| `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE` | Optional; mutually exclusive with the environment alternative | Preferred permission-restricted file for the budget's separate end-to-end encryption password                                         |
+| `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD`      | Optional development alternative                              | Removed from `process.env` after loading; absence means the configured budget must be unencrypted                                     |
+| `FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL_FILE`        | Required only before the first principal                      | Preferred permission-restricted file with 32 or more random bytes                                                                     |
+| `FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL`             | Development-only bootstrap alternative                        | Mutually exclusive with the file; removed from `process.env` after hashing                                                            |
+| `FINANCE_COMPANION_ADAPTER_SOFT_TIMEOUT_MS`                | No; defaults to `120000`                                      | Positive integer smaller than the hard deadline                                                                                       |
+| `FINANCE_COMPANION_ADAPTER_HARD_TIMEOUT_MS`                | No; defaults to `180000`                                      | Positive integer; reaching it starts child termination                                                                                |
+| `FINANCE_COMPANION_WORKER_EXIT_TIMEOUT_MS`                 | No; defaults to `30000`                                       | Maximum time to prove child exit after termination                                                                                    |
+| `FINANCE_COMPANION_LOG_LEVEL`                              | No; defaults to `info`                                        | `error`, `warn`, `info`, or `debug`; debug still uses the same allowlist                                                              |
 
 The service does not accept a configuration key that enables review writes.
 `write_capability_state` is durable database and anchor state changed only by a
@@ -243,7 +244,11 @@ Bootstrap credential file/environment values use the same unpadded base64url
 encoding and 32–64 decoded-byte rule as owner rotation. A credential file
 allows at most one terminal LF or CRLF; no other whitespace is trimmed. Secret
 files must be permission-restricted regular files without a symlink/reparse
-point.
+point. Because Node cannot prove the required Windows DACL and alternate-data-
+stream contract, `FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE` fails closed on
+Windows. Native Windows development may instead use the mutually exclusive
+`FINANCE_COMPANION_INTEGRITY_MAC_KEY` direct source; production and Ubuntu
+deployments require the file source.
 
 All configured roots are resolved and compared using canonical existing parent
 paths. The service rejects overlaps, directory symlinks/reparse points, a MAC

@@ -14,6 +14,13 @@ const configuration: FinanceCompanionConfiguration = {
   bindAddress: '127.0.0.1',
   port: 4100,
   origin: 'http://127.0.0.1:4100',
+  dataDirectory: 'C:\\companion-data',
+  databasePath: 'C:\\companion-data\\companion.sqlite',
+  integrityAnchorPath: 'C:\\integrity.anchor',
+  integrityMacKeyFile: 'C:\\integrity.key',
+  integrityMacKey: undefined,
+  budgetKeyHash: 'a'.repeat(64),
+  budgetCurrencyCode: 'USD',
   ownerBootstrapCredential: undefined,
   ownerBootstrapCredentialFile: undefined,
 };

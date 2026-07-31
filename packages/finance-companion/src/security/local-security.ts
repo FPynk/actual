@@ -94,10 +94,13 @@ export async function createFinanceCompanionSecurity({
   now = Date.now,
 }: CreateFinanceCompanionSecurityOptions): Promise<FinanceCompanionSecurity> {
   const existingPrincipal = await localPrincipalRepository.readOwner();
-  const credential = await readBootstrapCredential(
-    bootstrapCredential,
-    bootstrapCredentialFile,
-  );
+  const credential =
+    existingPrincipal === null
+      ? await readBootstrapCredential(
+          bootstrapCredential,
+          bootstrapCredentialFile,
+        )
+      : undefined;
   if (existingPrincipal === null && credential === undefined) {
     throw new Error('An owner credential must be configured before startup.');
   }
@@ -191,6 +194,20 @@ export async function createFinanceCompanionSecurity({
       return { principalId: principal.id, rotatedAt };
     },
   };
+}
+
+export async function hashOwnerBootstrapCredential(
+  bootstrapCredential: string | undefined,
+  bootstrapCredentialFile: string | undefined,
+): Promise<string> {
+  const credential = await readBootstrapCredential(
+    bootstrapCredential,
+    bootstrapCredentialFile,
+  );
+  if (credential === undefined) {
+    throw new Error('An owner credential must be configured before startup.');
+  }
+  return hashCredential(credential);
 }
 
 async function createOwnerPrincipal(

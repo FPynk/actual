@@ -33,7 +33,7 @@ describe('FIN-11 database safety gates', () => {
       anchorMacKey: randomBytes(32),
       budgetKeyHash: 'a'.repeat(64),
       budgetCurrencyCode: 'USD',
-      ownerCredentialHash: 'test-owner-hash',
+      createOwnerCredentialHash: async () => 'test-owner-hash',
     };
   });
 
@@ -66,7 +66,7 @@ describe('FIN-11 database safety gates', () => {
     await expect(
       initializeCompanionDatabaseAndAnchor({
         ...initialization,
-        ownerCredentialHash: '',
+        createOwnerCredentialHash: async () => '',
       }),
     ).rejects.toThrow();
     const database = new Database(initialization.databasePath);

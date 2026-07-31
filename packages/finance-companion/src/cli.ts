@@ -5,6 +5,7 @@ import { loadFinanceCompanionConfiguration } from './config.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
 import { createFinanceCompanionSecurity } from './security/local-security.ts';
 import type { LocalPrincipalRepository } from './security/local-security.ts';
+import { createDurableLocalPrincipalRepository } from './service/durable-principal-repository.ts';
 
 const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
@@ -33,7 +34,14 @@ export async function runFinanceCompanionCommand(
   writeStandardOutput: (message: string) => void,
   writeStandardError: (message: string) => void,
   loadConfiguration = loadFinanceCompanionConfiguration,
-  loadLocalPrincipalRepository: () => Promise<LocalPrincipalRepository> = unavailableLocalPrincipalRepository,
+  loadLocalPrincipalRepository: (
+    configuration: ReturnType<typeof loadFinanceCompanionConfiguration>,
+  ) => Promise<LocalPrincipalRepository> = configuration =>
+    createDurableLocalPrincipalRepository(
+      configuration,
+      path.resolve(import.meta.dirname, '../migrations'),
+    ),
+  startHttpServer = startFinanceCompanionHttpServer,
 ): Promise<number> {
   if (isFeatureNotImplementedCommand(command)) {
     const result: FeatureNotImplementedCommandResult = {
@@ -53,9 +61,9 @@ export async function runFinanceCompanionCommand(
   const security = await createFinanceCompanionSecurity({
     bootstrapCredential: configuration.ownerBootstrapCredential,
     bootstrapCredentialFile: configuration.ownerBootstrapCredentialFile,
-    localPrincipalRepository: await loadLocalPrincipalRepository(),
+    localPrincipalRepository: await loadLocalPrincipalRepository(configuration),
   });
-  const server = await startFinanceCompanionHttpServer(
+  const server = await startHttpServer(
     configuration,
     path.resolve(import.meta.dirname, '../ui'),
     security,
@@ -68,12 +76,6 @@ export async function runFinanceCompanionCommand(
   process.once('SIGTERM', closeServer);
   writeStandardOutput('');
   return 0;
-}
-
-async function unavailableLocalPrincipalRepository(): Promise<LocalPrincipalRepository> {
-  throw new Error(
-    'The local principal repository is unavailable until database lifecycle integration is complete.',
-  );
 }
 
 function isFeatureNotImplementedCommand(

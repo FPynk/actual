@@ -22,7 +22,7 @@ describe('FIN-11 companion database lifecycle', () => {
     anchorMacKey: Buffer;
     budgetKeyHash: string;
     budgetCurrencyCode: string;
-    ownerCredentialHash: string;
+    createOwnerCredentialHash: () => Promise<string>;
   }>;
 
   beforeEach(async () => {
@@ -39,7 +39,7 @@ describe('FIN-11 companion database lifecycle', () => {
       anchorMacKey: randomBytes(32),
       budgetKeyHash: 'a'.repeat(64),
       budgetCurrencyCode: 'USD',
-      ownerCredentialHash: 'test-owner-hash',
+      createOwnerCredentialHash: async () => 'test-owner-hash',
     };
   });
 

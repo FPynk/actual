@@ -49,13 +49,7 @@ export function calculateBudgetKeyHash(
   actualServerUrl: string,
   actualBudgetId: string,
 ): string {
-  const url = new URL(actualServerUrl);
-  const defaultPort =
-    (url.protocol === 'http:' && url.port === '80') ||
-    (url.protocol === 'https:' && url.port === '443');
-  const normalizedOrigin = `${url.protocol.toLowerCase()}//${url.hostname.toLowerCase()}${
-    url.port && !defaultPort ? `:${url.port}` : ''
-  }`;
+  const normalizedOrigin = new URL(actualServerUrl).origin.toLowerCase();
   return sha256(
     Buffer.from(
       `finance-companion/budget-binding/v1\0${normalizedOrigin}\0${actualBudgetId}`,
