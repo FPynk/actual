@@ -47,10 +47,10 @@ describe('FIN-11 companion database lifecycle', () => {
     await rm(temporaryDirectory, { recursive: true, force: true });
   });
 
-  it('initializes migrations 001 and 002, a stable principal, and a generation-zero anchor', async () => {
+  it('initializes migrations 001 through 003, a stable principal, and a generation-zero anchor', async () => {
     const initialized = await initializeCompanionDatabaseAndAnchor(request);
     expect(initialized).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       writeCapabilityState: 'disabled',
     });
 
@@ -68,7 +68,7 @@ describe('FIN-11 companion database lifecycle', () => {
           )
           .get(),
       ).toMatchObject({
-        version: 2,
+        version: 3,
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     } finally {
@@ -82,7 +82,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedBudgetKeyHash: request.budgetKeyHash,
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
-    ).resolves.toEqual({ schemaVersion: 2, writeCapabilityState: 'disabled' });
+    ).resolves.toEqual({ schemaVersion: 3, writeCapabilityState: 'disabled' });
   });
 
   it('fails closed and records recovery_required when the anchor cannot be proven', async () => {
@@ -97,7 +97,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -126,7 +126,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -144,11 +144,11 @@ describe('FIN-11 companion database lifecycle', () => {
       expectedCurrencyCode: request.budgetCurrencyCode,
     };
     await expect(createCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       budgetKeyHash: request.budgetKeyHash,
     });
     await expect(verifyCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
     });
     await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
       'explicit destructive-capability authorization',
