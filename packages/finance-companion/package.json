@@ -6,17 +6,19 @@
   "imports": {
     "#cli": "./src/cli.ts",
     "#config": "./src/config.ts",
+    "#actual/*": "./src/actual/*.ts",
+    "#contracts/*": "./src/contracts/*.ts",
     "#database/*": "./src/database/*.ts",
     "#http/*": "./src/http/*.ts",
     "#integrity/*": "./src/integrity/*.ts",
     "#service/*": "./src/service/*.ts"
   },
   "scripts": {
-    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false",
+    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "test": "vitest --run",
     "test:db": "vitest --run src/tests/database.test.ts src/tests/database-safety.test.ts",
-    "test:adapter": "node --experimental-strip-types ./src/cli.ts test:adapter",
+    "test:adapter": "vitest --run src/tests/adapter.test.ts src/tests/budget-binding.test.ts src/tests/forked-worker-runner.test.ts src/tests/operation-lock.test.ts",
     "test:e2e": "node --experimental-strip-types ./src/cli.ts test:e2e",
     "start": "yarn build && node ./dist/service/cli.js start",
     "job:bank-sync": "node --experimental-strip-types ./src/cli.ts job:bank-sync",
@@ -29,6 +31,7 @@
     "smoke:container": "node --experimental-strip-types ./src/cli.ts smoke:container"
   },
   "dependencies": {
+    "@actual-app/api": "workspace:*",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1"
   },
