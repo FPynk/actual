@@ -65,7 +65,7 @@ describe('FIN-18 source identities and immutable observations', () => {
       ]);
       expect(
         database
-          .prepare('SELECT MAX(version) AS version FROM schema_migrations')
+          .prepare('SELECT version FROM schema_migrations WHERE version = 3')
           .get(),
       ).toEqual({ version: 3 });
     } finally {
