@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -179,6 +179,17 @@ describe('FIN-11 companion database lifecycle', () => {
     expect((await readFile(backup.backupPath)).length).toBeGreaterThan(0);
   });
 
+  it('does not import an Actual adapter or mutator during companion-only restore', async () => {
+    const restoreSource = await readFile(
+      path.resolve(import.meta.dirname, '../database/backup.ts'),
+      'utf8',
+    );
+
+    expect(restoreSource).not.toMatch(
+      /(?:#actual\/|@actual-app\/api|actual\/adapter|mutat(?:e|or))/i,
+    );
+  });
+
   it.each([
     'intent-written',
     'database-original-staged',
@@ -200,6 +211,8 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       };
       await createCompanionOnlyBackup(backup);
+      const originalDatabase = await readFile(request.databasePath);
+      const originalAnchor = await readFile(request.anchorPath);
 
       await expect(
         restoreCompanionOnlyBackup(backup, {
@@ -212,6 +225,10 @@ describe('FIN-11 companion database lifecycle', () => {
       ).rejects.toBeInstanceOf(SimulatedRestoreInterruption);
       await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
         'requires recovery',
+      );
+      await expectPreviousPairRemainsRecoverable(
+        originalDatabase,
+        originalAnchor,
       );
       if (phase === 'database-original-staged') {
         expect(existsSync(request.databasePath)).toBe(false);
@@ -231,6 +248,40 @@ describe('FIN-11 companion database lifecycle', () => {
       }
     },
   );
+
+  async function expectPreviousPairRemainsRecoverable(
+    originalDatabase: Buffer,
+    originalAnchor: Buffer,
+  ): Promise<void> {
+    await expectOriginalMemberIsAvailable(
+      request.databasePath,
+      originalDatabase,
+    );
+    await expectOriginalMemberIsAvailable(request.anchorPath, originalAnchor);
+  }
+
+  async function expectOriginalMemberIsAvailable(
+    livePath: string,
+    originalBytes: Buffer,
+  ): Promise<void> {
+    const parentDirectory = path.dirname(livePath);
+    const rollbackPrefix = `.${path.basename(livePath)}.restore-`;
+    const candidates = [
+      livePath,
+      ...(await readdir(parentDirectory))
+        .filter(
+          entry =>
+            entry.startsWith(rollbackPrefix) && entry.endsWith('.rollback'),
+        )
+        .map(entry => path.join(parentDirectory, entry)),
+    ];
+    const availableCandidates = candidates.filter(existsSync);
+
+    expect(availableCandidates).not.toHaveLength(0);
+    await expect(
+      Promise.all(availableCandidates.map(candidate => readFile(candidate))),
+    ).resolves.toContainEqual(originalBytes);
+  }
 
   it('restores the original pair after a non-crash replacement failure', async () => {
     const initialized = await initializeCompanionDatabaseAndAnchor(request);
