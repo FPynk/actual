@@ -31,6 +31,8 @@ For a private synthetic Ubuntu preparation path, see the
 Technical context is in the [architecture](docs/project/architecture.md),
 [frozen companion contract](docs/project/finance-companion-v1-contract.md),
 and [original upstream capability inventory](docs/project/current-capabilities.md).
+Release evidence and safe limitations are in the
+[final project handoff](docs/project/agent-handoffs/FIN-54.md).
 
 ## Getting Started
 

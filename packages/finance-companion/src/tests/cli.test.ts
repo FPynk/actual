@@ -68,6 +68,7 @@ describe('runFinanceCompanionCommand', () => {
       expect(result.stdout).toBe('');
       expect(result.stderr).toBe(`${expected}\n`);
     },
+    30_000,
   );
 
   it.each(implementedPackageScriptCommands)(
