@@ -53,9 +53,22 @@ export async function initializeCompanionDatabase(
 export async function initializeCompanionDatabaseAndAnchor(
   request: InitializeCompanionDatabaseRequest,
 ): Promise<MigrationResult> {
+  return initializeCompanionDatabaseAndAnchorWithLock(request, false);
+}
+
+export async function initializeCompanionDatabaseAndAnchorDuringMaintenance(
+  request: InitializeCompanionDatabaseRequest,
+): Promise<MigrationResult> {
+  return initializeCompanionDatabaseAndAnchorWithLock(request, true);
+}
+
+async function initializeCompanionDatabaseAndAnchorWithLock(
+  request: InitializeCompanionDatabaseRequest,
+  alreadyHoldsMaintenanceLock: boolean,
+): Promise<MigrationResult> {
   const migrations = await loadMigrations(request.migrationsDirectory);
   const initialPaths = await inspectInitializationPaths(request);
-  return withExclusiveMaintenanceLock(initialPaths.databasePath, async () => {
+  const initialize = async (): Promise<MigrationResult> => {
     const paths = await inspectInitializationPaths(request);
     if (
       paths.databaseExists !== initialPaths.databaseExists ||
@@ -107,7 +120,10 @@ export async function initializeCompanionDatabaseAndAnchor(
     } finally {
       database.close();
     }
-  });
+  };
+  return alreadyHoldsMaintenanceLock
+    ? initialize()
+    : withExclusiveMaintenanceLock(initialPaths.databasePath, initialize);
 }
 
 function applyInitialMigrationsAndInitialize(

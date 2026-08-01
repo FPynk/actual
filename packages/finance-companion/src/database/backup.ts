@@ -81,17 +81,38 @@ export type CompanionRestorePhase =
   | 'anchor-original-staged'
   | 'anchor-replaced';
 
+export type CompanionRestoreCleanupArtifact =
+  | 'database-rollback'
+  | 'anchor-rollback'
+  | 'intent';
+
 export type CompanionRestoreTestHooks = Readonly<{
   afterPhase?: (phase: CompanionRestorePhase) => void;
+  beforeCleanupArtifactRemoval?: (
+    artifact: CompanionRestoreCleanupArtifact,
+  ) => void;
 }>;
 
 export async function createCompanionOnlyBackup(
   request: CompanionBackupRequest,
 ): Promise<CompanionBackupResult> {
+  return createCompanionOnlyBackupWithLock(request, false);
+}
+
+export async function createCompanionOnlyBackupDuringMaintenance(
+  request: CompanionBackupRequest,
+): Promise<CompanionBackupResult> {
+  return createCompanionOnlyBackupWithLock(request, true);
+}
+
+async function createCompanionOnlyBackupWithLock(
+  request: CompanionBackupRequest,
+  alreadyHoldsMaintenanceLock: boolean,
+): Promise<CompanionBackupResult> {
   validateEncryptionKey(request.encryptionKey);
   assertNoRestoreArtifacts(request.databasePath, request.anchorPath);
   const paths = await validateBackupPaths(request, 'unused');
-  return withExclusiveMaintenanceLock(paths.databasePath, async () => {
+  const create = async (): Promise<CompanionBackupResult> => {
     assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
     await assertNoSqliteSidecars(paths.databasePath);
     const temporaryDirectory = await createOwnedBackupTemporaryDirectory(
@@ -130,6 +151,7 @@ export async function createCompanionOnlyBackup(
         metadata,
       );
       await link(stagedBackupPath, paths.backupPath);
+      await syncParentDirectoryIfSupported(paths.backupPath);
       return verified;
     } finally {
       await removeOwnedBackupTemporaryDirectory(
@@ -137,7 +159,10 @@ export async function createCompanionOnlyBackup(
         paths.backupPath,
       );
     }
-  });
+  };
+  return alreadyHoldsMaintenanceLock
+    ? create()
+    : withExclusiveMaintenanceLock(paths.databasePath, create);
 }
 
 async function createOwnedBackupTemporaryDirectory(
@@ -232,6 +257,7 @@ async function readVerifiedBackupArtifact(
   backupPath: string,
 ): Promise<VerifiedBackupArtifact> {
   const temporaryPath = `${backupPath}.${randomUUID()}.verify.sqlite`;
+  let didTransferVerifiedArtifact = false;
   let snapshot: Buffer | undefined;
   let anchorBytes: Buffer | undefined;
   try {
@@ -262,7 +288,7 @@ async function readVerifiedBackupArtifact(
       ) {
         throw new Error('The companion backup metadata does not match.');
       }
-      return {
+      const artifact = {
         anchor: anchorBytes,
         metadata,
         result: {
@@ -272,11 +298,13 @@ async function readVerifiedBackupArtifact(
         },
         snapshot,
       };
+      didTransferVerifiedArtifact = true;
+      return artifact;
     } finally {
       database.close();
     }
   } finally {
-    if (snapshot === undefined || anchorBytes === undefined) {
+    if (!didTransferVerifiedArtifact) {
       snapshot?.fill(0);
       anchorBytes?.fill(0);
     }
@@ -351,6 +379,7 @@ async function replaceCompanionPair(
     anchorOriginalStaged: false,
     databaseInstalled: false,
     databaseOriginalStaged: false,
+    replacementCommitted: false,
   };
   try {
     await writePublishedBackup(databaseStagePath, artifact.snapshot);
@@ -364,29 +393,38 @@ async function replaceCompanionPair(
     await writeRestoreIntent(intentPath, artifact.result.backupSha256);
     testHooks.afterPhase?.('intent-written');
 
-    await rename(paths.databasePath, databaseRollbackPath);
+    await moveRestoreFile(paths.databasePath, databaseRollbackPath);
     state.databaseOriginalStaged = true;
     testHooks.afterPhase?.('database-original-staged');
-    await rename(databaseStagePath, paths.databasePath);
+    await moveRestoreFile(databaseStagePath, paths.databasePath);
     state.databaseInstalled = true;
     testHooks.afterPhase?.('database-replaced');
 
-    await rename(paths.anchorPath, anchorRollbackPath);
+    await moveRestoreFile(paths.anchorPath, anchorRollbackPath);
     state.anchorOriginalStaged = true;
     testHooks.afterPhase?.('anchor-original-staged');
-    await rename(anchorStagePath, paths.anchorPath);
+    await moveRestoreFile(anchorStagePath, paths.anchorPath);
     state.anchorInstalled = true;
+    state.replacementCommitted = true;
     testHooks.afterPhase?.('anchor-replaced');
 
-    await removeRestoreArtifacts([
-      databaseRollbackPath,
-      anchorRollbackPath,
-      intentPath,
-    ]);
+    await removeCommittedRestoreArtifacts(
+      [
+        { artifact: 'database-rollback', path: databaseRollbackPath },
+        { artifact: 'anchor-rollback', path: anchorRollbackPath },
+        { artifact: 'intent', path: intentPath },
+      ],
+      testHooks,
+    );
     return artifact.result;
   } catch (error) {
     if (error instanceof SimulatedRestoreInterruption) {
       throw error;
+    }
+    if (state.replacementCommitted) {
+      throw new Error(
+        'Companion restore completed but cleanup requires recovery.',
+      );
     }
     const wasRolledBack = await rollbackCompanionPair(paths, {
       anchorRollbackPath,
@@ -459,11 +497,11 @@ async function rollbackCompanionPair(
   try {
     if (state.anchorInstalled) await unlink(paths.anchorPath);
     if (state.anchorOriginalStaged) {
-      await rename(state.anchorRollbackPath, paths.anchorPath);
+      await moveRestoreFile(state.anchorRollbackPath, paths.anchorPath);
     }
     if (state.databaseInstalled) await unlink(paths.databasePath);
     if (state.databaseOriginalStaged) {
-      await rename(state.databaseRollbackPath, paths.databasePath);
+      await moveRestoreFile(state.databaseRollbackPath, paths.databasePath);
     }
     return true;
   } catch {
@@ -493,10 +531,36 @@ function assertNoRestoreArtifacts(
 
 async function removeRestoreArtifacts(paths: readonly string[]): Promise<void> {
   for (const artifactPath of paths) {
-    await unlink(artifactPath).catch(error => {
-      if (!isMissingPathError(error)) throw error;
-    });
+    await removeRestoreArtifact(artifactPath);
   }
+}
+
+async function removeCommittedRestoreArtifacts(
+  artifacts: readonly Readonly<{
+    artifact: CompanionRestoreCleanupArtifact;
+    path: string;
+  }>[],
+  testHooks: CompanionRestoreTestHooks,
+): Promise<void> {
+  for (const artifact of artifacts) {
+    testHooks.beforeCleanupArtifactRemoval?.(artifact.artifact);
+    await removeRestoreArtifact(artifact.path);
+  }
+}
+
+async function removeRestoreArtifact(artifactPath: string): Promise<void> {
+  await unlink(artifactPath).catch(error => {
+    if (!isMissingPathError(error)) throw error;
+  });
+  await syncParentDirectoryIfSupported(artifactPath);
+}
+
+async function moveRestoreFile(
+  sourcePath: string,
+  destinationPath: string,
+): Promise<void> {
+  await rename(sourcePath, destinationPath);
+  await syncParentDirectoryIfSupported(destinationPath);
 }
 
 export class SimulatedRestoreInterruption extends Error {
@@ -661,6 +725,17 @@ async function writePublishedBackup(
     if (!didWrite) {
       await unlink(destination).catch(() => undefined);
     }
+  }
+  await syncParentDirectoryIfSupported(destination);
+}
+
+async function syncParentDirectoryIfSupported(filePath: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const directory = await open(path.dirname(filePath), 'r');
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
   }
 }
 

@@ -131,6 +131,29 @@ describe('runFinanceCompanionCommand', () => {
     expect(standardError.join('')).toContain('operation_in_progress');
   });
 
+  it('does not expose an arbitrary bank-sync error code', async () => {
+    const standardError: string[] = [];
+    const exitCode = await runFinanceCompanionCommand(
+      'job:bank-sync',
+      () => undefined,
+      message => standardError.push(message),
+      undefined,
+      undefined,
+      undefined,
+      ['--idempotency-key', 'a-valid-idempotency-key'],
+      async () => {
+        const error = Object.assign(new Error('synthetic'), {
+          code: 'unexpected_error_code',
+        });
+        throw error;
+      },
+    );
+    expect(exitCode).toBe(64);
+    expect(standardError).toEqual([
+      '{"code":"configuration_error","ok":false}\n',
+    ]);
+  });
+
   it('translates a spawned CLI SIGTERM into a persisted cancellation result', async () => {
     const fixture = path.resolve(
       import.meta.dirname,

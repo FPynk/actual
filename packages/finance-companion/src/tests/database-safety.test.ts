@@ -12,6 +12,8 @@ import {
   verifyCompanionOnlyBackup,
 } from '#database/backup';
 import type { CompanionBackupRequest } from '#database/backup';
+import { runDatabaseLifecycleCommand } from '#database/lifecycle-cli';
+import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { InitializeCompanionDatabaseRequest } from '#database/migrate';
 import { writeIntegrityAnchor } from '#integrity/anchor';
@@ -266,6 +268,47 @@ describe('FIN-11 database safety gates', () => {
     await expect(
       initializeCompanionDatabaseAndAnchor(initialization),
     ).rejects.toThrow('requires recovery');
+  });
+
+  it('keeps one maintenance lock across backup and existing-database migration', async () => {
+    await initializeCompanionDatabaseAndAnchor(initialization);
+    const backupEncryptionKeyPath = path.join(temporaryDirectory, 'backup.key');
+    await writeFile(backupEncryptionKeyPath, randomBytes(32), { mode: 0o600 });
+    let observedExclusiveLock = false;
+
+    await expect(
+      runDatabaseLifecycleCommand(
+        'db:migrate',
+        {
+          bindAddress: '127.0.0.1',
+          port: 4100,
+          origin: 'http://127.0.0.1:4100',
+          dataDirectory: temporaryDirectory,
+          databasePath: initialization.databasePath,
+          integrityAnchorPath: initialization.anchorPath,
+          integrityMacKeyFile: undefined,
+          integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+          backupEncryptionKeyFile: backupEncryptionKeyPath,
+          budgetKeyHash: initialization.budgetKeyHash,
+          budgetCurrencyCode: initialization.budgetCurrencyCode,
+          ownerBootstrapCredential: undefined,
+          ownerBootstrapCredentialFile: undefined,
+        },
+        ['--backup-path', path.join(temporaryDirectory, 'companion.backup')],
+        {
+          afterBackupBeforeMigration: async () => {
+            await expect(
+              withExclusiveMaintenanceLock(
+                initialization.databasePath,
+                async () => undefined,
+              ),
+            ).rejects.toThrow('Exclusive maintenance is required');
+            observedExclusiveLock = true;
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ ok: true, schemaVersion: 5 });
+    expect(observedExclusiveLock).toBe(true);
   });
 
   it.each([

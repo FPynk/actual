@@ -8,6 +8,7 @@ import type {
   LocalPrincipalRepository,
 } from './security/local-security.ts';
 import type {
+  BankSyncJobError,
   BankSyncJobSummary,
   ParsedBankSyncCommand,
 } from './service/bank-sync.ts';
@@ -60,13 +61,15 @@ export async function runFinanceCompanionCommand(
     return 78;
   }
   if (command === 'job:bank-sync') {
+    let BankSyncJobErrorConstructor: typeof BankSyncJobError | undefined;
     const cancellation = new AbortController();
     const cancel = () => cancellation.abort();
     process.once('SIGINT', cancel);
     process.once('SIGTERM', cancel);
     try {
-      const { bankSyncExitCode, parseBankSyncCommandArguments } =
-        await import('./service/bank-sync.ts');
+      const bankSync = await import('./service/bank-sync.ts');
+      BankSyncJobErrorConstructor = bankSync.BankSyncJobError;
+      const { bankSyncExitCode, parseBankSyncCommandArguments } = bankSync;
       const parsedCommand = parseBankSyncCommandArguments(commandArguments);
       let summary: BankSyncJobSummary;
       if (runBankSync === undefined) {
@@ -95,8 +98,9 @@ export async function runFinanceCompanionCommand(
       return bankSyncExitCode(summary);
     } catch (error) {
       const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String(error.code)
+        BankSyncJobErrorConstructor !== undefined &&
+        error instanceof BankSyncJobErrorConstructor
+          ? error.code
           : 'configuration_error';
       writeStandardError(`${JSON.stringify({ code, ok: false })}\n`);
       return code === 'adapter_unavailable' || code === 'operation_in_progress'

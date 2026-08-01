@@ -260,4 +260,69 @@ describe('FIN-11 companion database lifecycle', () => {
     expect(await readFile(request.databasePath)).toEqual(originalDatabase);
     expect(await readFile(request.anchorPath)).toEqual(originalAnchor);
   });
+
+  it.each(['database-rollback', 'anchor-rollback', 'intent'] as const)(
+    'keeps the restored pair when cleanup cannot remove %s',
+    async failedArtifact => {
+      const initialized = await initializeCompanionDatabaseAndAnchor(request);
+      const backup = {
+        databasePath: request.databasePath,
+        anchorPath: request.anchorPath,
+        backupPath: path.join(temporaryDirectory, 'companion.backup'),
+        encryptionKey: randomBytes(32),
+        anchorMacKey: request.anchorMacKey,
+        expectedInstanceId: initialized.instanceId,
+        expectedBudgetKeyHash: request.budgetKeyHash,
+        expectedCurrencyCode: request.budgetCurrencyCode,
+      };
+      await createCompanionOnlyBackup(backup);
+      const database = openCompanionDatabase(request.databasePath, true);
+      try {
+        database
+          .prepare(
+            "UPDATE companion_instance SET write_capability_state = 'recovery_required' WHERE singleton_key = 'main'",
+          )
+          .run();
+      } finally {
+        database.close();
+      }
+      await writeFile(request.anchorPath, '{"synthetic":"damaged"}');
+
+      await expect(
+        restoreCompanionOnlyBackup(backup, {
+          beforeCleanupArtifactRemoval: artifact => {
+            if (artifact === failedArtifact) {
+              throw new Error('synthetic cleanup failure');
+            }
+          },
+        }),
+      ).rejects.toThrow('completed but cleanup requires recovery');
+      expect(existsSync(request.databasePath)).toBe(true);
+      expect(existsSync(request.anchorPath)).toBe(true);
+      const restoredDatabase = openCompanionDatabase(
+        request.databasePath,
+        true,
+      );
+      try {
+        expect(
+          restoredDatabase
+            .prepare(
+              'SELECT write_capability_state FROM companion_instance WHERE singleton_key = ?',
+            )
+            .get('main'),
+        ).toEqual({ write_capability_state: 'disabled' });
+      } finally {
+        restoredDatabase.close();
+      }
+      await expect(
+        readIntegrityAnchor(request.anchorPath, request.anchorMacKey),
+      ).resolves.toMatchObject({
+        budgetKeyHash: request.budgetKeyHash,
+        writeCapabilityGeneration: 0,
+      });
+      await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
+        'requires recovery',
+      );
+    },
+  );
 });

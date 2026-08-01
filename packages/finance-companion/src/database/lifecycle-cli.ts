@@ -5,11 +5,17 @@ import path from 'node:path';
 import type { FinanceCompanionConfiguration } from '#config';
 import {
   createCompanionOnlyBackup,
+  createCompanionOnlyBackupDuringMaintenance,
   restoreCompanionOnlyBackup,
   verifyCompanionOnlyBackup,
 } from '#database/backup';
 import { openCompanionDatabase } from '#database/connection';
-import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
+import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
+import { initializeCompanionDatabaseAndAnchorDuringMaintenance } from '#database/migrate';
+import {
+  canonicalExistingRegularFile,
+  canonicalUnusedFile,
+} from '#database/path-safety';
 import { decodeIntegrityMacKey, readIntegrityMacKey } from '#integrity/anchor';
 import { verifyCompanionIntegrity } from '#integrity/verify';
 import { hashOwnerBootstrapCredential } from '#security/local-security';
@@ -21,48 +27,88 @@ type LifecycleCommand =
   | 'backup:restore'
   | 'integrity:verify';
 
+export type DatabaseLifecycleTestHooks = Readonly<{
+  afterBackupBeforeMigration?: () => void | Promise<void>;
+}>;
+
 export async function runDatabaseLifecycleCommand(
   command: LifecycleCommand,
   configuration: FinanceCompanionConfiguration,
   arguments_: readonly string[],
+  testHooks: DatabaseLifecycleTestHooks = {},
 ): Promise<Readonly<Record<string, unknown>>> {
   const anchorMacKey = await loadAnchorMacKey(configuration);
   try {
     if (command === 'db:migrate') {
-      if (existsSync(configuration.databasePath)) {
-        const backupPath = parseBackupPath(arguments_);
-        const encryptionKey = await loadBackupEncryptionKey(configuration);
-        const request = backupRequest(
-          configuration,
-          backupPath,
-          encryptionKey,
-          anchorMacKey,
-        );
-        try {
-          await createCompanionOnlyBackup(request);
-        } finally {
-          encryptionKey.fill(0);
-        }
-      } else if (arguments_.length !== 0) {
-        throw new Error('Fresh companion initialization takes no arguments.');
-      }
-      const migration = await initializeCompanionDatabaseAndAnchor({
-        databasePath: configuration.databasePath,
-        migrationsDirectory: path.resolve(
-          import.meta.dirname,
-          '../../migrations',
-        ),
-        anchorPath: configuration.integrityAnchorPath,
-        anchorMacKey,
-        budgetKeyHash: configuration.budgetKeyHash,
-        budgetCurrencyCode: configuration.budgetCurrencyCode,
-        createOwnerCredentialHash: () =>
-          hashOwnerBootstrapCredential(
-            configuration.ownerBootstrapCredential,
-            configuration.ownerBootstrapCredentialFile,
-          ),
-      });
-      return { ok: true, ...migration };
+      const lockedDatabasePath = existsSync(configuration.databasePath)
+        ? await canonicalExistingRegularFile(configuration.databasePath)
+        : await canonicalUnusedFile(configuration.databasePath);
+      const lockedConfiguration = {
+        ...configuration,
+        databasePath: lockedDatabasePath,
+      };
+      return await withExclusiveMaintenanceLock(
+        lockedDatabasePath,
+        async () => {
+          if (existsSync(lockedDatabasePath)) {
+            const backupPath = parseBackupPath(arguments_);
+            const encryptionKey = await loadBackupEncryptionKey(configuration);
+            try {
+              const request = backupRequest(
+                lockedConfiguration,
+                backupPath,
+                encryptionKey,
+                anchorMacKey,
+              );
+              await createCompanionOnlyBackupDuringMaintenance(request);
+              await testHooks.afterBackupBeforeMigration?.();
+              const migration =
+                await initializeCompanionDatabaseAndAnchorDuringMaintenance({
+                  databasePath: lockedDatabasePath,
+                  migrationsDirectory: path.resolve(
+                    import.meta.dirname,
+                    '../../migrations',
+                  ),
+                  anchorPath: configuration.integrityAnchorPath,
+                  anchorMacKey,
+                  budgetKeyHash: configuration.budgetKeyHash,
+                  budgetCurrencyCode: configuration.budgetCurrencyCode,
+                  createOwnerCredentialHash: () =>
+                    hashOwnerBootstrapCredential(
+                      configuration.ownerBootstrapCredential,
+                      configuration.ownerBootstrapCredentialFile,
+                    ),
+                });
+              return { ok: true, ...migration };
+            } finally {
+              encryptionKey.fill(0);
+            }
+          }
+          if (arguments_.length !== 0) {
+            throw new Error(
+              'Fresh companion initialization takes no arguments.',
+            );
+          }
+          const migration =
+            await initializeCompanionDatabaseAndAnchorDuringMaintenance({
+              databasePath: lockedDatabasePath,
+              migrationsDirectory: path.resolve(
+                import.meta.dirname,
+                '../../migrations',
+              ),
+              anchorPath: configuration.integrityAnchorPath,
+              anchorMacKey,
+              budgetKeyHash: configuration.budgetKeyHash,
+              budgetCurrencyCode: configuration.budgetCurrencyCode,
+              createOwnerCredentialHash: () =>
+                hashOwnerBootstrapCredential(
+                  configuration.ownerBootstrapCredential,
+                  configuration.ownerBootstrapCredentialFile,
+                ),
+            });
+          return { ok: true, ...migration };
+        },
+      );
     }
     if (command === 'integrity:verify') {
       if (arguments_.length !== 0) {
