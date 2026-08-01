@@ -132,6 +132,29 @@ export function createClassificationReviewListDto(
   };
 }
 
+export async function readClassificationReviewList(
+  dependencies: ClassificationReviewDependencies,
+): Promise<ClassificationReviewListDtoV1> {
+  const records = dependencies.repository.listClassificationReviews();
+  const currentRecords = await Promise.all(
+    records.map(async record => {
+      if (record.status !== 'pending' && record.status !== 'approved') {
+        return record;
+      }
+      const revalidated = await revalidateRecord(record, dependencies);
+      return revalidated.isCurrent
+        ? record
+        : dependencies.repository.markClassificationReviewStale(record);
+    }),
+  );
+  return {
+    version: 1,
+    reviews: currentRecords.map(record =>
+      createSummary(record, dependencies.budgetKeyHash),
+    ),
+  };
+}
+
 export async function readClassificationReviewDetail(
   reviewRef: string,
   dependencies: ClassificationReviewDependencies,

@@ -9,6 +9,7 @@ import {
   createClassificationReviewRef,
   decideClassificationReview,
   readClassificationReviewDetail,
+  readClassificationReviewList,
 } from '#reviews/classification-review';
 import type {
   ClassificationReviewRecordV1,
@@ -135,6 +136,20 @@ describe('classification review DTO and decisions', () => {
     expect(detail?.status).toBe('stale');
     expect(detail?.guidance).toBeNull();
     expect(recordDecision).not.toHaveBeenCalled();
+  });
+
+  it('revalidates pending reviews before listing them as actionable', async () => {
+    const original = currentGraph();
+    const changed = currentGraph({ categoryId: 'private-category-id' });
+    const repository = mutableRepository(
+      categoryRecord(original.targetVersionHash),
+    );
+
+    const list = await readClassificationReviewList(
+      dependencies(readOnlyAdapter(snapshot(), changed), repository),
+    );
+
+    expect(list.reviews).toMatchObject([{ status: 'stale' }]);
   });
 });
 

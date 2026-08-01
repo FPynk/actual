@@ -170,6 +170,8 @@ describe('classification review HTTP routes', () => {
         'read-budget-snapshot',
         'read-actual-target',
         'read-budget-snapshot',
+        'read-actual-target',
+        'read-budget-snapshot',
       ]);
       expect(JSON.stringify(graph)).toBe(actualBefore);
     } finally {

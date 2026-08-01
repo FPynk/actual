@@ -3,9 +3,9 @@ import type { Express, RequestHandler, Response } from 'express';
 
 import type { ActualAdapter } from '#actual/adapter';
 import {
-  createClassificationReviewListDto,
   decideClassificationReview,
   readClassificationReviewDetail,
+  readClassificationReviewList,
 } from '#reviews/classification-review';
 import type {
   ClassificationReviewAction,
@@ -45,13 +45,8 @@ export function addClassificationReviewRoutes(
     currencyCode: configuration.budgetCurrencyCode,
   };
 
-  application.get(route, boundaries.readSession, (_request, response) => {
-    response.json(
-      createClassificationReviewListDto(
-        dependencies.repository,
-        configuration.budgetKeyHash,
-      ),
-    );
+  application.get(route, boundaries.readSession, async (_request, response) => {
+    response.json(await readClassificationReviewList(reviewDependencies));
   });
   application.get(
     `${route}/:reviewRef`,
