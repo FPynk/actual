@@ -24,6 +24,8 @@ export type AmazonExportRecord =
 type BaseRecord = Readonly<{
   sectionName: string;
   recordNumber: number;
+  /** Adapter-authored, privacy-safe provenance. Export parsers omit this. */
+  sourceRowKey?: string;
 }>;
 export type AmazonOrderRecord = BaseRecord &
   Readonly<{
@@ -150,6 +152,7 @@ type NormalizedBaseRecord = Readonly<{
   sectionName: string;
   recordNumber: number;
   canonicalKey: string;
+  sourceRowKey: string;
 }>;
 type NormalizedAmazonOrderRecord = AmazonOrderRecord & NormalizedBaseRecord;
 type NormalizedAmazonShipmentRecord = AmazonShipmentRecord &
@@ -280,6 +283,10 @@ export function createSqliteAmazonExportRepository(
 ) {
   return {
     parseAmazonExport: (
+      request: ParseAmazonExportRequest,
+    ): ParseAmazonExportResult =>
+      parseAmazonExport(databasePath, request, now, failureInjector),
+    parseAmazonEmail: (
       request: ParseAmazonExportRequest,
     ): ParseAmazonExportResult =>
       parseAmazonExport(databasePath, request, now, failureInjector),
@@ -839,7 +846,7 @@ function insertObservation(
     .run(
       randomUUID(),
       receiptId,
-      `export/${record.sectionName}/${record.recordNumber}`,
+      record.sourceRowKey,
       entityId,
       sourcePayloadHash(record),
       observedAt,
@@ -852,6 +859,7 @@ function recordPayload(
   const {
     sectionName: _sectionName,
     recordNumber: _recordNumber,
+    sourceRowKey: _sourceRowKey,
     ...payload
   } = record;
   return payload;
@@ -1195,7 +1203,7 @@ function parseRecords(
 function normalizeParsedRecords(
   parsedRecords: readonly unknown[],
 ): readonly NormalizedAmazonExportRecord[] {
-  const records = parsedRecords.map(normalizeParsedRecord);
+  const records = parsedRecords.map(normalizeAmazonRecordDto);
   const positions = new Set<string>();
   for (const record of records) {
     const position = `${record.sectionName}\0${record.recordNumber}`;
@@ -1242,12 +1250,14 @@ function addCanonicalKey(
   if (record.kind === 'order') {
     return {
       ...record,
+      sourceRowKey: requiredNormalizedSourceRowKey(record),
       canonicalKey: sourceOrderKey(record.marketplace, record.externalOrderId),
     };
   }
   if (record.kind === 'shipment') {
     return {
       ...record,
+      sourceRowKey: requiredNormalizedSourceRowKey(record),
       canonicalKey:
         record.externalShipmentId === null
           ? fallbackShipmentKey(record, requiredOccurrence(fallbackOccurrence))
@@ -1257,6 +1267,7 @@ function addCanonicalKey(
   if (record.kind === 'item') {
     return {
       ...record,
+      sourceRowKey: requiredNormalizedSourceRowKey(record),
       canonicalKey:
         record.externalItemId === null
           ? fallbackItemKey(record, requiredOccurrence(fallbackOccurrence))
@@ -1265,11 +1276,19 @@ function addCanonicalKey(
   }
   return {
     ...record,
+    sourceRowKey: requiredNormalizedSourceRowKey(record),
     canonicalKey:
       record.externalRefundId === null
         ? fallbackRefundKey(record, requiredOccurrence(fallbackOccurrence))
         : `refund/${record.externalRefundId}`,
   };
+}
+
+function requiredNormalizedSourceRowKey(record: AmazonExportRecord): string {
+  if (record.sourceRowKey === undefined) {
+    throw new Error('Amazon source position was not normalized.');
+  }
+  return record.sourceRowKey;
 }
 
 function requiredOccurrence(occurrence: number | undefined): number {
@@ -1286,7 +1305,7 @@ function recordKindRank(kind: AmazonExportRecord['kind']): number {
   return 3;
 }
 
-function normalizeParsedRecord(value: unknown): AmazonExportRecord {
+export function normalizeAmazonRecordDto(value: unknown): AmazonExportRecord {
   if (!isObject(value)) {
     throw new Error('Amazon parser output is invalid.');
   }
@@ -1299,11 +1318,18 @@ function normalizeParsedRecord(value: unknown): AmazonExportRecord {
   const base = {
     sectionName: requiredSectionName(value, 'sectionName'),
     recordNumber: requiredPositiveSafeInteger(value, 'recordNumber'),
+    sourceRowKey: '',
     marketplace: normalizedMarketplace(requiredString(value, 'marketplace')),
     externalOrderId: normalizedIdentifier(
       requiredString(value, 'externalOrderId'),
     ),
   };
+  base.sourceRowKey = normalizedSourceRowKey(
+    value,
+    kind,
+    base.sectionName,
+    base.recordNumber,
+  );
   if (kind === 'order') {
     return {
       ...base,
@@ -1582,6 +1608,27 @@ function requiredSectionName(
     throw new Error('Invalid Amazon export section name.');
   }
   return sectionName;
+}
+
+function normalizedSourceRowKey(
+  value: Record<string, unknown>,
+  kind: AmazonExportRecord['kind'],
+  sectionName: string,
+  recordNumber: number,
+): string {
+  const supplied = value.sourceRowKey;
+  if (supplied === undefined) {
+    return `export/${sectionName}/${recordNumber}`;
+  }
+  if (
+    typeof supplied !== 'string' ||
+    !new RegExp(
+      `^eml/[0-9a-f]{64}/${kind}/[1-9][0-9]{0,5}\\.[1-9][0-9]{0,6}$`,
+    ).test(supplied)
+  ) {
+    throw new Error('Invalid Amazon source position.');
+  }
+  return supplied;
 }
 
 function requiredPositiveSafeInteger(

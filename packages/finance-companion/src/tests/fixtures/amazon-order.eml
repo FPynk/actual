@@ -1,0 +1,15 @@
+From: Synthetic Amazon <orders@example.invalid>
+To: Synthetic User <user@example.invalid>
+Date: Thu, 01 Jan 2026 12:00:00 +0000
+Message-ID: <synthetic-order-1@example.invalid>
+Subject: Synthetic order confirmation
+MIME-Version: 1.0
+X-Actual-Amazon-Adapter: v1
+X-Actual-Amazon-Type: confirmation
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+This message contains invented test data only.
+Actual-Amazon-Record-V1: {"kind":"order","marketplace":"amazon.com","externalOrderId":"ORDER-EMAIL-1","orderDate":"2026-01-01","currencyCode":"USD","itemSubtotal":2500,"taxTotal":200,"shippingTotal":0,"discountTotal":100,"giftCardTotal":0,"refundTotal":0,"orderTotal":2600}
+Actual-Amazon-Record-V1: {"kind":"item","marketplace":"amazon.com","externalOrderId":"ORDER-EMAIL-1","shipmentKey":null,"externalItemId":"ITEM-EMAIL-1","asin":"ASIN-EMAIL-1","sku":null,"seller":"Synthetic email seller","title":"Synthetic email item","quantity":1,"unitAmount":2500,"taxAmount":200,"shippingAmount":0,"discountAmount":100,"refundAmount":0,"currencyCode":"USD"}
+End of synthetic message.

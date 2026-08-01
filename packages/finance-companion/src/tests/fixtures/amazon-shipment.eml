@@ -1,0 +1,26 @@
+From: Synthetic Amazon <shipments@example.invalid>
+To: Synthetic User <user@example.invalid>
+Date: Fri, 02 Jan 2026 12:00:00 +0000
+Message-ID: <synthetic-shipment-1@example.invalid>
+Subject: Synthetic shipment notice
+MIME-Version: 1.0
+X-Actual-Amazon-Adapter: v1
+X-Actual-Amazon-Type: shipment
+Content-Type: multipart/alternative; boundary="synthetic-boundary-39"
+
+Synthetic multipart preamble.
+--synthetic-boundary-39
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Synthetic shipment details follow.
+Actual-Amazon-Record-V1: {"kind":"order","marketplace":"amazon.com","externalOrderId":"ORDER-1","orderDate":"2026-01-01","currencyCode":"USD","itemSubtotal":1000,"taxTotal":80,"shippingTotal":0,"discountTotal":0,"giftCardTotal":0,"refundTotal":0,"orderTotal":1080}
+Actual-Amazon-Record-V1: {"kind":"shipment","marketplace":"amazon.com","externalOrderId":"ORDER-1","externalShipmentId":"SHIP-1","shipmentDate":"2026-01-02","shipmentTotal":1080,"orderedItemSignatures":["SKU-1"]}
+Actual-Amazon-Record-V1: {"kind":"item","marketplace":"amazon.com","externalOrderId":"ORDER-1","shipmentKey":"shipment/SHIP-1","externalItemId":"ITEM-1","asin":"ASIN-1","sku":null,"seller":"Synthetic seller","title":"Synthetic item","quantity":1,"unitAmount":1000,"taxAmount":80,"shippingAmount":0,"discountAmount":0,"refundAmount":0,"currencyCode":"USD"}
+--synthetic-boundary-39
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: base64
+
+PHA+U3ludGhldGljIG5vbi1wYXJzZWQgYWx0ZXJuYXRpdmUuPC9wPg==
+--synthetic-boundary-39--
+Synthetic multipart epilogue.
