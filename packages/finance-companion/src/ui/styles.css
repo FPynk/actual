@@ -54,6 +54,12 @@ input {
   border: 1px solid #aab7ce;
   padding-inline: 0.75rem;
 }
+input[type='radio'] {
+  min-block-size: 1.25rem;
+  inline-size: 1.25rem;
+  margin: 0;
+  padding: 0;
+}
 
 button {
   border: 0;
@@ -116,6 +122,22 @@ input:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+.subscription-types {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid #d7dfed;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+.subscription-types label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.error-inline {
+  min-block-size: 1.25rem;
+  color: #8f1d1d;
 }
 .evidence-grid {
   display: grid;

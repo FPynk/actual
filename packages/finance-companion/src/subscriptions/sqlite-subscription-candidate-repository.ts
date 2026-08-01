@@ -12,7 +12,12 @@ import type {
   SubscriptionCandidateV1,
   SubscriptionReasonCode,
 } from './subscription-detector';
-import type { SubscriptionCandidateRepository } from './subscription-scan-service';
+import { SubscriptionReviewConflictError } from './subscription-review-service';
+import type {
+  SubscriptionReviewAction,
+  SubscriptionReviewRecordV1,
+  SubscriptionReviewRepository,
+} from './subscription-review-service';
 
 type StoredCandidateRow = Readonly<{
   actualAccountId: string | null;
@@ -24,6 +29,7 @@ type StoredCandidateRow = Readonly<{
   candidateType: string;
   confidence: number;
   dateVarianceDays: number;
+  decidedAt: string | null;
   detectorVersion: number;
   evaluatedAt: string;
   firstDate: string;
@@ -74,7 +80,7 @@ const reasonCodes = new Set<SubscriptionReasonCode>([
   'schedule-ambiguous',
 ]);
 
-export class SqliteSubscriptionCandidateRepository implements SubscriptionCandidateRepository {
+export class SqliteSubscriptionCandidateRepository implements SubscriptionReviewRepository {
   constructor(
     private readonly database: Database.Database,
     private readonly createId: () => string = randomUUID,
@@ -96,6 +102,7 @@ export class SqliteSubscriptionCandidateRepository implements SubscriptionCandid
           candidate_type AS candidateType,
           confidence,
           date_variance_days AS dateVarianceDays,
+          decided_at AS decidedAt,
           detector_version AS detectorVersion,
           evaluated_at AS evaluatedAt,
           first_date AS firstDate,
@@ -192,7 +199,11 @@ export class SqliteSubscriptionCandidateRepository implements SubscriptionCandid
         reason_codes_json = excluded.reason_codes_json,
         status = excluded.status,
         actual_schedule_id = excluded.actual_schedule_id,
-        evaluated_at = excluded.evaluated_at
+        evaluated_at = excluded.evaluated_at,
+        decided_at = CASE
+          WHEN excluded.status = 'pending' THEN NULL
+          ELSE subscription_candidates.decided_at
+        END
       WHERE subscription_candidates.status <> 'rejected'`,
     );
     this.database
@@ -242,6 +253,104 @@ export class SqliteSubscriptionCandidateRepository implements SubscriptionCandid
       throw new TypeError('Subscription candidate does not exist.');
     }
   }
+
+  listSubscriptionReviewRecords(): readonly SubscriptionReviewRecordV1[] {
+    const rows = this.database
+      .prepare(
+        `SELECT
+          actual_account_id AS actualAccountId,
+          actual_payee_id AS actualPayeeId,
+          actual_schedule_id AS actualScheduleId,
+          amount_variance_basis_points AS amountVarianceBasisPoints,
+          cadence,
+          cadence_interval AS cadenceInterval,
+          candidate_type AS candidateType,
+          confidence,
+          date_variance_days AS dateVarianceDays,
+          decided_at AS decidedAt,
+          detector_version AS detectorVersion,
+          evaluated_at AS evaluatedAt,
+          first_date AS firstDate,
+          last_date AS lastDate,
+          median_amount AS medianAmount,
+          occurrence_count AS occurrenceCount,
+          reason_codes_json AS reasonCodesJson,
+          recent_price_change_basis_points AS recentPriceChangeBasisPoints,
+          signature,
+          status
+        FROM subscription_candidates
+        ORDER BY
+          CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+          confidence DESC,
+          evaluated_at,
+          signature`,
+      )
+      .all() as StoredCandidateRow[];
+    return rows.map(row => ({
+      candidate: projectStoredCandidate(row),
+      decidedAt: row.decidedAt,
+    }));
+  }
+
+  recordSubscriptionReviewDecision(
+    record: SubscriptionReviewRecordV1,
+    action: SubscriptionReviewAction,
+    decidedAt: string,
+  ): SubscriptionReviewRecordV1 {
+    assertTimestamp(decidedAt);
+    const update = () => {
+      const result =
+        action.kind === 'reopen'
+          ? this.database
+              .prepare(
+                `UPDATE subscription_candidates
+                SET status = 'pending', candidate_type = 'unknown', decided_at = NULL
+                WHERE signature = ? AND detector_version = ?
+                  AND status IN ('approved', 'rejected', 'deferred')
+                  AND evaluated_at = ? AND actual_schedule_id IS ?`,
+              )
+              .run(
+                record.candidate.signature,
+                record.candidate.detectorVersion,
+                record.candidate.evaluatedAt,
+                record.candidate.actualScheduleId,
+              )
+          : this.database
+              .prepare(
+                `UPDATE subscription_candidates
+                SET status = ?, candidate_type = ?, decided_at = ?
+                WHERE signature = ? AND detector_version = ? AND status = 'pending'
+                  AND evaluated_at = ? AND actual_schedule_id IS ?`,
+              )
+              .run(
+                action.kind === 'approve'
+                  ? 'approved'
+                  : action.kind === 'defer'
+                    ? 'deferred'
+                    : 'rejected',
+                action.kind === 'approve' ? action.userSelectedType : 'unknown',
+                decidedAt,
+                record.candidate.signature,
+                record.candidate.detectorVersion,
+                record.candidate.evaluatedAt,
+                record.candidate.actualScheduleId,
+              );
+      if (result.changes !== 1) {
+        throw new SubscriptionReviewConflictError();
+      }
+      const decided = this.listSubscriptionReviewRecords().find(
+        candidateRecord =>
+          candidateRecord.candidate.signature === record.candidate.signature &&
+          candidateRecord.candidate.detectorVersion ===
+            record.candidate.detectorVersion,
+      );
+      if (decided === undefined) {
+        throw new SubscriptionReviewConflictError();
+      }
+      return decided;
+    };
+    return this.database.transaction(update).immediate();
+  }
 }
 
 function projectStoredCandidate(
@@ -285,4 +394,15 @@ function projectStoredCandidate(
     signature: row.signature,
     status: row.status as SubscriptionCandidateStatus,
   };
+}
+
+function assertTimestamp(value: string): void {
+  const date = new Date(value);
+  if (
+    value.length !== 24 ||
+    Number.isNaN(date.getTime()) ||
+    date.toISOString() !== value
+  ) {
+    throw new TypeError('Subscription review timestamp is invalid.');
+  }
 }
