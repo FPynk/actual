@@ -13,6 +13,20 @@ import type {
   ClassificationReviewList,
 } from './classification-review.ts';
 import { formatMinorUnits } from './format.ts';
+import {
+  isSubscriptionReviewDetail,
+  isSubscriptionReviewList,
+  renderSubscriptionDetailBody,
+  renderSubscriptionListBody,
+  subscriptionConfirmationCopy,
+  subscriptionReviewRefFromPath,
+} from './subscription-review.ts';
+import type {
+  SubscriptionCandidateType,
+  SubscriptionReviewAction,
+  SubscriptionReviewDetail,
+  SubscriptionReviewList,
+} from './subscription-review.ts';
 
 export { formatMinorUnits } from './format.ts';
 
@@ -151,6 +165,40 @@ export class FinanceCompanionApi {
     return body;
   }
 
+  async listSubscriptionReviews(): Promise<SubscriptionReviewList> {
+    return this.getJson(
+      '/api/v1/subscription-reviews',
+      isSubscriptionReviewList,
+    );
+  }
+
+  async readSubscriptionReview(
+    reviewRef: string,
+  ): Promise<SubscriptionReviewDetail> {
+    return this.getJson(
+      `/api/v1/subscription-reviews/${encodeURIComponent(reviewRef)}`,
+      isSubscriptionReviewDetail,
+    );
+  }
+
+  async decideSubscriptionReview(
+    reviewRef: string,
+    action: SubscriptionReviewAction,
+  ): Promise<SubscriptionReviewDetail> {
+    if (this.session === null) {
+      throw new Error('Your session has ended. Please sign in again.');
+    }
+    const response = await this.request(
+      `/api/v1/subscription-reviews/${encodeURIComponent(reviewRef)}/decision`,
+      jsonRequest('POST', action, this.session.csrfToken),
+    );
+    const body = await readJson(response);
+    if (!response.ok || !isSubscriptionReviewDetail(body)) {
+      throw new Error(readProblem(body));
+    }
+    return body;
+  }
+
   private async getJson<T>(
     url: string,
     valid: (value: unknown) => value is T,
@@ -255,7 +303,56 @@ export function mountFinanceCompanionApplication(
       error => renderError(root, error, renderClassificationList),
     );
   };
+  const renderSubscriptionList = () => {
+    root.innerHTML = renderLoading('Loading recurring payment candidates…');
+    void api.listSubscriptionReviews().then(
+      list => {
+        root.innerHTML = reviewLayout(
+          'Recurring payment review',
+          renderSubscriptionListBody(list),
+          'subscriptions',
+        );
+        bindSubscriptionPage(
+          root,
+          api,
+          renderSubscriptionList,
+          renderSubscriptionDetail,
+        );
+        root
+          .querySelector<HTMLAnchorElement>('[data-subscription-link]')
+          ?.focus();
+      },
+      error => renderError(root, error, renderSubscriptionList),
+    );
+  };
+  const renderSubscriptionDetail = (reviewRef: string) => {
+    root.innerHTML = renderLoading('Loading recurring payment candidate…');
+    void api.readSubscriptionReview(reviewRef).then(
+      review => {
+        root.innerHTML = reviewLayout(
+          'Recurring payment candidate',
+          renderSubscriptionDetailBody(review),
+          'subscriptions',
+        );
+        bindSubscriptionPage(
+          root,
+          api,
+          renderSubscriptionList,
+          renderSubscriptionDetail,
+          review,
+        );
+        root.querySelector<HTMLElement>('#review-title')?.focus();
+      },
+      error => renderError(root, error, renderSubscriptionList),
+    );
+  };
   const renderAuthenticatedRoute = () => {
+    if (window.location.pathname.startsWith('/subscriptions')) {
+      const reviewRef = subscriptionReviewRefFromPath(window.location.pathname);
+      if (reviewRef === null) renderSubscriptionList();
+      else renderSubscriptionDetail(reviewRef);
+      return;
+    }
     if (window.location.pathname.startsWith('/classification')) {
       const reviewRef = classificationReviewRefFromPath(
         window.location.pathname,
@@ -299,14 +396,40 @@ export function mountFinanceCompanionApplication(
     renderClassificationDetail(reviewRef);
   });
   root.addEventListener('click', event => {
+    const link = (event.target as Element).closest<HTMLAnchorElement>(
+      '[data-subscription-link]',
+    );
+    if (link === null) return;
+    event.preventDefault();
+    const reviewRef = link.dataset.subscriptionLink;
+    if (reviewRef === undefined) return;
+    window.history.pushState(
+      {},
+      '',
+      `/subscriptions/${encodeURIComponent(reviewRef)}`,
+    );
+    renderSubscriptionDetail(reviewRef);
+  });
+  root.addEventListener('click', event => {
     const section = (event.target as Element).closest<HTMLAnchorElement>(
       '[data-review-section]',
     )?.dataset.reviewSection;
-    if (section !== 'reconciliation' && section !== 'classification') return;
+    if (
+      section !== 'reconciliation' &&
+      section !== 'classification' &&
+      section !== 'subscriptions'
+    ) {
+      return;
+    }
     event.preventDefault();
     window.history.pushState({}, '', `/${section}`);
-    if (section === 'classification') renderClassificationList();
-    else renderList();
+    if (section === 'classification') {
+      renderClassificationList();
+    } else if (section === 'subscriptions') {
+      renderSubscriptionList();
+    } else {
+      renderList();
+    }
   });
   root.addEventListener('click', event => {
     if ((event.target as Element).closest('[data-logout]') === null) return;
@@ -369,9 +492,9 @@ export function renderReconciliationDetail(
 function reviewLayout(
   title: string,
   body: string,
-  activeSection: 'reconciliation' | 'classification',
+  activeSection: 'reconciliation' | 'classification' | 'subscriptions',
 ): string {
-  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header><nav class="review-navigation" aria-label="Review types"><a ${activeSection === 'reconciliation' ? 'aria-current="page"' : ''} data-review-section="reconciliation" href="/reconciliation">Reconciliation</a><a ${activeSection === 'classification' ? 'aria-current="page"' : ''} data-review-section="classification" href="/classification">Classification</a></nav>${body}</main>`;
+  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header><nav class="review-navigation" aria-label="Review types"><a ${activeSection === 'reconciliation' ? 'aria-current="page"' : ''} data-review-section="reconciliation" href="/reconciliation">Reconciliation</a><a ${activeSection === 'classification' ? 'aria-current="page"' : ''} data-review-section="classification" href="/classification">Classification</a><a ${activeSection === 'subscriptions' ? 'aria-current="page"' : ''} data-review-section="subscriptions" href="/subscriptions">Recurring payments</a></nav>${body}</main>`;
 }
 function bindPage(
   root: HTMLElement,
@@ -519,6 +642,126 @@ function bindClassificationPage(
             renderError(root, error, () => renderDetail(review.reviewRef)),
         );
     });
+}
+
+function bindSubscriptionPage(
+  root: HTMLElement,
+  api: FinanceCompanionApi,
+  renderList: () => void,
+  renderDetail: (reviewRef: string) => void,
+  review?: SubscriptionReviewDetail,
+): void {
+  root
+    .querySelector<HTMLAnchorElement>('[data-subscription-list]')
+    ?.addEventListener('click', event => {
+      event.preventDefault();
+      window.history.pushState({}, '', '/subscriptions');
+      renderList();
+    });
+  if (review === undefined) return;
+  const dialog = root.querySelector<HTMLDialogElement>('dialog');
+  let selectedAction: SubscriptionReviewAction | undefined;
+  let openingButton: HTMLButtonElement | undefined;
+  root
+    .querySelectorAll<HTMLInputElement>('input[name="subscription-type"]')
+    .forEach(input =>
+      input.addEventListener('change', () => {
+        const error = root.querySelector<HTMLElement>(
+          '[data-subscription-type-error]',
+        );
+        if (error !== null) error.textContent = '';
+      }),
+    );
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-subscription-decision]')
+    .forEach(button =>
+      button.addEventListener('click', () => {
+        openingButton = button;
+        const kind = button.dataset.subscriptionDecision;
+        if (kind === 'approve') {
+          const userSelectedType = readSelectedSubscriptionType(root);
+          if (userSelectedType === null) {
+            const error = root.querySelector<HTMLElement>(
+              '[data-subscription-type-error]',
+            );
+            if (error !== null) {
+              error.textContent = 'Choose a type before approving.';
+            }
+            root
+              .querySelector<HTMLInputElement>(
+                'input[name="subscription-type"]',
+              )
+              ?.focus();
+            return;
+          }
+          selectedAction = { kind: 'approve', userSelectedType };
+        } else if (kind === 'defer') {
+          selectedAction = { kind: 'defer' };
+        } else if (kind === 'reject') {
+          selectedAction = { kind: 'reject' };
+        } else if (kind === 'reopen') {
+          selectedAction = { kind: 'reopen' };
+        } else {
+          return;
+        }
+        const confirmationCopy = dialog?.querySelector<HTMLElement>(
+          '[data-confirmation-copy]',
+        );
+        if (confirmationCopy !== null && confirmationCopy !== undefined) {
+          confirmationCopy.textContent =
+            subscriptionConfirmationCopy(selectedAction);
+        }
+        dialog?.showModal();
+        dialog
+          ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+          ?.focus();
+      }),
+    );
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-cancel-decision]')
+    ?.addEventListener('click', () => {
+      selectedAction = undefined;
+      dialog.close();
+      openingButton?.focus();
+    });
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+    ?.addEventListener('click', () => {
+      if (selectedAction === undefined) return;
+      const action = selectedAction;
+      dialog.close();
+      root.innerHTML = renderLoading(
+        'Rechecking Actual before recording your decision…',
+      );
+      void api.decideSubscriptionReview(review.reviewRef, action).then(
+        result => {
+          root.innerHTML = reviewLayout(
+            'Recurring payment candidate',
+            renderSubscriptionDetailBody(result, action.kind),
+            'subscriptions',
+          );
+          bindSubscriptionPage(root, api, renderList, renderDetail, result);
+          focusReconciliationReviewOutcome(selector =>
+            root.querySelector<HTMLElement>(selector),
+          );
+        },
+        error => renderError(root, error, () => renderDetail(review.reviewRef)),
+      );
+    });
+}
+
+function readSelectedSubscriptionType(
+  root: HTMLElement,
+): SubscriptionCandidateType | null {
+  const value = root.querySelector<HTMLInputElement>(
+    'input[name="subscription-type"]:checked',
+  )?.value;
+  return value === 'subscription' ||
+    value === 'household_bill' ||
+    value === 'financial_bill' ||
+    value === 'unknown'
+    ? value
+    : null;
 }
 
 function renderError(

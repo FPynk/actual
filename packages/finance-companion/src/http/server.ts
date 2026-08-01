@@ -15,6 +15,7 @@ import type { SourceIdentityRepository } from '#database/source-identity-reposit
 import { addClassificationReviewRoutes } from '#http/classification-review-routes';
 import { calculateRequestReplayHash } from '#http/request-idempotency';
 import type { AmazonUploadSemanticRequest } from '#http/request-idempotency';
+import { addSubscriptionReviewRoutes } from '#http/subscription-review-routes';
 import {
   createReconciliationReviewCandidateDto,
   createReconciliationReviewListDto,
@@ -28,6 +29,7 @@ import type { FinanceCompanionSecurity } from '#security/local-security';
 import { createFinanceCompanionHealth } from '#service/health';
 import { validateIdempotencyKey } from '#service/request-replay-repository';
 import type { RequestReplayRepository } from '#service/request-replay-repository';
+import type { SubscriptionReviewRepository } from '#subscriptions/subscription-review-service';
 
 const SESSION_COOKIE_NAME = 'finance_companion_session';
 const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
@@ -47,6 +49,7 @@ export type ReconciliationReviewDependencies = Readonly<{
   adapter: ActualAdapter;
   candidateRepository: ReconciliationCandidateRepository;
   classificationRepository?: ClassificationReviewRepository;
+  subscriptionRepository?: SubscriptionReviewRepository;
   sourceIdentityRepository: SourceIdentityRepository;
   now?: () => Date;
 }>;
@@ -158,6 +161,26 @@ export function createFinanceCompanionHttpApplication(
         },
       );
     }
+    if (reconciliationReview.subscriptionRepository !== undefined) {
+      addSubscriptionReviewRoutes(
+        application,
+        configuration,
+        {
+          adapter: reconciliationReview.adapter,
+          repository: reconciliationReview.subscriptionRepository,
+          now: reconciliationReview.now,
+        },
+        {
+          readSession: requireSession(security, false),
+          decisionSecurity: [
+            requireExactOrigin(configuration.origin),
+            requireSession(security, true),
+            requireJsonContentType,
+          ],
+          sendProblem,
+        },
+      );
+    }
   }
   application.post(
     '/api/v1/imports/amazon',
@@ -197,6 +220,8 @@ export function createFinanceCompanionHttpApplication(
       '/reconciliation/:reviewId',
       '/classification',
       '/classification/:reviewRef',
+      '/subscriptions',
+      '/subscriptions/:reviewRef',
     ],
     (_request, response) =>
       response.sendFile(path.resolve(staticUiDirectory, 'index.html')),
@@ -699,6 +724,11 @@ const problemDefinitions = {
   operation_in_progress: {
     status: 409,
     message: 'The operation is already in progress.',
+    retryable: true,
+  },
+  review_conflict: {
+    status: 409,
+    message: 'The review changed. Reload it and try again.',
     retryable: true,
   },
 } as const;

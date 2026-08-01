@@ -161,6 +161,78 @@ describe('SQLite subscription candidate repository', () => {
     });
   });
 
+  it('atomically persists review decisions and reopen across restart', async () => {
+    const database = openDatabase();
+    const candidateRepository = repository(database);
+    await scan(candidateRepository, initialHistory, firstClock);
+    const pending = candidateRepository.listSubscriptionReviewRecords()[0]!;
+    const approved = candidateRepository.recordSubscriptionReviewDecision(
+      pending,
+      { kind: 'approve', userSelectedType: 'financial_bill' },
+      '2026-07-31T12:01:00.000Z',
+    );
+    expect(approved).toMatchObject({
+      candidate: {
+        candidateType: 'financial_bill',
+        status: 'approved',
+      },
+      decidedAt: '2026-07-31T12:01:00.000Z',
+    });
+    expect(() =>
+      candidateRepository.recordSubscriptionReviewDecision(
+        pending,
+        { kind: 'defer' },
+        '2026-07-31T12:02:00.000Z',
+      ),
+    ).toThrow('Subscription review state changed.');
+    database.close();
+
+    const restartedRepository = repository(openDatabase());
+    const restarted = restartedRepository.listSubscriptionReviewRecords()[0]!;
+    expect(restarted).toEqual(approved);
+    const reopened = restartedRepository.recordSubscriptionReviewDecision(
+      restarted,
+      { kind: 'reopen' },
+      '2026-07-31T12:03:00.000Z',
+    );
+    expect(reopened).toMatchObject({
+      candidate: { candidateType: 'unknown', status: 'pending' },
+      decidedAt: null,
+    });
+  });
+
+  it('rejects a decision replay after a competing scan refreshes pending evidence', async () => {
+    const database = openDatabase();
+    const candidateRepository = repository(database);
+    await scan(candidateRepository, initialHistory, firstClock);
+    const stalePending =
+      candidateRepository.listSubscriptionReviewRecords()[0]!;
+
+    await scan(
+      candidateRepository,
+      history(['2026-01-15', '2026-02-15', '2026-03-15', '2026-04-15']),
+      secondClock,
+    );
+
+    expect(() =>
+      candidateRepository.recordSubscriptionReviewDecision(
+        stalePending,
+        { kind: 'approve', userSelectedType: 'subscription' },
+        '2026-08-01T12:01:00.000Z',
+      ),
+    ).toThrow('Subscription review state changed.');
+    const currentPending =
+      candidateRepository.listSubscriptionReviewRecords()[0]!;
+    expect(currentPending.candidate.occurrenceCount).toBe(4);
+    expect(
+      candidateRepository.recordSubscriptionReviewDecision(
+        currentPending,
+        { kind: 'approve', userSelectedType: 'subscription' },
+        '2026-08-01T12:01:00.000Z',
+      ).candidate.status,
+    ).toBe('approved');
+  });
+
   function openDatabase(): Database.Database {
     const database = new Database(databasePath);
     openDatabases.push(database);
