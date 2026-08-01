@@ -65,6 +65,33 @@ describe('createFinanceCompanionHttpApplication', () => {
     }
   });
 
+  it('fails readiness after the injected Actual adapter reaches terminal fail-stop', async () => {
+    let adapterHealth: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+    const server = createServer(
+      createFinanceCompanionHttpApplication(
+        configuration,
+        path.resolve(import.meta.dirname, '../..'),
+        security,
+        createTestRequestReplayRepository(),
+        undefined,
+        undefined,
+        { getHealth: () => adapterHealth },
+      ),
+    );
+    await listen(server);
+    try {
+      expect((await request(server, '/health')).statusCode).toBe(200);
+      adapterHealth = 'degraded';
+      expect((await request(server, '/health')).statusCode).toBe(200);
+      adapterHealth = 'unhealthy';
+      const health = await request(server, '/health');
+      expect(health.statusCode).toBe(503);
+      expect(health.body).toBe('{"status":"unhealthy","version":"0.0.1"}');
+    } finally {
+      await close(server);
+    }
+  });
+
   it('rejects a non-loopback bind before listening', () => {
     expect(() =>
       createFinanceCompanionHttpApplication(

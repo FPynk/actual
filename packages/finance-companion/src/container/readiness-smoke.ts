@@ -12,6 +12,7 @@ import { createServer, get } from 'node:http';
 import path from 'node:path';
 
 import { createActualAdapter } from '#actual/adapter';
+import type { ActualAdapter } from '#actual/adapter';
 import { canonicalJson } from '#actual/canonical-json';
 import { createForkedAdapterWorkerRunner } from '#actual/forked-worker-runner';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
@@ -38,6 +39,7 @@ export type ContainerReadinessSmokeResult = Readonly<{
     'migration-fixture',
     'mocked-job',
     'worker-quarantine',
+    'adapter-readiness',
     'graceful-shutdown',
   ];
 }>;
@@ -91,8 +93,11 @@ export async function runContainerReadinessSmoke(): Promise<ContainerReadinessSm
         createOwnerCredentialHash: async () => 'container-smoke-owner-hash',
       });
       await runMockedBankSyncJob(databasePath);
-      await requireWorkerQuarantine(actualApiFixtureDirectory);
-      await requireGracefulShutdown(databasePath);
+      const adapterConfiguration = createReadinessAdapterConfiguration(
+        actualApiFixtureDirectory,
+      );
+      await requireWorkerQuarantine(adapterConfiguration);
+      await requireAdapterReadinessFailure(databasePath, adapterConfiguration);
     } finally {
       anchorMacKey.fill(0);
     }
@@ -108,6 +113,7 @@ export async function runContainerReadinessSmoke(): Promise<ContainerReadinessSm
       'migration-fixture',
       'mocked-job',
       'worker-quarantine',
+      'adapter-readiness',
       'graceful-shutdown',
     ],
   };
@@ -207,33 +213,18 @@ async function runMockedBankSyncJob(databasePath: string): Promise<void> {
 }
 
 async function requireWorkerQuarantine(
-  actualApiDirectory: string,
+  configuration: ReturnType<typeof createReadinessAdapterConfiguration>,
 ): Promise<void> {
-  const actualApiDirectoryNonce = randomBytes(32).toString('base64url');
   await writeFile(
-    path.join(actualApiDirectory, 'owner.json'),
+    path.join(configuration.actualApiDirectory, 'owner.json'),
     canonicalJson({
       budgetBindingHash: budgetKeyHash,
       companionInstanceId,
-      directoryNonce: actualApiDirectoryNonce,
+      directoryNonce: configuration.actualApiDirectoryNonce,
       formatVersion: 1,
     }),
     { encoding: 'utf8', flag: 'wx', mode: 0o600 },
   );
-  const configuration = {
-    actualApiDirectory,
-    actualApiDirectoryNonce,
-    actualBudgetCurrency: 'USD',
-    actualBudgetId: 'container-smoke-budget',
-    actualPassword: 'synthetic-only',
-    actualServerUrl: 'http://127.0.0.1:5999',
-    budgetBindingHash: budgetKeyHash,
-    companionInstanceId,
-    hardTimeoutMilliseconds: 60,
-    serviceInstanceNonce: randomBytes(32).toString('base64url'),
-    softTimeoutMilliseconds: 10,
-    workerExitTimeoutMilliseconds: 100,
-  } as const;
   const workerEntry = new URL(
     import.meta.url.endsWith('.ts')
       ? './readiness-hanging-worker.ts'
@@ -250,9 +241,116 @@ async function requireWorkerQuarantine(
   if (adapter.getHealth() !== 'degraded') {
     throw new Error('The terminated worker did not degrade adapter health.');
   }
-  const quarantine = await readdir(path.join(actualApiDirectory, 'quarantine'));
+  const quarantine = await readdir(
+    path.join(configuration.actualApiDirectory, 'quarantine'),
+  );
   if (quarantine.length !== 1) {
     throw new Error('The terminated worker operation was not quarantined.');
+  }
+}
+
+function createReadinessAdapterConfiguration(actualApiDirectory: string) {
+  const actualApiDirectoryNonce = randomBytes(32).toString('base64url');
+  return {
+    actualApiDirectory,
+    actualApiDirectoryNonce,
+    actualBudgetCurrency: 'USD',
+    actualBudgetId: 'container-smoke-budget',
+    actualPassword: 'synthetic-only',
+    actualServerUrl: 'http://127.0.0.1:5999',
+    budgetBindingHash: budgetKeyHash,
+    companionInstanceId,
+    hardTimeoutMilliseconds: 60,
+    serviceInstanceNonce: randomBytes(32).toString('base64url'),
+    softTimeoutMilliseconds: 10,
+    workerExitTimeoutMilliseconds: 100,
+  } as const;
+}
+
+async function requireAdapterReadinessFailure(
+  databasePath: string,
+  adapterConfiguration: ReturnType<typeof createReadinessAdapterConfiguration>,
+): Promise<void> {
+  const configuration = {
+    ...adapterConfiguration,
+    hardTimeoutMilliseconds: 20,
+    softTimeoutMilliseconds: 5,
+    workerExitTimeoutMilliseconds: 20,
+  };
+  const adapter = createActualAdapter(
+    configuration,
+    async () => new Promise(() => undefined),
+  );
+  await expectAdapterUnhealthy(
+    adapter.execute({ kind: 'read-budget-snapshot', sections: [] }),
+  );
+  if (adapter.getHealth() !== 'unhealthy') {
+    throw new Error('The unproven worker exit did not fail-stop the adapter.');
+  }
+  await requireGracefulShutdown(databasePath, adapter);
+}
+
+async function expectAdapterUnhealthy(
+  operation: Promise<unknown>,
+): Promise<void> {
+  try {
+    await operation;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'adapter_unhealthy'
+    ) {
+      return;
+    }
+  }
+  throw new Error('The synthetic worker did not fail-stop the adapter.');
+}
+
+async function requireGracefulShutdown(
+  databasePath: string,
+  healthDependency: Pick<ActualAdapter, 'getHealth'>,
+): Promise<void> {
+  const security = await createFinanceCompanionSecurity({
+    bootstrapCredential: randomBytes(32).toString('base64url'),
+    localPrincipalRepository: createInMemoryLocalPrincipalRepository(),
+  });
+  const server = createServer(
+    createFinanceCompanionHttpApplication(
+      {
+        bindAddress: '127.0.0.1',
+        budgetKeyHash,
+        budgetCurrencyCode: 'USD',
+        origin: 'http://127.0.0.1:4100',
+        port: 4100,
+      },
+      path.resolve(import.meta.dirname, '../ui'),
+      security,
+      createSqliteRequestReplayRepository(databasePath),
+      undefined,
+      undefined,
+      healthDependency,
+    ),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(4100, '127.0.0.1', () => resolve());
+  });
+  try {
+    const health = await readHealth();
+    if (
+      health.statusCode !== 503 ||
+      health.body !== '{"status":"unhealthy","version":"0.0.1"}'
+    ) {
+      throw new Error(
+        'Terminal adapter failure did not fail container readiness.',
+      );
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close(error => (error === undefined ? resolve() : reject(error))),
+    );
   }
 }
 
@@ -272,44 +370,9 @@ async function expectTimeout(operation: Promise<unknown>): Promise<void> {
   throw new Error('The synthetic worker did not reach its hard deadline.');
 }
 
-async function requireGracefulShutdown(databasePath: string): Promise<void> {
-  const security = await createFinanceCompanionSecurity({
-    bootstrapCredential: randomBytes(32).toString('base64url'),
-    localPrincipalRepository: createInMemoryLocalPrincipalRepository(),
-  });
-  const server = createServer(
-    createFinanceCompanionHttpApplication(
-      {
-        bindAddress: '127.0.0.1',
-        budgetKeyHash,
-        budgetCurrencyCode: 'USD',
-        origin: 'http://127.0.0.1:4100',
-        port: 4100,
-      },
-      path.resolve(import.meta.dirname, '../ui'),
-      security,
-      createSqliteRequestReplayRepository(databasePath),
-    ),
-  );
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(4100, '127.0.0.1', () => resolve());
-  });
-  try {
-    const health = await readHealth();
-    if (health !== '{"status":"healthy","version":"0.0.1"}') {
-      throw new Error(
-        'The internal health check did not return the minimal payload.',
-      );
-    }
-  } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close(error => (error === undefined ? resolve() : reject(error))),
-    );
-  }
-}
-
-function readHealth(): Promise<string> {
+function readHealth(): Promise<
+  Readonly<{ statusCode: number; body: string }>
+> {
   return new Promise((resolve, reject) => {
     const request = get('http://127.0.0.1:4100/health', response => {
       let body = '';
@@ -318,9 +381,7 @@ function readHealth(): Promise<string> {
         body += chunk;
       });
       response.on('end', () =>
-        response.statusCode === 200
-          ? resolve(body)
-          : reject(new Error('Health failed.')),
+        resolve({ statusCode: response.statusCode ?? 0, body }),
       );
     });
     request.once('error', reject);
