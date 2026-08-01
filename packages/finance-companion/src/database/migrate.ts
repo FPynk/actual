@@ -19,6 +19,7 @@ import {
   canonicalExistingRegularFile,
   canonicalUnusedFile,
 } from './path-safety.ts';
+import { hasRestoreRecoveryArtifacts } from './restore-journal.ts';
 
 type Migration = Readonly<{
   version: number;
@@ -66,6 +67,9 @@ export async function initializeCompanionDatabaseAndAnchor(
     }
     if (paths.databaseExists !== paths.anchorExists) {
       throw new Error('Companion database and anchor state is incomplete.');
+    }
+    if (hasRestoreRecoveryArtifacts(paths.databasePath, paths.anchorPath)) {
+      throw new Error('Companion restore requires recovery.');
     }
     await assertNoSqliteSidecars(paths.databasePath);
     if (paths.databaseExists) {

@@ -252,6 +252,22 @@ describe('FIN-11 database safety gates', () => {
     expect(await readFile(backup.backupPath, 'utf8')).toBe('published-backup');
   });
 
+  it('refuses backup and migration while interrupted restore artifacts remain', async () => {
+    const backup = await createBackupRequest();
+    const intentPath = path.join(
+      path.dirname(initialization.anchorPath),
+      `.finance-companion-restore-intent-${randomUUID()}.json`,
+    );
+    await writeFile(intentPath, 'retained');
+
+    await expect(createCompanionOnlyBackup(backup)).rejects.toThrow(
+      'requires recovery',
+    );
+    await expect(
+      initializeCompanionDatabaseAndAnchor(initialization),
+    ).rejects.toThrow('requires recovery');
+  });
+
   it.each([
     [
       'wrong budget',

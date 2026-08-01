@@ -89,8 +89,10 @@ export async function createCompanionOnlyBackup(
   request: CompanionBackupRequest,
 ): Promise<CompanionBackupResult> {
   validateEncryptionKey(request.encryptionKey);
+  assertNoRestoreArtifacts(request.databasePath, request.anchorPath);
   const paths = await validateBackupPaths(request, 'unused');
   return withExclusiveMaintenanceLock(paths.databasePath, async () => {
+    assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
     await assertNoSqliteSidecars(paths.databasePath);
     const temporaryDirectory = await createOwnedBackupTemporaryDirectory(
       paths.backupPath,
@@ -177,6 +179,7 @@ export async function verifyCompanionOnlyBackup(
   assertNoRestoreArtifacts(request.databasePath, request.anchorPath);
   const paths = await validateBackupPaths(request, 'existing');
   return withExclusiveMaintenanceLock(paths.databasePath, async () => {
+    assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
     await assertNoSqliteSidecars(paths.databasePath);
     const liveDatabase = openCompanionDatabase(paths.databasePath, true);
     let liveMetadata: GenerationZeroMetadata;
