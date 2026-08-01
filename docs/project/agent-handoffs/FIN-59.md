@@ -23,6 +23,11 @@ does not publish ports, and supplies no GitHub or operator secrets. The
 container smoke creates its own short-lived synthetic fixtures internally and
 removes its Compose project, volumes, and image in `finally` cleanup.
 
+The required smoke job first requires a reachable Docker daemon, Docker Compose,
+and Docker Buildx. The smoke helper may still report an unavailable engine as a
+local-development skip, but that result cannot make the required Ubuntu CI job
+pass.
+
 ## Validation
 
 The workflow was reviewed against the existing pinned-action convention in

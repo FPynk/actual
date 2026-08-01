@@ -60,6 +60,12 @@ jobs:
         uses: ./.github/actions/setup
         with:
           download-translations: 'false'
+      - name: Require Docker container toolchain
+        run: |
+          docker version --format '{{.Server.Version}}'
+          docker info --format '{{.ServerVersion}}'
+          docker compose version
+          docker buildx ls
       - name: Run synthetic non-root container smoke
         run: yarn workspace @actual-app/finance-companion smoke:container
 
