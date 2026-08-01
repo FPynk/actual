@@ -163,6 +163,56 @@ describe('FIN-28 one-shot bank sync', () => {
     expect(reads).toBe(1);
   });
 
+  it('scopes an idempotency key to its invocation and operation identity', async () => {
+    const idempotencyKey = 'shared-identity-key';
+    const scheduled = await run({
+      adapter: adapter([account('a')], request => success(request)),
+      idempotencyKey,
+    });
+    let httpReads = 0;
+    const http = await runOneShotBankSyncJob(
+      {
+        accountIds: ['a'],
+        idempotencyKey,
+        invocationKind: 'local_http',
+        principalId,
+      },
+      {
+        adapter: adapter([account('a')], request => {
+          if (request.kind === 'read-budget-snapshot') httpReads += 1;
+          return success(request);
+        }),
+        budgetKeyHash,
+        now: clock(),
+        repository: createSqliteBankSyncJobRepository(databasePath),
+      },
+    );
+
+    expect(http.id).not.toBe(scheduled.id);
+    expect(httpReads).toBe(1);
+    const database = openCompanionDatabase(databasePath, true);
+    try {
+      expect(
+        database
+          .prepare(
+            'SELECT invocation_kind, operation_id FROM job_runs ORDER BY invocation_kind',
+          )
+          .all(),
+      ).toEqual([
+        {
+          invocation_kind: 'local_http',
+          operation_id: 'finance-companion/http/bank-sync/v1',
+        },
+        {
+          invocation_kind: 'scheduler',
+          operation_id: 'finance-companion/job:bank-sync/v1',
+        },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
   it('turns a hard timeout into unknown effects, skips untouched accounts, and closes later work', async () => {
     const calls: string[] = [];
     const summary = await run({

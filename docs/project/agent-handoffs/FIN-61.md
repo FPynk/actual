@@ -25,9 +25,11 @@ job summary fields and allowlisted problem details.
 
 - Finance Companion typecheck passed.
 - `bank-sync-http.test.ts`, `bank-sync.test.ts`, and `server.test.ts`: 3 files,
-  16 tests passed.
+  17 tests passed.
 - The HTTP tests use a temporary synthetic companion database and prove route
   authentication/Host/Origin/CSRF, exact replay and conflict behavior,
   timeout and unknown outcomes, pagination bounds, redaction, and both lock
   race orderings.
 - Formatter and `git diff --check` passed.
+- The complete Finance Companion suite passed: 358 tests passed and four
+  platform-specific tests skipped. The production UI/service build passed.

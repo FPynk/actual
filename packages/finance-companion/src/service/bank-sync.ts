@@ -932,10 +932,7 @@ function findJob(
   if (unresolvedUnknown !== undefined) {
     return { kind: 'blocked' };
   }
-  const keyWasBound = database
-    .prepare('SELECT 1 FROM job_runs WHERE idempotency_key = ? LIMIT 1')
-    .get(scope.idempotencyKey);
-  return keyWasBound === undefined ? { kind: 'missing' } : { kind: 'conflict' };
+  return { kind: 'missing' };
 }
 
 function parseSummary(value: string): BankSyncJobSummary {
