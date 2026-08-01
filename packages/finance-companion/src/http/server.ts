@@ -12,6 +12,7 @@ import type { Express, NextFunction, Request, Response } from 'express';
 import type { ActualAdapter } from '#actual/adapter';
 import type { FinanceCompanionConfiguration } from '#config';
 import type { SourceIdentityRepository } from '#database/source-identity-repository';
+import { addClassificationReviewRoutes } from '#http/classification-review-routes';
 import { calculateRequestReplayHash } from '#http/request-idempotency';
 import type { AmazonUploadSemanticRequest } from '#http/request-idempotency';
 import {
@@ -22,6 +23,7 @@ import {
 } from '#reconciliation-review';
 import { decideReconciliationCandidate } from '#reconciliation/candidates';
 import type { ReconciliationCandidateRepository } from '#reconciliation/candidates';
+import type { ClassificationReviewRepository } from '#reviews/classification-review';
 import type { FinanceCompanionSecurity } from '#security/local-security';
 import { createFinanceCompanionHealth } from '#service/health';
 import { validateIdempotencyKey } from '#service/request-replay-repository';
@@ -44,6 +46,7 @@ type FinanceCompanionListenerConfiguration = Readonly<{
 export type ReconciliationReviewDependencies = Readonly<{
   adapter: ActualAdapter;
   candidateRepository: ReconciliationCandidateRepository;
+  classificationRepository?: ClassificationReviewRepository;
   sourceIdentityRepository: SourceIdentityRepository;
   now?: () => Date;
 }>;
@@ -135,6 +138,26 @@ export function createFinanceCompanionHttpApplication(
       security,
       reconciliationReview,
     );
+    if (reconciliationReview.classificationRepository !== undefined) {
+      addClassificationReviewRoutes(
+        application,
+        configuration,
+        {
+          adapter: reconciliationReview.adapter,
+          repository: reconciliationReview.classificationRepository,
+          now: reconciliationReview.now,
+        },
+        {
+          readSession: requireSession(security, false),
+          decisionSecurity: [
+            requireExactOrigin(configuration.origin),
+            requireSession(security, true),
+            requireJsonContentType,
+          ],
+          sendProblem,
+        },
+      );
+    }
   }
   application.post(
     '/api/v1/imports/amazon',
@@ -169,7 +192,12 @@ export function createFinanceCompanionHttpApplication(
     express.static(path.resolve(staticUiDirectory), { index: 'index.html' }),
   );
   application.get(
-    ['/reconciliation', '/reconciliation/:reviewId'],
+    [
+      '/reconciliation',
+      '/reconciliation/:reviewId',
+      '/classification',
+      '/classification/:reviewRef',
+    ],
     (_request, response) =>
       response.sendFile(path.resolve(staticUiDirectory, 'index.html')),
   );

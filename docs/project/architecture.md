@@ -229,6 +229,12 @@ later companion writes. Until all local and remote race/failure tests pass,
 approvals are read-only decisions with instructions to complete the edit in
 Actual's UI.
 
+FIN-42's repository review found that current Actual clients and sync server do
+not provide this fence or outcome. The approved fail-closed decision and the
+minimum future protocol are in
+[`distributed-write-boundary.md`](distributed-write-boundary.md). No companion
+write capability is enabled by the Phase 9 design.
+
 Before any write capability is exposed, one immutable database event increments
 the capability generation and chains the versioned capability contract to an
 authenticated paired-backup manifest. The database row/event chain and external

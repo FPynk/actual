@@ -15,6 +15,12 @@ import {
   merchantAliasProposalId,
   normalizeImportedPayeeV1,
 } from '#reviews/classification';
+import type {
+  ClassificationReviewAction,
+  ClassificationReviewRecordV1,
+  ClassificationReviewRepository,
+  ClassificationReviewStatus,
+} from '#reviews/classification-review';
 
 type MerchantProposalRow = Readonly<{
   id: string;
@@ -46,7 +52,9 @@ type CategoryReviewRow = Readonly<{
   proposal_metadata_json: string;
 }>;
 
-export class SqliteClassificationProposalRepository implements ClassificationProposalRepository {
+export class SqliteClassificationProposalRepository
+  implements ClassificationProposalRepository, ClassificationReviewRepository
+{
   constructor(private readonly database: Database.Database) {}
 
   findPendingMerchantAlias(
@@ -216,6 +224,92 @@ export class SqliteClassificationProposalRepository implements ClassificationPro
       throw new Error('Pending category review is missing.');
     }
   }
+
+  listClassificationReviews(): readonly ClassificationReviewRecordV1[] {
+    const merchants = this.database
+      .prepare(
+        "SELECT * FROM merchant_normalization_proposals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, confidence DESC, created_at, id",
+      )
+      .all() as readonly MerchantProposalRow[];
+    const categories = this.database
+      .prepare(
+        "SELECT * FROM classification_reviews ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, confidence DESC, created_at, id",
+      )
+      .all() as readonly CategoryReviewRow[];
+    return [
+      ...merchants.map(merchantReviewRecord),
+      ...categories.map(categoryReviewRecord),
+    ].sort(compareReviewRecords);
+  }
+
+  recordClassificationDecision(
+    record: ClassificationReviewRecordV1,
+    status: 'approved' | 'rejected',
+    selectedAction: ClassificationReviewAction | null,
+    decidedAt: string,
+  ): ClassificationReviewRecordV1 {
+    assertClassificationTimestamp(decidedAt);
+    if (
+      (status === 'rejected' && selectedAction !== null) ||
+      (status === 'approved' && selectedAction === null) ||
+      (record.proposal.kind === 'merchant-alias' &&
+        status === 'approved' &&
+        selectedAction !== 'create_rule')
+    ) {
+      throw new Error('Classification review decision is invalid.');
+    }
+    const proposalId = reviewProposalId(record);
+    const table = reviewTable(record);
+    const result =
+      record.proposal.kind === 'category'
+        ? this.database
+            .prepare(
+              `UPDATE ${table} SET status = ?, proposed_action = ?, decided_at = ? WHERE id = ? AND status = 'pending'`,
+            )
+            .run(
+              status,
+              selectedAction === 'create_rule'
+                ? 'create_rule'
+                : 'categorize_once',
+              decidedAt,
+              proposalId,
+            )
+        : this.database
+            .prepare(
+              `UPDATE ${table} SET status = ?, decided_at = ? WHERE id = ? AND status = 'pending'`,
+            )
+            .run(status, decidedAt, proposalId);
+    if (result.changes !== 1) {
+      throw new Error('Pending classification review is missing.');
+    }
+    return this.readClassificationReview(record);
+  }
+
+  markClassificationReviewStale(
+    record: ClassificationReviewRecordV1,
+  ): ClassificationReviewRecordV1 {
+    const proposalId = reviewProposalId(record);
+    this.database
+      .prepare(
+        `UPDATE ${reviewTable(record)} SET status = 'stale' WHERE id = ? AND status IN ('pending', 'approved')`,
+      )
+      .run(proposalId);
+    return this.readClassificationReview(record);
+  }
+
+  private readClassificationReview(
+    record: ClassificationReviewRecordV1,
+  ): ClassificationReviewRecordV1 {
+    const row = this.database
+      .prepare(`SELECT * FROM ${reviewTable(record)} WHERE id = ?`)
+      .get(reviewProposalId(record));
+    if (row === undefined) {
+      throw new Error('Classification review is missing.');
+    }
+    return record.proposal.kind === 'merchant-alias'
+      ? merchantReviewRecord(row as MerchantProposalRow)
+      : categoryReviewRecord(row as CategoryReviewRow);
+  }
 }
 
 function decodeMerchantProposal(
@@ -224,8 +318,10 @@ function decodeMerchantProposal(
   assertClassificationTimestamp(row.created_at);
   if (row.decided_at !== null) assertClassificationTimestamp(row.decided_at);
   if (
-    !['pending', 'rejected'].includes(row.status) ||
-    (row.status === 'pending') !== (row.decided_at === null)
+    !isClassificationStatus(row.status) ||
+    (row.status === 'pending' && row.decided_at !== null) ||
+    (['approved', 'rejected', 'applied'].includes(row.status) &&
+      row.decided_at === null)
   ) {
     throw new Error('Stored merchant proposal status is unsupported.');
   }
@@ -256,9 +352,11 @@ function decodeCategoryProposal(row: CategoryReviewRow): CategoryProposalV1 {
   assertClassificationTimestamp(row.created_at);
   if (row.decided_at !== null) assertClassificationTimestamp(row.decided_at);
   if (
-    !['pending', 'rejected'].includes(row.status) ||
-    row.proposed_action !== 'categorize_once' ||
-    (row.status === 'pending') !== (row.decided_at === null)
+    !isClassificationStatus(row.status) ||
+    !['categorize_once', 'create_rule'].includes(row.proposed_action) ||
+    (row.status === 'pending' && row.decided_at !== null) ||
+    (['approved', 'rejected', 'applied'].includes(row.status) &&
+      row.decided_at === null)
   ) {
     throw new Error('Stored category review state is unsupported.');
   }
@@ -557,5 +655,83 @@ function isRecordWithExactKeys(
     value !== null &&
     Object.keys(value).length === keys.length &&
     Object.keys(value).every(key => keys.includes(key))
+  );
+}
+
+function merchantReviewRecord(
+  row: MerchantProposalRow,
+): ClassificationReviewRecordV1 {
+  return {
+    proposal: decodeMerchantProposal(row),
+    status: requireClassificationStatus(row.status),
+    selectedAction:
+      row.status === 'approved' || row.status === 'applied'
+        ? 'create_rule'
+        : null,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
+  };
+}
+
+function categoryReviewRecord(
+  row: CategoryReviewRow,
+): ClassificationReviewRecordV1 {
+  const status = requireClassificationStatus(row.status);
+  return {
+    proposal: decodeCategoryProposal(row),
+    status,
+    selectedAction:
+      status === 'approved' || status === 'applied'
+        ? row.proposed_action === 'create_rule'
+          ? 'create_rule'
+          : 'categorize_once'
+        : null,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
+  };
+}
+
+function compareReviewRecords(
+  left: ClassificationReviewRecordV1,
+  right: ClassificationReviewRecordV1,
+): number {
+  const leftPending = left.status === 'pending' ? 0 : 1;
+  const rightPending = right.status === 'pending' ? 0 : 1;
+  return (
+    leftPending - rightPending ||
+    right.proposal.confidence - left.proposal.confidence ||
+    left.createdAt.localeCompare(right.createdAt) ||
+    reviewProposalId(left).localeCompare(reviewProposalId(right))
+  );
+}
+
+function reviewProposalId(record: ClassificationReviewRecordV1): string {
+  return record.proposal.kind === 'merchant-alias'
+    ? record.proposal.proposalId
+    : record.proposal.reviewId;
+}
+
+function reviewTable(
+  record: ClassificationReviewRecordV1,
+): 'merchant_normalization_proposals' | 'classification_reviews' {
+  return record.proposal.kind === 'merchant-alias'
+    ? 'merchant_normalization_proposals'
+    : 'classification_reviews';
+}
+
+function requireClassificationStatus(
+  value: string,
+): ClassificationReviewStatus {
+  if (!isClassificationStatus(value)) {
+    throw new Error('Stored classification review status is unsupported.');
+  }
+  return value;
+}
+
+function isClassificationStatus(
+  value: string,
+): value is ClassificationReviewStatus {
+  return ['pending', 'approved', 'rejected', 'stale', 'applied'].includes(
+    value,
   );
 }

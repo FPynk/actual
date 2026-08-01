@@ -148,6 +148,8 @@ export async function runFinanceCompanionCommand(
     await import('./database/source-identity-repository.ts');
   const { SqliteReconciliationCandidateRepository } =
     await import('./reconciliation/sqlite-reconciliation-candidate-repository.ts');
+  const { SqliteClassificationProposalRepository } =
+    await import('./reviews/sqlite-classification-repository.ts');
   const { createConfiguredActualAdapter } =
     await import('./service/bank-sync-cli.ts');
   const getLocalPrincipalRepository =
@@ -176,6 +178,9 @@ export async function runFinanceCompanionCommand(
       : {
           adapter: await createConfiguredActualAdapter(configuration),
           candidateRepository: new SqliteReconciliationCandidateRepository(
+            reviewDatabase,
+          ),
+          classificationRepository: new SqliteClassificationProposalRepository(
             reviewDatabase,
           ),
           sourceIdentityRepository: createSqliteSourceIdentityRepository(
