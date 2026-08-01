@@ -208,6 +208,7 @@ export async function runFinanceCompanionCommand(
             reviewDatabase,
           ),
           amazonDatabasePath: configuration.databasePath,
+          databasePath: configuration.databasePath,
           amazonReviewRepository: new SqliteAmazonReviewRepository(
             configuration.databasePath,
           ),

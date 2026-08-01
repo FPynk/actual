@@ -11,10 +11,15 @@ import { withExclusiveMaintenanceLockSync } from '#database/maintenance-lock';
 import { calculateRequestReplayHash } from '#http/request-idempotency';
 import { canonicalJson } from '#integrity/canonical-hash';
 
-const BANK_SYNC_OPERATION_ID = 'finance-companion/job:bank-sync/v1';
+const BANK_SYNC_CLI_OPERATION_ID = 'finance-companion/job:bank-sync/v1';
+const BANK_SYNC_HTTP_OPERATION_ID = 'finance-companion/http/bank-sync/v1';
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-export type BankSyncInvocationKind = 'local_cli' | 'scheduler';
+export type BankSyncInvocationKind = 'local_http' | 'local_cli' | 'scheduler';
 export type BankSyncJobStatus =
+  | 'queued'
+  | 'running'
   | 'succeeded'
   | 'partial'
   | 'failed'
@@ -42,6 +47,18 @@ export type BankSyncJobRequest = Readonly<{
   idempotencyKey: string;
   invocationKind: BankSyncInvocationKind;
   principalId: string;
+}>;
+
+export type BankSyncJobPage = Readonly<{
+  items: readonly BankSyncJobSummary[];
+  nextCursor: string | null;
+}>;
+
+export type BankSyncJobPageRequest = Readonly<{
+  budgetKeyHash: string;
+  principalId: string;
+  cursor: string | null;
+  limit: number;
 }>;
 
 export type BankSyncLogEvent = Readonly<{
@@ -205,6 +222,62 @@ export function createSqliteBankSyncJobRepositoryDuringMaintenance(
   databasePath: string,
 ): BankSyncJobRepository {
   return createSqliteBankSyncJobRepositoryWithLockState(databasePath, true);
+}
+
+export function listSqliteBankSyncJobRuns(
+  databasePath: string,
+  request: BankSyncJobPageRequest,
+): BankSyncJobPage {
+  if (
+    !/^[0-9a-f]{64}$/.test(request.budgetKeyHash) ||
+    !CANONICAL_UUID_PATTERN.test(request.principalId) ||
+    !Number.isInteger(request.limit) ||
+    request.limit < 1 ||
+    request.limit > 100 ||
+    (request.cursor !== null && !CANONICAL_UUID_PATTERN.test(request.cursor))
+  ) {
+    throw new BankSyncJobError('invalid_request');
+  }
+  return withDatabase(databasePath, database => {
+    let beforeRowId: number | null = null;
+    if (request.cursor !== null) {
+      const cursorRow = database
+        .prepare(
+          "SELECT rowid AS row_id FROM job_runs WHERE id = ? AND job_kind = 'bank_sync' AND budget_key_hash = ? AND principal_id = ?",
+        )
+        .get(request.cursor, request.budgetKeyHash, request.principalId) as
+        | Readonly<{ row_id: number }>
+        | undefined;
+      if (cursorRow === undefined) {
+        throw new BankSyncJobError('invalid_request');
+      }
+      beforeRowId = cursorRow.row_id;
+    }
+    const rows = database
+      .prepare(
+        `SELECT id, status, started_at, completed_at, summary_json
+         FROM job_runs
+         WHERE job_kind = 'bank_sync'
+           AND budget_key_hash = ?
+           AND principal_id = ?
+           AND (? IS NULL OR rowid < ?)
+         ORDER BY rowid DESC
+         LIMIT ?`,
+      )
+      .all(
+        request.budgetKeyHash,
+        request.principalId,
+        beforeRowId,
+        beforeRowId,
+        request.limit + 1,
+      ) as readonly BankSyncJobRunRow[];
+    const pageRows = rows.slice(0, request.limit);
+    return {
+      items: pageRows.map(parseJobRunRow),
+      nextCursor:
+        rows.length > request.limit ? (pageRows.at(-1)?.id ?? null) : null,
+    };
+  });
 }
 
 function createSqliteBankSyncJobRepositoryWithLockState(
@@ -790,7 +863,7 @@ function createJob(
       'bank_sync',
       scope.budgetKeyHash,
       scope.invocationKind,
-      BANK_SYNC_OPERATION_ID,
+      bankSyncOperationId(scope.invocationKind),
       scope.principalId,
       scope.idempotencyKey,
       scope.requestHash,
@@ -837,7 +910,7 @@ function findJob(
       scope.budgetKeyHash,
       scope.principalId,
       scope.invocationKind,
-      BANK_SYNC_OPERATION_ID,
+      bankSyncOperationId(scope.invocationKind),
       scope.idempotencyKey,
     ) as
     | Readonly<{ request_hash: string; status: string; summary_json: string }>
@@ -909,6 +982,35 @@ function parseSummary(value: string): BankSyncJobSummary {
   };
 }
 
+type BankSyncJobRunRow = Readonly<{
+  id: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  summary_json: string;
+}>;
+
+function parseJobRunRow(row: BankSyncJobRunRow): BankSyncJobSummary {
+  if (
+    !CANONICAL_UUID_PATTERN.test(row.id) ||
+    !isJobStatus(row.status) ||
+    (row.started_at !== null && typeof row.started_at !== 'string') ||
+    (row.completed_at !== null && typeof row.completed_at !== 'string')
+  ) {
+    throw new Error('Stored bank-sync job is invalid.');
+  }
+  const summary = parseSummary(row.summary_json);
+  if (summary.id !== row.id) {
+    throw new Error('Stored bank-sync job is invalid.');
+  }
+  return {
+    ...summary,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -931,10 +1033,18 @@ function isAccountOutcome(value: unknown): value is BankSyncAccountOutcome {
   );
 }
 
+function bankSyncOperationId(invocationKind: BankSyncInvocationKind): string {
+  return invocationKind === 'local_http'
+    ? BANK_SYNC_HTTP_OPERATION_ID
+    : BANK_SYNC_CLI_OPERATION_ID;
+}
+
 function isJobStatus(value: unknown): value is BankSyncJobStatus {
   return (
     typeof value === 'string' &&
     [
+      'queued',
+      'running',
       'succeeded',
       'partial',
       'failed',

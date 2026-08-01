@@ -11,6 +11,10 @@ import type { Express, NextFunction, Request, Response } from 'express';
 
 import type { ActualAdapter } from '#actual/adapter';
 import type { FinanceCompanionConfiguration } from '#config';
+import {
+  MaintenanceRequiredError,
+  withExclusiveMaintenanceLock,
+} from '#database/maintenance-lock';
 import type { SourceIdentityRepository } from '#database/source-identity-repository';
 import { addAmazonReviewRoutes } from '#http/amazon-review-routes';
 import { addClassificationReviewRoutes } from '#http/classification-review-routes';
@@ -30,6 +34,12 @@ import type { FinanceCompanionSecurity } from '#security/local-security';
 import { importAmazonUpload } from '#service/amazon-import-service';
 import type { AmazonImportUpload } from '#service/amazon-import-service';
 import type { AmazonReviewRepository } from '#service/amazon-review-repository';
+import {
+  BankSyncJobError,
+  createSqliteBankSyncJobRepositoryDuringMaintenance,
+  listSqliteBankSyncJobRuns,
+  runOneShotBankSyncJob,
+} from '#service/bank-sync';
 import { createFinanceCompanionHealth } from '#service/health';
 import { validateIdempotencyKey } from '#service/request-replay-repository';
 import type { RequestReplayRepository } from '#service/request-replay-repository';
@@ -55,15 +65,13 @@ export type ReconciliationReviewDependencies = Readonly<{
   classificationRepository?: ClassificationReviewRepository;
   subscriptionRepository?: SubscriptionReviewRepository;
   amazonDatabasePath?: string;
+  databasePath?: string;
   amazonReviewRepository?: AmazonReviewRepository;
   sourceIdentityRepository: SourceIdentityRepository;
   now?: () => Date;
 }>;
 
-export type FinanceCompanionHealthDependency = Pick<
-  ActualAdapter,
-  'getHealth'
->;
+export type FinanceCompanionHealthDependency = Pick<ActualAdapter, 'getHealth'>;
 
 type IdempotentRequest = Request & {
   financeCompanionAmazonUpload?: AmazonImportUpload;
@@ -76,8 +84,9 @@ export function createFinanceCompanionHttpApplication(
   requestReplayRepository: RequestReplayRepository,
   uploadTemporaryParentDirectory = tmpdir(),
   reconciliationReview?: ReconciliationReviewDependencies,
-  healthDependency: FinanceCompanionHealthDependency | undefined =
-    reconciliationReview?.adapter,
+  healthDependency:
+    | FinanceCompanionHealthDependency
+    | undefined = reconciliationReview?.adapter,
 ): Express {
   if (configuration.bindAddress !== '127.0.0.1') {
     throw new Error(
@@ -92,6 +101,12 @@ export function createFinanceCompanionHttpApplication(
     response.setHeader('Cache-Control', 'no-store');
     next();
   });
+  if (reconciliationReview?.databasePath !== undefined) {
+    application.use(
+      '/api/v1',
+      requireMaintenanceAdmission(reconciliationReview.databasePath),
+    );
+  }
   application.get('/health', (_request, response) => {
     const health = createFinanceCompanionHealth(
       healthDependency?.getHealth() ?? 'healthy',
@@ -150,6 +165,15 @@ export function createFinanceCompanionHttpApplication(
         .end();
     },
   );
+  if (reconciliationReview?.databasePath !== undefined) {
+    addBankSyncRoutes(
+      application,
+      configuration,
+      security,
+      reconciliationReview,
+      reconciliationReview.databasePath,
+    );
+  }
   if (reconciliationReview !== undefined) {
     addReconciliationReviewRoutes(
       application,
@@ -320,6 +344,96 @@ export function createFinanceCompanionHttpApplication(
     },
   );
   return application;
+}
+
+function addBankSyncRoutes(
+  application: Express,
+  configuration: FinanceCompanionListenerConfiguration,
+  security: FinanceCompanionSecurity,
+  dependencies: ReconciliationReviewDependencies,
+  databasePath: string,
+): void {
+  application.get(
+    '/api/v1/runs',
+    requireSession(security, false),
+    (request, response) => {
+      const pageRequest = readBankSyncPageRequest(request);
+      const principalId = response.locals.financeCompanionPrincipalId;
+      if (pageRequest === null || typeof principalId !== 'string') {
+        sendProblem(response, 'invalid_request');
+        return;
+      }
+      try {
+        response.json(
+          listSqliteBankSyncJobRuns(databasePath, {
+            ...pageRequest,
+            budgetKeyHash: configuration.budgetKeyHash,
+            principalId,
+          }),
+        );
+      } catch (error) {
+        sendBankSyncProblem(response, error);
+      }
+    },
+  );
+  application.post(
+    '/api/v1/jobs/bank-sync',
+    requireExactOrigin(configuration.origin),
+    requireSession(security, true),
+    requireJsonContentType,
+    express.json({
+      limit: JSON_LIMIT,
+      strict: true,
+      type: request => request.headers['content-type'] === JSON_CONTENT_TYPE,
+    }),
+    async (request, response) => {
+      const accountIds = readBankSyncAccountIds(request.body);
+      const idempotencyKey = validateIdempotencyKey(
+        readExactlyOneHeader(request.rawHeaders, 'idempotency-key'),
+      );
+      const principalId = response.locals.financeCompanionPrincipalId;
+      if (
+        accountIds === undefined ||
+        idempotencyKey === null ||
+        typeof principalId !== 'string'
+      ) {
+        sendProblem(response, 'invalid_request');
+        return;
+      }
+      const durableRepository =
+        createSqliteBankSyncJobRepositoryDuringMaintenance(databasePath);
+      let replayed = false;
+      try {
+        const summary = await runOneShotBankSyncJob(
+          {
+            accountIds,
+            idempotencyKey,
+            invocationKind: 'local_http',
+            principalId,
+          },
+          {
+            adapter: dependencies.adapter,
+            budgetKeyHash: configuration.budgetKeyHash,
+            now: dependencies.now,
+            repository: {
+              ...durableRepository,
+              find: scope => {
+                const decision = durableRepository.find(scope);
+                replayed ||= decision.kind === 'replay';
+                return decision;
+              },
+            },
+          },
+        );
+        response
+          .status(replayed ? 200 : 202)
+          .type('application/json')
+          .json(summary);
+      } catch (error) {
+        sendBankSyncProblem(response, error);
+      }
+    },
+  );
 }
 
 export async function startFinanceCompanionHttpServer(
@@ -513,6 +627,109 @@ function requireJsonContentType(
     return;
   }
   next();
+}
+
+function requireMaintenanceAdmission(databasePath: string) {
+  return async (
+    _request: Request,
+    response: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      await withExclusiveMaintenanceLock(
+        databasePath,
+        () =>
+          new Promise<void>(resolve => {
+            let released = false;
+            const release = () => {
+              if (released) return;
+              released = true;
+              response.off('finish', release);
+              response.off('close', release);
+              resolve();
+            };
+            response.once('finish', release);
+            response.once('close', release);
+            next();
+          }),
+      );
+    } catch (error) {
+      if (response.headersSent) return;
+      if (error instanceof MaintenanceRequiredError) {
+        response.setHeader('Retry-After', '1');
+        sendProblem(response, 'operation_in_progress');
+        return;
+      }
+      next(error);
+    }
+  };
+}
+
+function readBankSyncPageRequest(
+  request: Request,
+): Readonly<{ cursor: string | null; limit: number }> | null {
+  if (
+    !Object.keys(request.query).every(key => ['cursor', 'limit'].includes(key))
+  ) {
+    return null;
+  }
+  const cursorValue = request.query.cursor;
+  const limitValue = request.query.limit;
+  if (
+    (cursorValue !== undefined &&
+      (typeof cursorValue !== 'string' || cursorValue.length === 0)) ||
+    (limitValue !== undefined &&
+      (typeof limitValue !== 'string' || !/^[1-9]\d{0,2}$/.test(limitValue)))
+  ) {
+    return null;
+  }
+  const limit = limitValue === undefined ? 50 : Number(limitValue);
+  if (limit > 100) return null;
+  return {
+    cursor: typeof cursorValue === 'string' ? cursorValue : null,
+    limit,
+  };
+}
+
+function readBankSyncAccountIds(
+  value: unknown,
+): readonly string[] | null | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Readonly<Record<string, unknown>>;
+  if (!Object.keys(record).every(key => key === 'accountIds')) {
+    return undefined;
+  }
+  if (!Object.hasOwn(record, 'accountIds')) return null;
+  if (
+    !Array.isArray(record.accountIds) ||
+    record.accountIds.some(accountId => typeof accountId !== 'string')
+  ) {
+    return undefined;
+  }
+  return record.accountIds as readonly string[];
+}
+
+function sendBankSyncProblem(response: Response, error: unknown): void {
+  if (!(error instanceof BankSyncJobError)) {
+    sendProblem(response, 'internal_error');
+    return;
+  }
+  if (error.code === 'invalid_request') {
+    sendProblem(response, 'invalid_request');
+    return;
+  }
+  if (error.code === 'idempotency_conflict') {
+    sendProblem(response, 'idempotency_conflict');
+    return;
+  }
+  if (error.code === 'operation_in_progress') {
+    response.setHeader('Retry-After', '1');
+    sendProblem(response, 'operation_in_progress');
+    return;
+  }
+  sendProblem(response, 'adapter_unhealthy');
 }
 
 function requireSession(
@@ -783,6 +1000,11 @@ const problemDefinitions = {
     status: 409,
     message: 'The operation is already in progress.',
     retryable: true,
+  },
+  adapter_unhealthy: {
+    status: 503,
+    message: 'The Actual adapter is unhealthy.',
+    retryable: false,
   },
   review_conflict: {
     status: 409,
