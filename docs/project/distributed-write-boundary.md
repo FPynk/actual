@@ -100,7 +100,16 @@ The sync service must own a versioned per-budget fence epoch. Every supported
 client must negotiate the protocol, reject normal writes while another writer
 holds the fence, and reject synchronization of a stale epoch. The companion
 must acquire the fence before its final pre-sync and retain it through the
-authoritative outcome sync and post-sync verification.
+authoritative outcome sync and post-sync verification. Supported clients must
+enforce the epoch before creating local CRDT mutations and when accepting
+synchronized mutations, not only at the sync service.
+
+Paired backup and restore use the same fence. A paired backup acquires it
+before its final pre-sync and binds the fence epoch plus the synchronized
+Actual export or snapshot revision in its manifest. A paired restore retains
+the fence through conditional import, outcome lookup, and final post-sync
+verification. Fence loss, protocol-version change, or an ambiguous outcome
+discards the staged set and leaves live companion and Actual state unchanged.
 
 Supporting a legacy or offline client which may later synchronize an unfenced
 write is incompatible with this guarantee. A future rollout must either
