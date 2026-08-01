@@ -2,8 +2,10 @@ import { randomBytes } from 'node:crypto';
 import {
   access,
   chmod,
+  copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   unlink,
   writeFile,
@@ -118,6 +120,56 @@ describe('durable local principal repository', () => {
     }
   });
 
+  it('reopens an existing current-schema database without changing its pair', async () => {
+    await createRepository(configuration);
+    const originalDatabase = await readFile(configuration.databasePath);
+    const originalAnchor = await readFile(configuration.integrityAnchorPath);
+
+    await expect(
+      createRepository({ ...configuration, ownerBootstrapCredential: undefined }),
+    ).resolves.toBeDefined();
+
+    expect(await readFile(configuration.databasePath)).toEqual(originalDatabase);
+    expect(await readFile(configuration.integrityAnchorPath)).toEqual(
+      originalAnchor,
+    );
+  });
+
+  it('refuses to start with pending migrations without changing the existing pair', async () => {
+    const legacyMigrationsDirectory = path.join(
+      temporaryDirectory,
+      'legacy-migrations',
+    );
+    await mkdir(legacyMigrationsDirectory);
+    for (const migrationName of [
+      '001-instance-and-principal.sql',
+      '002-request-replay-and-job-runs.sql',
+      '003-source-import-identities.sql',
+      '004-review-candidates.sql',
+      '005-amazon-enrichment.sql',
+      '006-application-receipts-compatibility.sql',
+    ]) {
+      await copyFile(
+        path.resolve(import.meta.dirname, '../../migrations', migrationName),
+        path.join(legacyMigrationsDirectory, migrationName),
+      );
+    }
+    await createRepository(configuration, legacyMigrationsDirectory);
+    const originalDatabase = await readFile(configuration.databasePath);
+    const originalAnchor = await readFile(configuration.integrityAnchorPath);
+
+    await expect(
+      createRepository({ ...configuration, ownerBootstrapCredential: undefined }),
+    ).rejects.toThrow(
+      'Companion database migrations are pending; run db:migrate before starting.',
+    );
+
+    expect(await readFile(configuration.databasePath)).toEqual(originalDatabase);
+    expect(await readFile(configuration.integrityAnchorPath)).toEqual(
+      originalAnchor,
+    );
+  });
+
   it('fails closed for a mismatched budget binding', async () => {
     await createRepository(configuration);
     await expect(
@@ -168,9 +220,12 @@ describe('durable local principal repository', () => {
   });
 });
 
-function createRepository(configuration: FinanceCompanionConfiguration) {
+function createRepository(
+  configuration: FinanceCompanionConfiguration,
+  migrationsDirectory = path.resolve(import.meta.dirname, '../../migrations'),
+) {
   return createDurableLocalPrincipalRepository(
     configuration,
-    path.resolve(import.meta.dirname, '../../migrations'),
+    migrationsDirectory,
   );
 }

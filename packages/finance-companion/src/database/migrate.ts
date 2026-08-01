@@ -89,13 +89,26 @@ async function initializeCompanionDatabaseAndAnchorWithLock(
     if (paths.databaseExists) {
       const database = openCompanionDatabase(paths.databasePath, true);
       try {
-        verifyAppliedMigrationHistory(database, migrations);
+        const appliedVersions = verifyAppliedMigrationHistory(
+          database,
+          migrations,
+        );
+        if (
+          !alreadyHoldsMaintenanceLock &&
+          appliedVersions.size !== migrations.length
+        ) {
+          throw new Error(
+            'Companion database migrations are pending; run db:migrate before starting.',
+          );
+        }
         await verifyExistingGenerationZeroState(
           database,
           paths.anchorPath,
           request,
         );
-        applyVerifiedMigrations(database, migrations);
+        if (alreadyHoldsMaintenanceLock) {
+          applyVerifiedMigrations(database, migrations, appliedVersions);
+        }
         verifySqliteDatabase(database);
         return initializeOrReadInstance(database, request);
       } finally {
@@ -189,8 +202,8 @@ export async function loadMigrations(
 function applyVerifiedMigrations(
   database: CompanionDatabase,
   migrations: readonly Migration[],
+  appliedVersions = verifyAppliedMigrationHistory(database, migrations),
 ): void {
-  const appliedVersions = verifyAppliedMigrationHistory(database, migrations);
   database
     .transaction(() => {
       for (const migration of migrations) {
@@ -256,6 +269,8 @@ function verifyAppliedMigrationHistory(
     if (applied.length > migrations.length) {
       throw new Error('The companion database is newer than this executable.');
     }
+  } else {
+    throw new Error('The companion database schema history is missing.');
   }
   return new Set(
     hasMigrationTable

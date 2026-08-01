@@ -14,7 +14,10 @@ import {
 import type { CompanionBackupRequest } from '#database/backup';
 import { runDatabaseLifecycleCommand } from '#database/lifecycle-cli';
 import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
-import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
+import {
+  initializeCompanionDatabaseAndAnchor,
+  initializeCompanionDatabaseAndAnchorDuringMaintenance,
+} from '#database/migrate';
 import type { InitializeCompanionDatabaseRequest } from '#database/migrate';
 import { readIntegrityAnchor, writeIntegrityAnchor } from '#integrity/anchor';
 import { sha256 } from '#integrity/canonical-hash';
@@ -160,7 +163,7 @@ describe('FIN-11 database safety gates', () => {
     );
 
     await expect(
-      initializeCompanionDatabaseAndAnchor(initialization),
+      initializeCompanionDatabaseAndAnchorDuringMaintenance(initialization),
     ).resolves.toMatchObject({
       instanceId,
       schemaVersion: 7,

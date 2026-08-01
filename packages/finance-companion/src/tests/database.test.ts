@@ -22,7 +22,10 @@ import {
 } from '#database/backup';
 import { openCompanionDatabase } from '#database/connection';
 import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
-import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
+import {
+  initializeCompanionDatabaseAndAnchor,
+  initializeCompanionDatabaseAndAnchorDuringMaintenance,
+} from '#database/migrate';
 import { readIntegrityAnchor, writeIntegrityAnchor } from '#integrity/anchor';
 import { verifyCompanionIntegrity } from '#integrity/verify';
 import { createSqliteBankSyncJobRepository } from '#service/bank-sync';
@@ -135,7 +138,7 @@ describe('FIN-11 companion database lifecycle', () => {
     }
 
     await expect(
-      initializeCompanionDatabaseAndAnchor(request),
+      initializeCompanionDatabaseAndAnchorDuringMaintenance(request),
     ).resolves.toMatchObject({
       schemaVersion: 7,
       writeCapabilityState: 'disabled',
