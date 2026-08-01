@@ -17,9 +17,7 @@ const commands = [
   'test:e2e',
   'owner:rotate',
 ] as const;
-const scaffoldPackageScriptCommands = commands.filter(
-  command => command !== 'test:db' && command !== 'test:adapter',
-);
+const scaffoldPackageScriptCommands = ['owner:rotate'] as const;
 const implementedPackageScriptCommands = ['test:db', 'test:adapter'] as const;
 
 describe('runFinanceCompanionCommand', () => {

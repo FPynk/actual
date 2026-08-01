@@ -69,8 +69,9 @@ packages/finance-companion/e2e/finance-companion.test.ts` - passed.
   downloaded or installed; the package now declares the existing pinned
   Playwright test dependency so lint and immutable lock validation remain
   correct.
-- The existing `test:e2e` CLI placeholder remains unchanged. The verified
-  command above is the browser-runner entry point for this ticket.
+- The package `test:e2e` script is the browser-runner entry point. The internal
+  direct CLI placeholder remains unused; `yarn workspace
+@actual-app/finance-companion test:e2e` runs the production-build journey.
 - FIN-28 and FIN-29 already cover per-account sync behavior through service and
   CLI tests. This ticket does not invent a browser surface for it.
 - No screenshots were added because semantic and responsive assertions provide
