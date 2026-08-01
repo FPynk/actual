@@ -181,6 +181,7 @@ __metadata:
   resolution: "@actual-app/finance-companion@workspace:packages/finance-companion"
   dependencies:
     "@actual-app/api": "workspace:*"
+    "@playwright/test": "npm:1.61.1"
     "@types/better-sqlite3": "npm:^7.6.13"
     "@types/express": "npm:^5.0.6"
     "@types/node": "npm:^22.20.1"
