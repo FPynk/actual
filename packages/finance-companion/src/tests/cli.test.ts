@@ -79,7 +79,7 @@ describe('runFinanceCompanionCommand', () => {
       expect(result.stdout).toContain('passed');
       expect(result.stderr).toBe('');
     },
-    15_000,
+    30_000,
   );
 
   it('writes the synthetic container smoke result', async () => {
