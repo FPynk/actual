@@ -7,6 +7,7 @@ import { openCompanionDatabase } from '#database/connection';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import { createSqliteSourceIdentityRepository } from '#database/source-identity-repository';
 import {
+  AmazonMatchCandidateSearchLimitError,
   buildAmazonMatchCandidates,
   createSqliteAmazonMatchingRepository,
 } from '#service/amazon-matching';
@@ -183,6 +184,17 @@ describe('FIN-40 signed Amazon matching', () => {
 
     expect(candidates).toHaveLength(101);
     expect(new Set(candidates.map(candidate => candidate.id)).size).toBe(101);
+  });
+
+  it('rejects a large valid source set with the deterministic limit instead of overflowing the stack', () => {
+    expect(() =>
+      build({
+        sources: Array.from({ length: 20_000 }, (_, index) =>
+          source(`large-item-${index}`, 'merchandise', -1),
+        ),
+        targets: [target('large-charge', -1)],
+      }),
+    ).toThrow(AmazonMatchCandidateSearchLimitError);
   });
 
   it('subtracts applied reservation tombstones and active holds before proposing capacity', () => {
