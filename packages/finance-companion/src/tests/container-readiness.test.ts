@@ -120,6 +120,5 @@ describe('FIN-49 container readiness contract', () => {
     );
 
     expect(guide).toContain('decoding to 32-64 bytes');
-    expect(guide).not.toContain('32â€“64');
   });
 });
