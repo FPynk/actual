@@ -1,0 +1,87 @@
+name: Finance Companion Ubuntu
+
+on:
+  push:
+    branches:
+      - integration/finance-app
+  pull_request:
+    paths:
+      - '.github/workflows/finance-companion-ubuntu.yml'
+      - 'packages/api/**'
+      - 'packages/finance-companion/**'
+      - 'scripts/finance-companion-container-smoke.mjs'
+      - 'package.json'
+      - 'yarn.lock'
+  merge_group:
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  companion:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-jammy
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up environment
+        uses: ./.github/actions/setup
+        with:
+          download-translations: 'false'
+      - name: Trust the repository directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Format companion sources
+        run: yarn exec oxfmt --check packages/finance-companion
+      - name: Typecheck companion
+        run: yarn workspace @actual-app/finance-companion typecheck
+      - name: Test companion
+        run: yarn workspace @actual-app/finance-companion test
+      - name: Build companion
+        run: yarn workspace @actual-app/finance-companion build
+      - name: Run companion browser journey
+        run: yarn workspace @actual-app/finance-companion test:e2e
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up environment
+        uses: ./.github/actions/setup
+        with:
+          download-translations: 'false'
+      - name: Run synthetic non-root container smoke
+        run: yarn workspace @actual-app/finance-companion smoke:container
+
+  clean-checkout-typecheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up environment
+        uses: ./.github/actions/setup
+        with:
+          download-translations: 'false'
+      - name: Check root and workspace TypeScript in a clean checkout
+        run: |
+          set +e
+          yarn tsgo -p tsconfig.root.json --noEmit
+          root_typecheck_status=$?
+          yarn typecheck
+          workspace_typecheck_status=$?
+          if [ "$root_typecheck_status" -ne 0 ] || [ "$workspace_typecheck_status" -ne 0 ]; then
+            echo 'Clean-checkout monorepo typecheck needs follow-up; see this job log.' >&2
+            exit 1
+          fi
