@@ -135,6 +135,45 @@ input:focus-visible {
   align-items: center;
   gap: 0.5rem;
 }
+.upload-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid #d7dfed;
+  border-radius: 0.5rem;
+  background: #f8faff;
+}
+.upload-panel input[type='file'] {
+  min-block-size: auto;
+  padding: 0.65rem;
+  background: #fff;
+}
+.amazon-parent-list {
+  display: grid;
+  gap: 1rem;
+}
+.amazon-parent-list > section {
+  padding: 1rem;
+  border: 1px solid #d7dfed;
+  border-radius: 0.5rem;
+}
+.allocation-list {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+.allocation-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.4rem;
+  border-block-end: 1px solid #e7ebf3;
+}
+.allocation-list span {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
 .error-inline {
   min-block-size: 1.25rem;
   color: #8f1d1d;
@@ -211,5 +250,9 @@ dialog::backdrop {
   }
   .evidence-grid {
     grid-template-columns: 1fr;
+  }
+  .allocation-list li {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

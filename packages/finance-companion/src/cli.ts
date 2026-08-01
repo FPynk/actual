@@ -169,6 +169,8 @@ export async function runFinanceCompanionCommand(
     await import('./reviews/sqlite-classification-repository.ts');
   const { SqliteSubscriptionCandidateRepository } =
     await import('./subscriptions/sqlite-subscription-candidate-repository.ts');
+  const { SqliteAmazonReviewRepository } =
+    await import('./service/amazon-review-repository.ts');
   const { createConfiguredActualAdapter } =
     await import('./service/bank-sync-cli.ts');
   const getLocalPrincipalRepository =
@@ -204,6 +206,10 @@ export async function runFinanceCompanionCommand(
           ),
           subscriptionRepository: new SqliteSubscriptionCandidateRepository(
             reviewDatabase,
+          ),
+          amazonDatabasePath: configuration.databasePath,
+          amazonReviewRepository: new SqliteAmazonReviewRepository(
+            configuration.databasePath,
           ),
           sourceIdentityRepository: createSqliteSourceIdentityRepository(
             configuration.databasePath,

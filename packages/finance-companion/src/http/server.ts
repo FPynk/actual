@@ -12,8 +12,9 @@ import type { Express, NextFunction, Request, Response } from 'express';
 import type { ActualAdapter } from '#actual/adapter';
 import type { FinanceCompanionConfiguration } from '#config';
 import type { SourceIdentityRepository } from '#database/source-identity-repository';
+import { addAmazonReviewRoutes } from '#http/amazon-review-routes';
 import { addClassificationReviewRoutes } from '#http/classification-review-routes';
-import { calculateRequestReplayHash } from '#http/request-idempotency';
+import { calculateAmazonUploadRequestReplayHash } from '#http/request-idempotency';
 import type { AmazonUploadSemanticRequest } from '#http/request-idempotency';
 import { addSubscriptionReviewRoutes } from '#http/subscription-review-routes';
 import {
@@ -26,6 +27,9 @@ import { decideReconciliationCandidate } from '#reconciliation/candidates';
 import type { ReconciliationCandidateRepository } from '#reconciliation/candidates';
 import type { ClassificationReviewRepository } from '#reviews/classification-review';
 import type { FinanceCompanionSecurity } from '#security/local-security';
+import { importAmazonUpload } from '#service/amazon-import-service';
+import type { AmazonImportUpload } from '#service/amazon-import-service';
+import type { AmazonReviewRepository } from '#service/amazon-review-repository';
 import { createFinanceCompanionHealth } from '#service/health';
 import { validateIdempotencyKey } from '#service/request-replay-repository';
 import type { RequestReplayRepository } from '#service/request-replay-repository';
@@ -50,12 +54,14 @@ export type ReconciliationReviewDependencies = Readonly<{
   candidateRepository: ReconciliationCandidateRepository;
   classificationRepository?: ClassificationReviewRepository;
   subscriptionRepository?: SubscriptionReviewRepository;
+  amazonDatabasePath?: string;
+  amazonReviewRepository?: AmazonReviewRepository;
   sourceIdentityRepository: SourceIdentityRepository;
   now?: () => Date;
 }>;
 
 type IdempotentRequest = Request & {
-  financeCompanionAmazonUpload?: AmazonUploadSemanticRequest;
+  financeCompanionAmazonUpload?: AmazonImportUpload;
 };
 
 export function createFinanceCompanionHttpApplication(
@@ -181,6 +187,26 @@ export function createFinanceCompanionHttpApplication(
         },
       );
     }
+    if (reconciliationReview.amazonReviewRepository !== undefined) {
+      addAmazonReviewRoutes(
+        application,
+        configuration,
+        {
+          adapter: reconciliationReview.adapter,
+          repository: reconciliationReview.amazonReviewRepository,
+          now: reconciliationReview.now,
+        },
+        {
+          readSession: requireSession(security, false),
+          decisionSecurity: [
+            requireExactOrigin(configuration.origin),
+            requireSession(security, true),
+            requireJsonContentType,
+          ],
+          sendProblem,
+        },
+      );
+    }
   }
   application.post(
     '/api/v1/imports/amazon',
@@ -193,8 +219,42 @@ export function createFinanceCompanionHttpApplication(
       'amazon-import/v1',
       request => request.financeCompanionAmazonUpload,
     ),
-    (_request, response) =>
-      sendIdempotentProblem(response, 'feature_not_implemented'),
+    async (request, response) => {
+      const upload = (request as IdempotentRequest)
+        .financeCompanionAmazonUpload;
+      const replay = readActiveReplay(response);
+      if (
+        upload === undefined ||
+        replay === null ||
+        reconciliationReview?.amazonDatabasePath === undefined
+      ) {
+        upload?.discard();
+        replay?.repository.fail(replay.replayId, 'amazon_import_unavailable');
+        sendProblem(response, 'internal_error');
+        return;
+      }
+      try {
+        const body = await importAmazonUpload(upload, {
+          adapter: reconciliationReview.adapter,
+          databasePath: reconciliationReview.amazonDatabasePath,
+          budgetKeyHash: configuration.budgetKeyHash,
+          budgetCurrencyCode: configuration.budgetCurrencyCode,
+          now: reconciliationReview.now,
+        });
+        const status = body.replayed ? 200 : 201;
+        replay.repository.complete(replay.replayId, {
+          status,
+          contentType: 'application/json',
+          body,
+        });
+        response.status(status).type('application/json').json(body);
+      } catch {
+        replay.repository.fail(replay.replayId, 'amazon_import_failed');
+        sendProblem(response, 'internal_error');
+      } finally {
+        upload.discard();
+      }
+    },
   );
   application.use('/api', (request, response) => {
     if (isMutation(request.method)) {
@@ -222,6 +282,8 @@ export function createFinanceCompanionHttpApplication(
       '/classification/:reviewRef',
       '/subscriptions',
       '/subscriptions/:reviewRef',
+      '/amazon',
+      '/amazon/:reviewRef',
     ],
     (_request, response) =>
       response.sendFile(path.resolve(staticUiDirectory, 'index.html')),
@@ -502,6 +564,8 @@ function requireAmazonUpload(uploadTemporaryParentDirectory: string) {
         sendProblem(response, 'invalid_request');
         return;
       }
+      response.once('finish', semanticRequest.discard);
+      response.once('close', semanticRequest.discard);
       (request as IdempotentRequest).financeCompanionAmazonUpload =
         semanticRequest;
       next();
@@ -544,7 +608,7 @@ function requireRequestReplay(
       invocationKind: 'local_http',
       operationId,
       idempotencyKey,
-      requestHash: calculateRequestReplayHash(semanticRequest),
+      requestHash: calculateAmazonUploadRequestReplayHash(semanticRequest),
     });
     if (decision.kind === 'conflict') {
       sendProblem(response, 'idempotency_conflict');
@@ -629,35 +693,24 @@ function sendProblem(
     });
 }
 
-function sendIdempotentProblem(
-  response: Response,
-  code: 'feature_not_implemented',
-): void {
-  const problem = problemDefinitions[code];
-  const body = {
-    code,
-    requestId: randomUUID(),
-    message: problem.message,
-    retryable: problem.retryable,
-  };
-  const replay = response.locals.financeCompanionReplay as
-    | Readonly<{ replayId: string; repository: RequestReplayRepository }>
-    | undefined;
-  try {
-    replay?.repository.complete(replay.replayId, {
-      status: problem.status,
-      contentType: 'application/problem+json',
-      body,
-    });
-  } catch {
-    sendProblem(response, 'internal_error');
-    return;
+function readActiveReplay(response: Response): Readonly<{
+  replayId: string;
+  repository: RequestReplayRepository;
+}> | null {
+  const value: unknown = response.locals.financeCompanionReplay;
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('replayId' in value) ||
+    typeof value.replayId !== 'string' ||
+    !('repository' in value)
+  ) {
+    return null;
   }
-  response
-    .setHeader('Cache-Control', 'no-store')
-    .status(problem.status)
-    .type('application/problem+json')
-    .json(body);
+  return value as Readonly<{
+    replayId: string;
+    repository: RequestReplayRepository;
+  }>;
 }
 
 const problemDefinitions = {
@@ -704,11 +757,6 @@ const problemDefinitions = {
   unsupported_media_type: {
     status: 415,
     message: 'The request media type is not supported.',
-    retryable: false,
-  },
-  feature_not_implemented: {
-    status: 501,
-    message: 'This feature is not implemented yet.',
     retryable: false,
   },
   internal_error: {
@@ -767,7 +815,7 @@ async function streamAndValidateAmazonUpload(
   declaredLength: number,
   boundary: string,
   uploadTemporaryParentDirectory: string,
-): Promise<AmazonUploadSemanticRequest | null> {
+): Promise<AmazonImportUpload | null> {
   const temporaryDirectory = await mkdtemp(
     path.join(
       uploadTemporaryParentDirectory,
@@ -837,7 +885,7 @@ async function isAllowedAmazonUpload(
   fileHandle: FileHandle,
   fileLength: number,
   boundary: string,
-): Promise<AmazonUploadSemanticRequest | null> {
+): Promise<AmazonImportUpload | null> {
   const openingBoundary = Buffer.from(`--${boundary}\r\n`, 'ascii');
   const closingBoundary = Buffer.from(`\r\n--${boundary}--\r\n`, 'ascii');
   const initialLength = Math.min(
@@ -872,12 +920,23 @@ async function isAllowedAmazonUpload(
     /^content-disposition: form-data; name="file"; filename="([^"]+)"$/i.exec(
       disposition ?? '',
     )?.[1];
+  const normalizedFilename = filename?.toLowerCase();
+  const normalizedContentType = contentType?.toLowerCase();
+  const mediaKind =
+    normalizedFilename?.endsWith('.json') === true &&
+    (normalizedContentType === 'content-type: application/json' ||
+      normalizedContentType === 'content-type: application/octet-stream')
+      ? 'amazon-export-json'
+      : normalizedFilename?.endsWith('.eml') === true &&
+          (normalizedContentType === 'content-type: message/rfc822' ||
+            normalizedContentType === 'content-type: application/octet-stream')
+        ? 'amazon-email-eml'
+        : null;
   if (
     filename === undefined ||
     hasUnsafeFilenameCharacter(filename) ||
     filename.includes('..') ||
-    !filename.toLowerCase().endsWith('.csv') ||
-    contentType?.toLowerCase() !== 'content-type: text/csv'
+    mediaKind === null
   ) {
     return null;
   }
@@ -915,32 +974,47 @@ async function isAllowedAmazonUpload(
   ) {
     return null;
   }
+  const bytes = await readFileRange(fileHandle, bodyStart, bodyLength);
+  let discarded = false;
   return {
     adapterVersion: 'amazon-import/v1',
-    mediaKind: 'text/csv',
-    byteHash: await hashFileRange(fileHandle, bodyStart, bodyLength),
+    mediaKind,
+    byteHash: createHash('sha256').update(bytes).digest('hex'),
+    bytes,
+    discard: () => {
+      if (discarded) return;
+      discarded = true;
+      bytes.fill(0);
+    },
   };
 }
 
-async function hashFileRange(
+async function readFileRange(
   fileHandle: FileHandle,
   position: number,
   length: number,
-): Promise<string> {
-  const hash = createHash('sha256');
+): Promise<Buffer> {
+  const bytes = Buffer.alloc(length);
   let remaining = length;
   let offset = position;
+  let outputOffset = 0;
   while (remaining > 0) {
-    const chunk = Buffer.alloc(Math.min(64 * 1024, remaining));
-    const result = await fileHandle.read(chunk, 0, chunk.length, offset);
+    const chunkLength = Math.min(64 * 1024, remaining);
+    const result = await fileHandle.read(
+      bytes,
+      outputOffset,
+      chunkLength,
+      offset,
+    );
     if (result.bytesRead === 0) {
+      bytes.fill(0);
       throw new Error('The upload ended unexpectedly.');
     }
-    hash.update(chunk.subarray(0, result.bytesRead));
     offset += result.bytesRead;
+    outputOffset += result.bytesRead;
     remaining -= result.bytesRead;
   }
-  return hash.digest('hex');
+  return bytes;
 }
 
 function hasUnsafeFilenameCharacter(filename: string): boolean {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { openCompanionDatabase } from '#database/connection';
+import type { AmazonImportResponseDtoV1 } from '#service/amazon-import-service';
 
 const REQUEST_REPLAY_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1000;
 const INTERRUPTED_BEFORE_DOMAIN_COMMIT_ERROR =
@@ -27,11 +28,17 @@ type AmazonImportProblemDetails = Readonly<{
   requestId: string;
 }>;
 
-export type RequestReplayResponse = Readonly<{
-  contentType: typeof PROBLEM_CONTENT_TYPE;
-  status: 501;
-  body: AmazonImportProblemDetails;
-}>;
+export type RequestReplayResponse =
+  | Readonly<{
+      contentType: 'application/json';
+      status: 200 | 201;
+      body: AmazonImportResponseDtoV1;
+    }>
+  | Readonly<{
+      contentType: typeof PROBLEM_CONTENT_TYPE;
+      status: 501;
+      body: AmazonImportProblemDetails;
+    }>;
 
 export type RequestReplayDecision =
   | Readonly<{ kind: 'execute'; replayId: string; attempt: number }>
@@ -332,7 +339,8 @@ function parseStoredResponse(
 ): RequestReplayResponse {
   const body: unknown = JSON.parse(value);
   const response = {
-    contentType: PROBLEM_CONTENT_TYPE,
+    contentType:
+      status === 501 ? PROBLEM_CONTENT_TYPE : ('application/json' as const),
     status,
     body,
   };
@@ -349,6 +357,16 @@ function assertAllowlistedResponse(
   }
   if (typeof response !== 'object' || response === null) {
     throw new Error('The replay response is not allowlisted.');
+  }
+  if (
+    'contentType' in response &&
+    response.contentType === 'application/json' &&
+    'status' in response &&
+    (response.status === 200 || response.status === 201) &&
+    'body' in response &&
+    isAmazonImportResponse(response.body)
+  ) {
+    return;
   }
   if (
     !('contentType' in response) ||
@@ -377,6 +395,58 @@ function assertAllowlistedResponse(
   ) {
     throw new Error('The replay response is not allowlisted.');
   }
+}
+
+function isAmazonImportResponse(
+  value: unknown,
+): value is AmazonImportResponseDtoV1 {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(',') !==
+      'candidateCount,receipt,replayed,status,version'
+  ) {
+    return false;
+  }
+  const response = value as Record<string, unknown>;
+  if (
+    response.version !== 1 ||
+    (response.status !== 'completed' &&
+      response.status !== 'completed-with-conflicts' &&
+      response.status !== 'failed') ||
+    typeof response.replayed !== 'boolean' ||
+    !Number.isSafeInteger(response.candidateCount) ||
+    (response.candidateCount as number) < 0 ||
+    typeof response.receipt !== 'object' ||
+    response.receipt === null ||
+    Array.isArray(response.receipt)
+  ) {
+    return false;
+  }
+  const receipt = response.receipt as Record<string, unknown>;
+  return (
+    Object.keys(receipt).sort().join(',') ===
+      'acceptedCount,errorCode,rejectedCount,rowCount,status' &&
+    (receipt.status === 'parsing' ||
+      receipt.status === 'parsed' ||
+      receipt.status === 'applied' ||
+      receipt.status === 'failed' ||
+      receipt.status === 'discarded') &&
+    isNonNegativeSafeInteger(receipt.rowCount) &&
+    isNonNegativeSafeInteger(receipt.acceptedCount) &&
+    isNonNegativeSafeInteger(receipt.rejectedCount) &&
+    (receipt.errorCode === null ||
+      receipt.errorCode === 'parser_failed' ||
+      receipt.errorCode === 'currency_mismatch' ||
+      receipt.errorCode === 'normalization_failed' ||
+      receipt.errorCode === 'conflicting_observation' ||
+      receipt.errorCode === 'ambiguous_identity')
+  );
+}
+
+function isNonNegativeSafeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function withDatabase<Result>(

@@ -4,7 +4,7 @@ import type { CanonicalJsonValue } from '#integrity/canonical-hash';
 export type AmazonUploadSemanticRequest = Readonly<{
   adapterVersion: 'amazon-import/v1';
   byteHash: string;
-  mediaKind: 'text/csv';
+  mediaKind: 'amazon-export-json' | 'amazon-email-eml';
 }>;
 
 export function calculateRequestReplayHash(value: CanonicalJsonValue): string {
@@ -14,6 +14,16 @@ export function calculateRequestReplayHash(value: CanonicalJsonValue): string {
       'utf8',
     ),
   );
+}
+
+export function calculateAmazonUploadRequestReplayHash(
+  value: AmazonUploadSemanticRequest,
+): string {
+  return calculateRequestReplayHash({
+    adapterVersion: value.adapterVersion,
+    byteHash: value.byteHash,
+    mediaKind: value.mediaKind,
+  });
 }
 
 export function createAmazonUploadSemanticRequest(
@@ -26,7 +36,8 @@ export function createAmazonUploadSemanticRequest(
   if (
     Object.keys(record).length !== 3 ||
     record.adapterVersion !== 'amazon-import/v1' ||
-    record.mediaKind !== 'text/csv' ||
+    (record.mediaKind !== 'amazon-export-json' &&
+      record.mediaKind !== 'amazon-email-eml') ||
     typeof record.byteHash !== 'string' ||
     !/^[0-9a-f]{64}$/.test(record.byteHash)
   ) {

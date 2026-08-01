@@ -1,5 +1,20 @@
 import './styles.css';
 import {
+  amazonConfirmationCopy,
+  amazonReviewRefFromPath,
+  isAmazonImportResult,
+  isAmazonReviewDetail,
+  isAmazonReviewList,
+  renderAmazonDetailBody,
+  renderAmazonListBody,
+} from './amazon-review.ts';
+import type {
+  AmazonImportResult,
+  AmazonReviewAction,
+  AmazonReviewDetail,
+  AmazonReviewList,
+} from './amazon-review.ts';
+import {
   classificationConfirmationCopy,
   classificationReviewRefFromPath,
   isClassificationReviewDetail,
@@ -199,6 +214,71 @@ export class FinanceCompanionApi {
     return body;
   }
 
+  async listAmazonReviews(): Promise<AmazonReviewList> {
+    return this.getJson('/api/v1/amazon-reviews', isAmazonReviewList);
+  }
+
+  async readAmazonReview(reviewRef: string): Promise<AmazonReviewDetail> {
+    return this.getJson(
+      `/api/v1/amazon-reviews/${encodeURIComponent(reviewRef)}`,
+      isAmazonReviewDetail,
+    );
+  }
+
+  async decideAmazonReview(
+    reviewRef: string,
+    action: AmazonReviewAction,
+  ): Promise<AmazonReviewDetail> {
+    if (this.session === null) {
+      throw new Error('Your session has ended. Please sign in again.');
+    }
+    const response = await this.request(
+      `/api/v1/amazon-reviews/${encodeURIComponent(reviewRef)}/decision`,
+      jsonRequest('POST', action, this.session.csrfToken),
+    );
+    const body = await readJson(response);
+    if (!response.ok || !isAmazonReviewDetail(body)) {
+      throw new Error(readProblem(body));
+    }
+    return body;
+  }
+
+  async importAmazonFile(file: File): Promise<AmazonImportResult> {
+    if (this.session === null) {
+      throw new Error('Your session has ended. Please sign in again.');
+    }
+    const extension = file.name.toLowerCase().endsWith('.json')
+      ? 'json'
+      : file.name.toLowerCase().endsWith('.eml')
+        ? 'eml'
+        : null;
+    if (extension === null) {
+      throw new Error('Choose a supported .json export or .eml message.');
+    }
+    const form = new FormData();
+    form.append(
+      'file',
+      new Blob([file], {
+        type: extension === 'json' ? 'application/json' : 'message/rfc822',
+      }),
+      extension === 'json' ? 'amazon-export.json' : 'amazon-message.eml',
+    );
+    const response = await this.request('/api/v1/imports/amazon', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'idempotency-key': globalThis.crypto.randomUUID(),
+        'x-finance-csrf': this.session.csrfToken,
+      },
+      body: form,
+    });
+    const body = await readJson(response);
+    if (!response.ok || !isAmazonImportResult(body)) {
+      throw new Error(readProblem(body));
+    }
+    return body;
+  }
+
   private async getJson<T>(
     url: string,
     valid: (value: unknown) => value is T,
@@ -346,7 +426,57 @@ export function mountFinanceCompanionApplication(
       error => renderError(root, error, renderSubscriptionList),
     );
   };
+  const renderAmazonList = (
+    importResult?: AmazonImportResult,
+    importError?: string,
+  ) => {
+    root.innerHTML = renderLoading('Loading Amazon allocation candidates...');
+    void api.listAmazonReviews().then(
+      list => {
+        root.innerHTML = reviewLayout(
+          'Amazon review',
+          renderAmazonListBody(list, importResult, importError),
+          'amazon',
+        );
+        bindAmazonPage(root, api, renderAmazonList, renderAmazonDetail, list);
+        const outcome = root.querySelector<HTMLElement>(
+          '[data-upload-outcome]',
+        );
+        if (outcome !== null) outcome.focus();
+        else root.querySelector<HTMLInputElement>('#amazon-file')?.focus();
+      },
+      error => renderError(root, error, () => renderAmazonList()),
+    );
+  };
+  const renderAmazonDetail = (reviewRef: string) => {
+    root.innerHTML = renderLoading('Loading Amazon allocation candidate...');
+    void api.readAmazonReview(reviewRef).then(
+      review => {
+        root.innerHTML = reviewLayout(
+          'Amazon allocation candidate',
+          renderAmazonDetailBody(review),
+          'amazon',
+        );
+        bindAmazonPage(
+          root,
+          api,
+          renderAmazonList,
+          renderAmazonDetail,
+          undefined,
+          review,
+        );
+        root.querySelector<HTMLElement>('#review-title')?.focus();
+      },
+      error => renderError(root, error, () => renderAmazonList()),
+    );
+  };
   const renderAuthenticatedRoute = () => {
+    if (window.location.pathname.startsWith('/amazon')) {
+      const reviewRef = amazonReviewRefFromPath(window.location.pathname);
+      if (reviewRef === null) renderAmazonList();
+      else renderAmazonDetail(reviewRef);
+      return;
+    }
     if (window.location.pathname.startsWith('/subscriptions')) {
       const reviewRef = subscriptionReviewRefFromPath(window.location.pathname);
       if (reviewRef === null) renderSubscriptionList();
@@ -411,13 +541,29 @@ export function mountFinanceCompanionApplication(
     renderSubscriptionDetail(reviewRef);
   });
   root.addEventListener('click', event => {
+    const link = (event.target as Element).closest<HTMLAnchorElement>(
+      '[data-amazon-link]',
+    );
+    if (link === null) return;
+    event.preventDefault();
+    const reviewRef = link.dataset.amazonLink;
+    if (reviewRef === undefined) return;
+    window.history.pushState(
+      {},
+      '',
+      `/amazon/${encodeURIComponent(reviewRef)}`,
+    );
+    renderAmazonDetail(reviewRef);
+  });
+  root.addEventListener('click', event => {
     const section = (event.target as Element).closest<HTMLAnchorElement>(
       '[data-review-section]',
     )?.dataset.reviewSection;
     if (
       section !== 'reconciliation' &&
       section !== 'classification' &&
-      section !== 'subscriptions'
+      section !== 'subscriptions' &&
+      section !== 'amazon'
     ) {
       return;
     }
@@ -427,6 +573,8 @@ export function mountFinanceCompanionApplication(
       renderClassificationList();
     } else if (section === 'subscriptions') {
       renderSubscriptionList();
+    } else if (section === 'amazon') {
+      renderAmazonList();
     } else {
       renderList();
     }
@@ -492,9 +640,13 @@ export function renderReconciliationDetail(
 function reviewLayout(
   title: string,
   body: string,
-  activeSection: 'reconciliation' | 'classification' | 'subscriptions',
+  activeSection:
+    | 'reconciliation'
+    | 'classification'
+    | 'subscriptions'
+    | 'amazon',
 ): string {
-  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header><nav class="review-navigation" aria-label="Review types"><a ${activeSection === 'reconciliation' ? 'aria-current="page"' : ''} data-review-section="reconciliation" href="/reconciliation">Reconciliation</a><a ${activeSection === 'classification' ? 'aria-current="page"' : ''} data-review-section="classification" href="/classification">Classification</a><a ${activeSection === 'subscriptions' ? 'aria-current="page"' : ''} data-review-section="subscriptions" href="/subscriptions">Recurring payments</a></nav>${body}</main>`;
+  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header><nav class="review-navigation" aria-label="Review types"><a ${activeSection === 'reconciliation' ? 'aria-current="page"' : ''} data-review-section="reconciliation" href="/reconciliation">Reconciliation</a><a ${activeSection === 'classification' ? 'aria-current="page"' : ''} data-review-section="classification" href="/classification">Classification</a><a ${activeSection === 'subscriptions' ? 'aria-current="page"' : ''} data-review-section="subscriptions" href="/subscriptions">Recurring payments</a><a ${activeSection === 'amazon' ? 'aria-current="page"' : ''} data-review-section="amazon" href="/amazon">Amazon</a></nav>${body}</main>`;
 }
 function bindPage(
   root: HTMLElement,
@@ -741,6 +893,138 @@ function bindSubscriptionPage(
             'subscriptions',
           );
           bindSubscriptionPage(root, api, renderList, renderDetail, result);
+          focusReconciliationReviewOutcome(selector =>
+            root.querySelector<HTMLElement>(selector),
+          );
+        },
+        error => renderError(root, error, () => renderDetail(review.reviewRef)),
+      );
+    });
+}
+
+function bindAmazonPage(
+  root: HTMLElement,
+  api: FinanceCompanionApi,
+  renderList: (importResult?: AmazonImportResult, importError?: string) => void,
+  renderDetail: (reviewRef: string) => void,
+  _list?: AmazonReviewList,
+  review?: AmazonReviewDetail,
+): void {
+  root
+    .querySelector<HTMLAnchorElement>('[data-amazon-list]')
+    ?.addEventListener('click', event => {
+      event.preventDefault();
+      window.history.pushState({}, '', '/amazon');
+      renderList();
+    });
+
+  const uploadForm = root.querySelector<HTMLFormElement>(
+    '[data-amazon-upload]',
+  );
+  const fileInput = root.querySelector<HTMLInputElement>('#amazon-file');
+  fileInput?.addEventListener('change', () => {
+    const status = root.querySelector<HTMLElement>('[data-file-status]');
+    if (status === null) return;
+    status.textContent =
+      fileInput.files?.length === 1
+        ? 'One file selected. Ready to import.'
+        : 'No file selected.';
+  });
+  uploadForm?.addEventListener('submit', event => {
+    event.preventDefault();
+    const file = fileInput?.files?.[0];
+    if (file === undefined || fileInput?.files?.length !== 1) {
+      const status = root.querySelector<HTMLElement>('[data-file-status]');
+      if (status !== null) status.textContent = 'Choose exactly one file.';
+      fileInput?.focus();
+      return;
+    }
+    if (
+      !file.name.toLowerCase().endsWith('.json') &&
+      !file.name.toLowerCase().endsWith('.eml')
+    ) {
+      const status = root.querySelector<HTMLElement>('[data-file-status]');
+      if (status !== null) {
+        status.textContent = 'Choose a supported .json export or .eml message.';
+      }
+      fileInput.focus();
+      return;
+    }
+    root.innerHTML = renderLoading(
+      'Importing Amazon data and checking Actual...',
+    );
+    void api.importAmazonFile(file).then(
+      result => renderList(result),
+      error => renderList(undefined, errorMessage(error)),
+    );
+  });
+
+  if (review === undefined) return;
+  const dialog = root.querySelector<HTMLDialogElement>('dialog');
+  let selectedAction: AmazonReviewAction | undefined;
+  let openingButton: HTMLButtonElement | undefined;
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-amazon-decision]')
+    .forEach(button =>
+      button.addEventListener('click', () => {
+        const kind = button.dataset.amazonDecision;
+        if (
+          kind !== 'approve' &&
+          kind !== 'reject' &&
+          kind !== 'defer' &&
+          kind !== 'reopen'
+        ) {
+          return;
+        }
+        openingButton = button;
+        selectedAction = { kind };
+        const copy = dialog?.querySelector<HTMLElement>(
+          '[data-confirmation-copy]',
+        );
+        if (copy !== null && copy !== undefined) {
+          copy.textContent = amazonConfirmationCopy(selectedAction);
+        }
+        dialog?.showModal();
+        dialog
+          ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+          ?.focus();
+      }),
+    );
+  dialog?.addEventListener('cancel', () => {
+    selectedAction = undefined;
+    queueMicrotask(() => openingButton?.focus());
+  });
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-cancel-decision]')
+    ?.addEventListener('click', () => {
+      selectedAction = undefined;
+      dialog.close();
+      openingButton?.focus();
+    });
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+    ?.addEventListener('click', () => {
+      if (selectedAction === undefined) return;
+      const action = selectedAction;
+      dialog.close();
+      root.innerHTML = renderLoading(
+        'Rechecking every Actual parent before recording your decision...',
+      );
+      void api.decideAmazonReview(review.reviewRef, action).then(
+        result => {
+          root.innerHTML = reviewLayout(
+            'Amazon allocation candidate',
+            renderAmazonDetailBody(result, action.kind),
+            'amazon',
+          );
+          bindAmazonPage(
+            root,
+            api,
+            renderList,
+            renderDetail,
+            undefined,
+            result,
+          );
           focusReconciliationReviewOutcome(selector =>
             root.querySelector<HTMLElement>(selector),
           );

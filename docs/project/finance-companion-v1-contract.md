@@ -112,7 +112,8 @@ packages/finance-companion/
     003-source-ingestion.sql
     004-review-candidates.sql
     005-amazon-enrichment.sql
-    006-application-receipts.sql
+    006-application-receipts-compatibility.sql
+    007-amazon-review-deferrals.sql
   src/
     cli.ts
     config.ts
@@ -332,13 +333,25 @@ files and table owners:
 | `003`     | `source_namespaces`, `import_batches`, `source_transactions`, `source_transaction_observations`                                                                                                                                                                                                                                                        | FIN-18/FIN-19        |
 | `004`     | `reconciliation_candidates`, `merchant_normalization_proposals`, `classification_reviews`, `subscription_candidates`                                                                                                                                                                                                                                   | FIN-20/FIN-23/FIN-34 |
 | `005`     | `amazon_orders`, `amazon_shipments`, `amazon_items`, `amazon_refunds`, `amazon_source_observations`, `amazon_charge_matches`, `amazon_match_transactions`, `amazon_transaction_item_allocations`, `amazon_transaction_refund_allocations`, `amazon_transaction_order_adjustments`, `amazon_applied_allocation_reservations`, `amazon_allocation_holds` | FIN-38–FIN-40        |
-| `006`     | `application_receipts`                                                                                                                                                                                                                                                                                                                                 | FIN-44               |
+| `006`     | Reserved `application_receipts(id)` compatibility parent with an unconditional insert blocker; repairs the already-released 005 foreign-key parent and enables no receipt or Actual write                                                                                                                                                              | FIN-41               |
+| `007`     | `amazon_review_deferrals`                                                                                                                                                                                                                                                                                                                              | FIN-41               |
+| `008+`    | Full `application_receipts` replacement/expansion after the distributed-write gate                                                                                                                                                                                                                                                                     | Future FIN-44        |
 
 The filenames and logical table grouping are frozen; later owning tickets fill
 their reviewed SQL before the migration is released. An unreleased migration
 may be amended on its ticket branch. After a migration reaches
 `integration/finance-app`, its bytes and checksum are immutable and corrections
 use a new monotonically numbered migration.
+
+Migration 006 is deliberately not the application-receipt implementation. Its
+table is guaranteed empty because every insert, including `INSERT OR IGNORE`,
+is rejected by a trigger. It only supplies the exact parent table named by the
+immutable 005 Amazon foreign keys so pending candidates with null receipt IDs
+can be stored. FIN-44 must use migration 008 or later. That migration must keep
+foreign keys enabled, assert `COUNT(*) = 0` before replacing the reserved
+table, recreate the strict receipt primary/unique keys and every child foreign
+key, and pass `foreign_key_check` before commit. Removing the insert blocker or
+enabling a receipt remains prohibited until the gated protocol is approved.
 
 The migration runner:
 

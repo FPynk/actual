@@ -146,7 +146,9 @@ write may consume the affected target or Amazon capacity.
 
 ## Data, API, UI, and migration impact
 
-- No FIN-42 migration is added. Reserved `application_receipts` storage stays
+- No FIN-42 migration is added. Migration 006 supplies only an insert-blocked,
+  guaranteed-empty `application_receipts(id)` compatibility parent for the
+  immutable 005 Amazon foreign keys. Functional receipt storage stays
   unimplemented until the authoritative Actual outcome and fence exist.
 - HTTP review responses continue to return `mode: 'manual-in-actual'`.
 - UI approval language must say that the decision was saved and the user must
