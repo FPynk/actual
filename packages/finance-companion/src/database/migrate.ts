@@ -11,6 +11,7 @@ import { sha256 } from '#integrity/canonical-hash';
 
 import { openCompanionDatabase, verifySqliteDatabase } from './connection.ts';
 import type { CompanionDatabase } from './connection.ts';
+import { assertNoUnresolvedBankSyncEvidence } from './generation-zero.ts';
 import { withExclusiveMaintenanceLock } from './maintenance-lock.ts';
 import {
   assertDistinctExistingFiles,
@@ -88,13 +89,26 @@ async function initializeCompanionDatabaseAndAnchorWithLock(
     if (paths.databaseExists) {
       const database = openCompanionDatabase(paths.databasePath, true);
       try {
-        verifyAppliedMigrationHistory(database, migrations);
+        const appliedVersions = verifyAppliedMigrationHistory(
+          database,
+          migrations,
+        );
+        if (
+          !alreadyHoldsMaintenanceLock &&
+          appliedVersions.size !== migrations.length
+        ) {
+          throw new Error(
+            'Companion database migrations are pending; run db:migrate before starting.',
+          );
+        }
         await verifyExistingGenerationZeroState(
           database,
           paths.anchorPath,
           request,
         );
-        applyVerifiedMigrations(database, migrations);
+        if (alreadyHoldsMaintenanceLock) {
+          applyVerifiedMigrations(database, migrations, appliedVersions);
+        }
         verifySqliteDatabase(database);
         return initializeOrReadInstance(database, request);
       } finally {
@@ -188,8 +202,8 @@ export async function loadMigrations(
 function applyVerifiedMigrations(
   database: CompanionDatabase,
   migrations: readonly Migration[],
+  appliedVersions = verifyAppliedMigrationHistory(database, migrations),
 ): void {
-  const appliedVersions = verifyAppliedMigrationHistory(database, migrations);
   database
     .transaction(() => {
       for (const migration of migrations) {
@@ -255,6 +269,8 @@ function verifyAppliedMigrationHistory(
     if (applied.length > migrations.length) {
       throw new Error('The companion database is newer than this executable.');
     }
+  } else {
+    throw new Error('The companion database schema history is missing.');
   }
   return new Set(
     hasMigrationTable
@@ -309,6 +325,7 @@ async function verifyExistingGenerationZeroState(
 ): Promise<void> {
   try {
     verifySqliteDatabase(database);
+    assertNoUnresolvedBankSyncEvidence(database);
     const instance = database
       .prepare(
         'SELECT instance_id, budget_key_hash, budget_currency_code, write_capability_state, write_capability_generation, write_capability_event_hash FROM companion_instance WHERE singleton_key = ?',

@@ -6,33 +6,45 @@ import { createActualAdapter } from '#actual/adapter';
 import { createForkedAdapterWorkerRunner } from '#actual/forked-worker-runner';
 import type { FinanceCompanionConfiguration } from '#config';
 import { openCompanionDatabase } from '#database/connection';
+import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
 import type { LocalPrincipalRepository } from '#security/local-security';
 
 import {
   BankSyncJobError,
-  createSqliteBankSyncJobRepository,
+  createSqliteBankSyncJobRepositoryDuringMaintenance,
   runOneShotBankSyncJob,
 } from './bank-sync.ts';
 import type { BankSyncJobSummary, ParsedBankSyncCommand } from './bank-sync.ts';
+
+export type ConfiguredBankSyncJobTestHooks = Readonly<{
+  createAdapter?: typeof createConfiguredActualAdapter;
+}>;
 
 export async function runConfiguredBankSyncJob(
   configuration: FinanceCompanionConfiguration,
   principalRepository: LocalPrincipalRepository,
   command: ParsedBankSyncCommand,
   signal?: AbortSignal,
+  testHooks: ConfiguredBankSyncJobTestHooks = {},
 ): Promise<BankSyncJobSummary> {
-  const principal = await principalRepository.readOwner();
-  if (principal === null) throw new BankSyncJobError('configuration_error');
-  const adapter = await createConfiguredActualAdapter(configuration);
-  return runOneShotBankSyncJob(
-    { ...command, principalId: principal.id },
-    {
-      adapter,
-      budgetKeyHash: configuration.budgetKeyHash,
-      repository: createSqliteBankSyncJobRepository(configuration.databasePath),
-      signal,
-    },
-  );
+  return withExclusiveMaintenanceLock(configuration.databasePath, async () => {
+    const principal = await principalRepository.readOwner();
+    if (principal === null) throw new BankSyncJobError('configuration_error');
+    const adapter = await (
+      testHooks.createAdapter ?? createConfiguredActualAdapter
+    )(configuration);
+    return runOneShotBankSyncJob(
+      { ...command, principalId: principal.id },
+      {
+        adapter,
+        budgetKeyHash: configuration.budgetKeyHash,
+        repository: createSqliteBankSyncJobRepositoryDuringMaintenance(
+          configuration.databasePath,
+        ),
+        signal,
+      },
+    );
+  });
 }
 
 export async function createConfiguredActualAdapter(

@@ -110,6 +110,20 @@ describe('FIN-49 container readiness contract', () => {
     expect(smokeRunner).toContain("['buildx', 'ls']");
   });
 
+  it('makes container readiness fail after a terminal adapter fail-stop', async () => {
+    const readinessSmoke = await readFile(
+      path.join(companionDirectory, 'src/container/readiness-smoke.ts'),
+      'utf8',
+    );
+
+    expect(readinessSmoke).toContain("'adapter-readiness'");
+    expect(readinessSmoke).toContain('expectAdapterUnhealthy');
+    expect(readinessSmoke).toContain('health.statusCode !== 503');
+    expect(readinessSmoke).toContain(
+      'Terminal adapter failure did not fail container readiness.',
+    );
+  });
+
   it('documents the exact owner credential encoding range in ASCII', async () => {
     const guide = await readFile(
       path.resolve(

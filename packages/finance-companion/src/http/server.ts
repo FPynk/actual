@@ -60,6 +60,11 @@ export type ReconciliationReviewDependencies = Readonly<{
   now?: () => Date;
 }>;
 
+export type FinanceCompanionHealthDependency = Pick<
+  ActualAdapter,
+  'getHealth'
+>;
+
 type IdempotentRequest = Request & {
   financeCompanionAmazonUpload?: AmazonImportUpload;
 };
@@ -71,6 +76,8 @@ export function createFinanceCompanionHttpApplication(
   requestReplayRepository: RequestReplayRepository,
   uploadTemporaryParentDirectory = tmpdir(),
   reconciliationReview?: ReconciliationReviewDependencies,
+  healthDependency: FinanceCompanionHealthDependency | undefined =
+    reconciliationReview?.adapter,
 ): Express {
   if (configuration.bindAddress !== '127.0.0.1') {
     throw new Error(
@@ -85,9 +92,12 @@ export function createFinanceCompanionHttpApplication(
     response.setHeader('Cache-Control', 'no-store');
     next();
   });
-  application.get('/health', (_request, response) =>
-    response.json(createFinanceCompanionHealth()),
-  );
+  application.get('/health', (_request, response) => {
+    const health = createFinanceCompanionHealth(
+      healthDependency?.getHealth() ?? 'healthy',
+    );
+    response.status(health.status === 'healthy' ? 200 : 503).json(health);
+  });
   application.post(
     '/api/v1/session',
     requireExactOrigin(configuration.origin),

@@ -97,6 +97,10 @@ export function buildAmazonMatchCandidates(
   }>,
 ): readonly AmazonMatchCandidate[] {
   const candidates: AmazonMatchCandidate[] = [];
+  const globalSearchBudget = {
+    remainingCandidateSets: maximumAmazonExactCandidateSets,
+    remainingSteps: maximumAmazonExactSubsetSearchSteps,
+  };
   const sortedTargets = [...request.targets].sort((left, right) =>
     left.id.localeCompare(right.id),
   );
@@ -123,6 +127,7 @@ export function buildAmazonMatchCandidates(
     const exactAllocationSets = exactSubsets(
       matchingSignSources,
       target.amountMinorUnits,
+      globalSearchBudget,
     );
     if (exactAllocationSets.length > 0) {
       candidates.push(
@@ -355,6 +360,10 @@ export function createSqliteAmazonMatchingRepository(databasePath: string) {
 function exactSubsets(
   sources: readonly AmazonSourceComponent[],
   targetAmount: number,
+  searchBudget: {
+    remainingCandidateSets: number;
+    remainingSteps: number;
+  },
 ) {
   const sorted = [...sources].sort(compareSources);
   const amounts = sorted.map(source => BigInt(source.amount));
@@ -369,38 +378,70 @@ function exactSubsets(
       (suffixMaximums[index + 1] ?? 0n) + (amount > 0n ? amount : 0n);
   }
   const exactSets: AmazonSourceComponent[][] = [];
-  let searchSteps = 0;
-  function findExactSubsets(
-    index: number,
-    currentAmount: bigint,
-    allocations: readonly AmazonSourceComponent[],
-  ) {
-    searchSteps += 1;
-    if (searchSteps > maximumAmazonExactSubsetSearchSteps) {
+  const allocations: AmazonSourceComponent[] = [];
+  const stack: ExactSubsetSearchFrame[] = [
+    { currentAmount: 0n, index: 0, kind: 'search' },
+  ];
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) continue;
+    if (frame.kind === 'remove-source') {
+      allocations.pop();
+      continue;
+    }
+    if (frame.kind === 'include-source') {
+      const source = sorted[frame.index];
+      if (source === undefined) continue;
+      allocations.push(source);
+      stack.push({ kind: 'remove-source' });
+      stack.push({
+        currentAmount: frame.currentAmount + (amounts[frame.index] ?? 0n),
+        index: frame.index + 1,
+        kind: 'search',
+      });
+      continue;
+    }
+
+    if (searchBudget.remainingSteps <= 0) {
       throw new AmazonMatchCandidateSearchLimitError();
     }
+    searchBudget.remainingSteps -= 1;
     if (
-      currentAmount + (suffixMinimums[index] ?? 0n) > target ||
-      currentAmount + (suffixMaximums[index] ?? 0n) < target
+      frame.currentAmount + (suffixMinimums[frame.index] ?? 0n) > target ||
+      frame.currentAmount + (suffixMaximums[frame.index] ?? 0n) < target
     ) {
-      return;
+      continue;
     }
-    if (index === sorted.length) {
-      if (exactSets.length >= maximumAmazonExactCandidateSets) {
+    if (frame.index === sorted.length) {
+      if (searchBudget.remainingCandidateSets <= 0) {
         throw new AmazonMatchCandidateSearchLimitError();
       }
+      searchBudget.remainingCandidateSets -= 1;
       exactSets.push([...allocations]);
-      return;
+      continue;
     }
-    findExactSubsets(index + 1, currentAmount, allocations);
-    const source = sorted[index];
-    if (source === undefined) return;
-    const nextAmount = currentAmount + (amounts[index] ?? 0n);
-    findExactSubsets(index + 1, nextAmount, [...allocations, source]);
+    stack.push({
+      currentAmount: frame.currentAmount,
+      index: frame.index,
+      kind: 'include-source',
+    });
+    stack.push({
+      currentAmount: frame.currentAmount,
+      index: frame.index + 1,
+      kind: 'search',
+    });
   }
-  findExactSubsets(0, 0n, []);
   return exactSets;
 }
+
+type ExactSubsetSearchFrame =
+  | Readonly<{
+      currentAmount: bigint;
+      index: number;
+      kind: 'search' | 'include-source';
+    }>
+  | Readonly<{ kind: 'remove-source' }>;
 
 function candidateFromExactAllocations(
   target: AmazonTarget,

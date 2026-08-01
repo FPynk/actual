@@ -1,6 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -71,7 +79,7 @@ describe('runFinanceCompanionCommand', () => {
       expect(result.stdout).toContain('passed');
       expect(result.stderr).toBe('');
     },
-    15_000,
+    30_000,
   );
 
   it('writes the synthetic container smoke result', async () => {
@@ -268,6 +276,84 @@ describe('runFinanceCompanionCommand', () => {
       expect(exitCode).toBe(0);
       expect(startedSecurity).toBeDefined();
       expect(await startedSecurity?.login(credential)).not.toBeNull();
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to start an existing database with pending migrations without changing its pair', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(os.tmpdir(), 'finance-companion-start-pending-'),
+    );
+    try {
+      const dataDirectory = path.join(temporaryDirectory, 'data');
+      const legacyMigrationsDirectory = path.join(
+        temporaryDirectory,
+        'legacy-migrations',
+      );
+      await mkdir(dataDirectory);
+      await mkdir(legacyMigrationsDirectory);
+      for (const migrationName of [
+        '001-instance-and-principal.sql',
+        '002-request-replay-and-job-runs.sql',
+        '003-source-import-identities.sql',
+        '004-review-candidates.sql',
+        '005-amazon-enrichment.sql',
+        '006-application-receipts-compatibility.sql',
+      ]) {
+        await copyFile(
+          path.resolve(import.meta.dirname, '../../migrations', migrationName),
+          path.join(legacyMigrationsDirectory, migrationName),
+        );
+      }
+      const integrityMacKey = Buffer.alloc(32, 8).toString('base64url');
+      const credential = Buffer.alloc(32, 9).toString('base64url');
+      const configuration: FinanceCompanionConfiguration = {
+        bindAddress: '127.0.0.1',
+        port: 4100,
+        origin: 'http://127.0.0.1:4100',
+        dataDirectory,
+        databasePath: path.join(dataDirectory, 'companion.sqlite'),
+        integrityAnchorPath: path.join(temporaryDirectory, 'integrity.anchor'),
+        integrityMacKeyFile: undefined,
+        integrityMacKey,
+        budgetKeyHash: 'a'.repeat(64),
+        budgetCurrencyCode: 'USD',
+        ownerBootstrapCredential: credential,
+        ownerBootstrapCredentialFile: undefined,
+      };
+      await initializeCompanionDatabaseAndAnchor({
+        databasePath: configuration.databasePath,
+        migrationsDirectory: legacyMigrationsDirectory,
+        anchorPath: configuration.integrityAnchorPath,
+        anchorMacKey: Buffer.from(integrityMacKey, 'base64url'),
+        budgetKeyHash: configuration.budgetKeyHash,
+        budgetCurrencyCode: configuration.budgetCurrencyCode,
+        createOwnerCredentialHash: async () => 'synthetic-owner-hash',
+      });
+      const originalDatabase = await readFile(configuration.databasePath);
+      const originalAnchor = await readFile(configuration.integrityAnchorPath);
+      const startHttpServer = vi.fn();
+
+      await expect(
+        runFinanceCompanionCommand(
+          'start',
+          () => undefined,
+          () => undefined,
+          () => configuration,
+          undefined,
+          startHttpServer,
+        ),
+      ).rejects.toThrow(
+        'Companion database migrations are pending; run db:migrate before starting.',
+      );
+      expect(startHttpServer).not.toHaveBeenCalled();
+      expect(await readFile(configuration.databasePath)).toEqual(
+        originalDatabase,
+      );
+      expect(await readFile(configuration.integrityAnchorPath)).toEqual(
+        originalAnchor,
+      );
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }

@@ -11,21 +11,45 @@ export async function withExclusiveMaintenanceLock<T>(
   databasePath: string,
   run: () => T | Promise<T>,
 ): Promise<T> {
-  const lockPath = `${databasePath}.maintenance.lock`;
-  let descriptor: number;
-  try {
-    descriptor = openSync(lockPath, 'wx', 0o600);
-  } catch {
-    throw new MaintenanceRequiredError();
-  }
+  const lock = acquireExclusiveMaintenanceLock(databasePath);
   try {
     return await run();
   } finally {
-    closeSync(descriptor);
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      throw new MaintenanceRequiredError();
-    }
+    releaseExclusiveMaintenanceLock(lock);
+  }
+}
+
+export function withExclusiveMaintenanceLockSync<T>(
+  databasePath: string,
+  run: () => T,
+): T {
+  const lock = acquireExclusiveMaintenanceLock(databasePath);
+  try {
+    return run();
+  } finally {
+    releaseExclusiveMaintenanceLock(lock);
+  }
+}
+
+function acquireExclusiveMaintenanceLock(databasePath: string): Readonly<{
+  descriptor: number;
+  lockPath: string;
+}> {
+  const lockPath = `${databasePath}.maintenance.lock`;
+  try {
+    return { descriptor: openSync(lockPath, 'wx', 0o600), lockPath };
+  } catch {
+    throw new MaintenanceRequiredError();
+  }
+}
+
+function releaseExclusiveMaintenanceLock(
+  lock: Readonly<{ descriptor: number; lockPath: string }>,
+): void {
+  closeSync(lock.descriptor);
+  try {
+    unlinkSync(lock.lockPath);
+  } catch {
+    throw new MaintenanceRequiredError();
   }
 }
