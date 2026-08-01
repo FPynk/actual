@@ -25,7 +25,7 @@
     "test": "vitest --run",
     "test:db": "vitest --run src/tests/database.test.ts src/tests/database-safety.test.ts src/tests/request-replay-repository.test.ts src/tests/source-identity-repository.test.ts src/tests/import-receipt-repository.test.ts",
     "test:adapter": "vitest --run src/tests/adapter.test.ts src/tests/budget-binding.test.ts src/tests/forked-worker-runner.test.ts src/tests/operation-lock.test.ts",
-    "test:e2e": "node --experimental-strip-types ./src/cli.ts test:e2e",
+    "test:e2e": "playwright test",
     "start": "yarn build && node ./dist/service/cli.js start",
     "job:bank-sync": "node --experimental-strip-types ./src/cli.ts job:bank-sync",
     "db:migrate": "node --experimental-strip-types ./src/cli.ts db:migrate",
@@ -43,6 +43,7 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.1",
