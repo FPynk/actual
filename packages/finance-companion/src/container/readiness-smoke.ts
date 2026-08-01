@@ -341,7 +341,7 @@ async function requireGracefulShutdown(
     const health = await readHealth();
     if (
       health.statusCode !== 503 ||
-      health.body !== '{"status":"unhealthy","version":"0.0.1"}'
+      health.body !== '{"status":"not-healthy","version":"0.0.1"}'
     ) {
       throw new Error(
         'Terminal adapter failure did not fail container readiness.',
@@ -370,9 +370,7 @@ async function expectTimeout(operation: Promise<unknown>): Promise<void> {
   throw new Error('The synthetic worker did not reach its hard deadline.');
 }
 
-function readHealth(): Promise<
-  Readonly<{ statusCode: number; body: string }>
-> {
+function readHealth(): Promise<Readonly<{ statusCode: number; body: string }>> {
   return new Promise((resolve, reject) => {
     const request = get('http://127.0.0.1:4100/health', response => {
       let body = '';

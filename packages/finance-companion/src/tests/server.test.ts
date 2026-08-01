@@ -86,7 +86,7 @@ describe('createFinanceCompanionHttpApplication', () => {
       adapterHealth = 'unhealthy';
       const health = await request(server, '/health');
       expect(health.statusCode).toBe(503);
-      expect(health.body).toBe('{"status":"unhealthy","version":"0.0.1"}');
+      expect(health.body).toBe('{"status":"not-healthy","version":"0.0.1"}');
     } finally {
       await close(server);
     }

@@ -20,7 +20,7 @@ approved.
 | Bank sync could race maintenance after creating its job.                            | Configured bank sync owns the shared maintenance lock through adapter setup and terminal durable completion. Synthetic job-first and maintenance-first races fail closed.     |
 | Normal startup could apply pending migrations without the required verified backup. | Fresh initialization remains automatic. Existing databases with pending migrations stop with an instruction to run `db:migrate`; only the maintenance lifecycle applies them. |
 | A large valid Amazon source set could overflow the JavaScript call stack.           | Exact matching is iterative and has one deterministic global work/candidate budget. A 20,000-source regression fails with the stable limit error, not `RangeError` or a hang. |
-| `/health` remained healthy after terminal adapter fail-stop.                        | Readiness now reads adapter health and returns HTTP 503 with the minimal unhealthy payload after terminal fail-stop.                                                          |
+| `/health` remained healthy after terminal adapter fail-stop.                        | Readiness now reads adapter health and returns HTTP 503 with the frozen minimal `not-healthy` payload after terminal fail-stop.                                               |
 | Baseline documents retained a personal local path.                                  | Host-specific checkout paths were replaced with workspace placeholders.                                                                                                       |
 
 ## Verification
