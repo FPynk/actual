@@ -20,7 +20,7 @@
     "#ui/*": "./src/ui/*.ts"
   },
   "scripts": {
-    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false && node ./scripts/copy-migrations.mjs",
+    "build": "vite build --outDir dist/ui && vite build --ssr src/cli.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/actual/adapter-worker-entry.ts --outDir dist/service --emptyOutDir false && vite build --ssr src/container/readiness-hanging-worker.ts --outDir dist/service/assets --emptyOutDir false && node ./scripts/copy-migrations.mjs",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "test": "vitest --run",
     "test:db": "vitest --run src/tests/database.test.ts src/tests/database-safety.test.ts src/tests/request-replay-repository.test.ts src/tests/source-identity-repository.test.ts src/tests/import-receipt-repository.test.ts",
@@ -34,7 +34,7 @@
     "backup:verify": "node --experimental-strip-types ./src/cli.ts backup:verify",
     "backup:restore": "node --experimental-strip-types ./src/cli.ts backup:restore",
     "integrity:verify": "node --experimental-strip-types ./src/cli.ts integrity:verify",
-    "smoke:container": "node --experimental-strip-types ./src/cli.ts smoke:container"
+    "smoke:container": "node ../../scripts/finance-companion-container-smoke.mjs"
   },
   "dependencies": {
     "@actual-app/api": "workspace:*",

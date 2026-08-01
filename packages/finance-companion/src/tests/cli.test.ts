@@ -16,7 +16,6 @@ const commands = [
   'test:adapter',
   'test:e2e',
   'owner:rotate',
-  'smoke:container',
 ] as const;
 const scaffoldPackageScriptCommands = commands.filter(
   command => command !== 'test:db' && command !== 'test:adapter',
@@ -76,6 +75,31 @@ describe('runFinanceCompanionCommand', () => {
     },
     15_000,
   );
+
+  it('writes the synthetic container smoke result', async () => {
+    const standardOutput: string[] = [];
+    const standardError: string[] = [];
+    const result = {
+      checks: ['non-root-volumes'],
+      ok: true,
+    };
+
+    const exitCode = await runFinanceCompanionCommand(
+      'smoke:container',
+      message => standardOutput.push(message),
+      message => standardError.push(message),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => result,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(standardOutput).toEqual([`${JSON.stringify(result)}\n`]);
+    expect(standardError).toEqual([]);
+  });
 
   it('writes one bank-sync summary and its deterministic exit code', async () => {
     const standardOutput: string[] = [];
