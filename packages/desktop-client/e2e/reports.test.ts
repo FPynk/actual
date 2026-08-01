@@ -13,9 +13,19 @@ test.describe('Reports', () => {
   let navigation: Navigation;
   let reportsPage: ReportsPage;
   let configurationPage: ConfigurationPage;
+  let consoleErrors: string[];
+  let pageErrors: string[];
 
   test.beforeEach(async ({ browser }) => {
     page = await browser.newPage();
+    consoleErrors = [];
+    pageErrors = [];
+    page.on('console', message => {
+      if (message.type() === 'error') {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on('pageerror', error => pageErrors.push(error.message));
     navigation = new Navigation(page);
     configurationPage = new ConfigurationPage(page);
 
@@ -168,10 +178,65 @@ test.describe('Reports', () => {
 
     test('Validates that "show summary" button shows the summary', async () => {
       await customReportPage.selectViz('Bar Graph');
-      await customReportPage.showSummaryButton.click();
+      await customReportPage.showSummaryButton.focus();
+      await expect(customReportPage.showSummaryButton).toBeFocused();
+      await page.keyboard.press('Enter');
+
+      const expenditureMetrics = page.getByText('Expenditure metrics', {
+        exact: true,
+      });
+      await expect(expenditureMetrics).toBeVisible();
+
+      for (const metricLabel of [
+        'Total expenditure',
+        'Average per day',
+        'Average per week',
+        'Median expense',
+        'Month over month',
+      ]) {
+        await expect(
+          page.getByText(metricLabel, { exact: true }),
+        ).toBeVisible();
+      }
+
+      const rollingExpenditureLabel = page.getByText(
+        'Rolling 30-day expenditure',
+        { exact: true },
+      );
+      await expect(rollingExpenditureLabel).toBeVisible();
+      const rollingExpenditureGraph = rollingExpenditureLabel.locator(
+        'xpath=following-sibling::*[1]',
+      );
+      await expect(rollingExpenditureGraph.locator('svg')).toBeVisible();
+      await expect(
+        rollingExpenditureGraph.locator('.recharts-line-curve'),
+      ).toHaveCount(1);
+
+      await customReportPage.showSummaryButton.focus();
+      await page.keyboard.press(' ');
+      await expect(expenditureMetrics).toBeHidden();
+      await page.keyboard.press('Enter');
+      await expect(expenditureMetrics).toBeVisible();
+
       await expect(page).toMatchThemeScreenshots();
 
-      await customReportPage.showSummaryButton.click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.reload();
+      await expect(expenditureMetrics).toBeVisible();
+
+      expect(
+        await page.evaluate(() => {
+          return (
+            Math.max(
+              document.documentElement.scrollWidth,
+              document.body.scrollWidth,
+            ) <= document.documentElement.clientWidth
+          );
+        }),
+      ).toBe(true);
+
+      expect(consoleErrors).toEqual([]);
+      expect(pageErrors).toEqual([]);
     });
 
     test('Validates that "show labels" button shows the labels', async () => {
