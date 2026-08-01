@@ -18,7 +18,6 @@ const NOT_IMPLEMENTED_COMMANDS = [
   'test:adapter',
   'test:e2e',
   'owner:rotate',
-  'smoke:container',
 ] as const;
 type FeatureNotImplementedCommand = (typeof NOT_IMPLEMENTED_COMMANDS)[number];
 
@@ -49,6 +48,7 @@ export async function runFinanceCompanionCommand(
     command_: ParsedBankSyncCommand,
     signal: AbortSignal,
   ) => Promise<BankSyncJobSummary>,
+  runContainerSmoke?: () => Promise<Readonly<Record<string, unknown>>>,
 ): Promise<number> {
   if (isFeatureNotImplementedCommand(command)) {
     const result: FeatureNotImplementedCommandResult = {
@@ -109,6 +109,23 @@ export async function runFinanceCompanionCommand(
     } finally {
       process.removeListener('SIGINT', cancel);
       process.removeListener('SIGTERM', cancel);
+    }
+  }
+  if (command === 'smoke:container') {
+    try {
+      const result = await (
+        runContainerSmoke ??
+        (async () => {
+          const { runContainerReadinessSmoke } =
+            await import('./container/readiness-smoke.ts');
+          return runContainerReadinessSmoke();
+        })
+      )();
+      writeStandardOutput(`${JSON.stringify(result)}\n`);
+      return 0;
+    } catch {
+      writeStandardError('{"ok":false,"code":"container_smoke_failed"}\n');
+      return 70;
     }
   }
   if (
