@@ -13,13 +13,16 @@ pushes.
 
 ## Current state
 
-| Phase                            | Status      | Evidence                    |
-| -------------------------------- | ----------- | --------------------------- |
-| 0a — Repository/tooling baseline | Complete    | FIN-1 and PR #1             |
-| 0b — Windows compatibility fixes | Backlog     | P0.1-P0.3 after FIN-3       |
-| 1 — Capability assessment        | Complete    | FIN-2 and PR #2             |
-| 1b — Architecture and backlog    | In progress | FIN-3                       |
-| 2–11                             | Backlog     | Begins after FIN-3 approval |
+This table is the release snapshot rather than the original implementation
+sequence below. The detailed phases remain useful historical planning context.
+
+| Area                                             | Status                                      | Evidence and boundary                                                                                                                                                                                                                                                    |
+| ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Foundation, architecture, and synthetic workflow | Complete                                    | FIN-1 through FIN-17 established the baseline, contract, fixtures, and core companion foundation.                                                                                                                                                                        |
+| Read-only companion features                     | Implemented for the generation-zero release | FIN-18 through FIN-41 add reconciliation, classification, subscription, Amazon import/matching, reports, and review UI. Review decisions and companion metadata do not write the Actual ledger. Explicitly authorized one-shot bank sync is the sole mutating exception. |
+| Write automation                                 | Intentionally deferred                      | FIN-42 defines the fail-closed boundary. There is no companion-authored transaction, category, rule, schedule, note, or split mutation, paired Actual restore, remote fence, or real-data workflow.                                                                      |
+| Release hardening                                | Complete on Windows                         | FIN-48 through FIN-51 cover production-style synthetic E2E, readiness checks, companion-only restore, and final safety blockers. The final companion typecheck, 355-test suite, build, and two-scenario E2E pass. Docker/Linux runtime and CI evidence remain FIN-59.    |
+| Documentation and handoff                        | Complete after FIN-54 merge                 | FIN-52 and FIN-53 provide the English user and Ubuntu preparation guides. FIN-54 records the final evidence, boundaries, and follow-ups.                                                                                                                                 |
 
 ## Delivery principles
 
