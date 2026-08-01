@@ -16,7 +16,7 @@ import { runDatabaseLifecycleCommand } from '#database/lifecycle-cli';
 import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { InitializeCompanionDatabaseRequest } from '#database/migrate';
-import { writeIntegrityAnchor } from '#integrity/anchor';
+import { readIntegrityAnchor, writeIntegrityAnchor } from '#integrity/anchor';
 import { sha256 } from '#integrity/canonical-hash';
 import { verifyCompanionIntegrity } from '#integrity/verify';
 
@@ -252,6 +252,35 @@ describe('FIN-11 database safety gates', () => {
       'destination already exists',
     );
     expect(await readFile(backup.backupPath, 'utf8')).toBe('published-backup');
+  });
+
+  it('refuses a generation-zero anchor with a stale paired backup manifest', async () => {
+    const backup = await createBackupRequest();
+    const anchor = await readIntegrityAnchor(
+      initialization.anchorPath,
+      initialization.anchorMacKey,
+    );
+    await writeIntegrityAnchor(
+      initialization.anchorPath,
+      {
+        ...anchor,
+        lastVerifiedPairedBackupManifestHash: 'b'.repeat(64),
+      },
+      initialization.anchorMacKey,
+    );
+
+    await expect(createCompanionOnlyBackup(backup)).rejects.toThrow(
+      'generation-zero integrity anchor',
+    );
+    await expect(
+      verifyCompanionIntegrity({
+        databasePath: initialization.databasePath,
+        anchorPath: initialization.anchorPath,
+        anchorMacKey: initialization.anchorMacKey,
+        expectedBudgetKeyHash: initialization.budgetKeyHash,
+        expectedCurrencyCode: initialization.budgetCurrencyCode,
+      }),
+    ).resolves.toMatchObject({ writeCapabilityState: 'recovery_required' });
   });
 
   it('refuses backup and migration while interrupted restore artifacts remain', async () => {
