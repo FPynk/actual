@@ -2,6 +2,36 @@
   <img src="/demo.png" alt="Actualbudget" />
 </p>
 
+## Finance Companion project branch
+
+This fork's `integration/finance-app` branch keeps Actual's existing budgeting,
+imports, rules, schedules, splits, and reports, and adds expenditure metrics
+plus a local Finance Companion for bank sync and read-only reconciliation,
+classification, recurring-payment, and Amazon review workflows.
+
+The companion is loopback-only, and its review decisions do not change Actual.
+Automated transaction, rule, split, category, and schedule edits remain
+disabled. The explicit mutating exception is an authorized one-shot account
+bank sync, which can import transactions into the configured Actual budget and
+uses fail-stop handling for unknown outcomes. Remote exposure, write-era
+recovery, and real-data restore remain disabled. Use Actual's UI for all other
+ledger changes.
+
+Clone the explicit integration branch and install its locked dependencies:
+
+```powershell
+git clone --branch integration/finance-app https://github.com/FPynk/actual.git actual-finance-app
+Set-Location -LiteralPath '.\actual-finance-app'
+corepack yarn install --immutable
+```
+
+Continue with the [English Finance Companion user guide](docs/project/finance-companion-user-guide.md).
+For a private synthetic Ubuntu preparation path, see the
+[Ubuntu homelab guide](docs/project/finance-companion-ubuntu-homelab.md).
+Technical context is in the [architecture](docs/project/architecture.md),
+[frozen companion contract](docs/project/finance-companion-v1-contract.md),
+and [original upstream capability inventory](docs/project/current-capabilities.md).
+
 ## Getting Started
 
 Actual is a local-first personal finance tool. It is 100% free and open-source, written in NodeJS, it has a synchronization element so that all your changes can move between devices without any heavy lifting.
