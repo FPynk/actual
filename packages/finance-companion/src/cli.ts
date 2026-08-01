@@ -6,6 +6,7 @@ import { openCompanionDatabase } from './database/connection.ts';
 import { createSqliteSourceIdentityRepository } from './database/source-identity-repository.ts';
 import { startFinanceCompanionHttpServer } from './http/server.ts';
 import { SqliteReconciliationCandidateRepository } from './reconciliation/sqlite-reconciliation-candidate-repository.ts';
+import { SqliteClassificationProposalRepository } from './reviews/sqlite-classification-repository.ts';
 import { createFinanceCompanionSecurity } from './security/local-security.ts';
 import type { LocalPrincipalRepository } from './security/local-security.ts';
 import {
@@ -131,6 +132,9 @@ export async function runFinanceCompanionCommand(
       : {
           adapter: await createConfiguredActualAdapter(configuration),
           candidateRepository: new SqliteReconciliationCandidateRepository(
+            reviewDatabase,
+          ),
+          classificationRepository: new SqliteClassificationProposalRepository(
             reviewDatabase,
           ),
           sourceIdentityRepository: createSqliteSourceIdentityRepository(

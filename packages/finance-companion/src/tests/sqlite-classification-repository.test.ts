@@ -179,6 +179,46 @@ describe('SQLite classification proposal repository', () => {
     rejectedDatabase.close();
   });
 
+  it('persists an explicit classification action with no pending default', () => {
+    const database = new Database(databasePath);
+    const repository = new SqliteClassificationProposalRepository(database);
+    detectCategory(repository);
+    const pending = repository
+      .listClassificationReviews()
+      .find(record => record.proposal.kind === 'category');
+    if (pending === undefined) throw new Error('Missing category review.');
+    expect(pending.selectedAction).toBeNull();
+    expect(() =>
+      repository.recordClassificationDecision(
+        pending,
+        'approved',
+        null,
+        evaluatedAt,
+      ),
+    ).toThrow('decision is invalid');
+
+    repository.recordClassificationDecision(
+      pending,
+      'approved',
+      'create_rule',
+      evaluatedAt,
+    );
+    database.close();
+
+    const restartedDatabase = new Database(databasePath);
+    const restarted = new SqliteClassificationProposalRepository(
+      restartedDatabase,
+    )
+      .listClassificationReviews()
+      .find(record => record.proposal.kind === 'category');
+    expect(restarted).toMatchObject({
+      decidedAt: evaluatedAt,
+      selectedAction: 'create_rule',
+      status: 'approved',
+    });
+    restartedDatabase.close();
+  });
+
   it('enforces timestamp and pending-decision checks in migration 004', () => {
     const database = new Database(databasePath);
     const repository = new SqliteClassificationProposalRepository(database);
