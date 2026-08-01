@@ -10,6 +10,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  rename,
   rm,
   unlink,
   writeFile,
@@ -33,6 +34,7 @@ import {
   canonicalExistingRegularFile,
   canonicalUnusedFile,
 } from './path-safety.ts';
+import { hasRestoreRecoveryArtifacts } from './restore-journal.ts';
 
 type GenerationZeroMetadata = Readonly<{
   instanceId: string;
@@ -70,6 +72,17 @@ export type CompanionBackupResult = Readonly<{
   backupSha256: string;
   schemaVersion: number;
   budgetKeyHash: string;
+}>;
+
+export type CompanionRestorePhase =
+  | 'intent-written'
+  | 'database-original-staged'
+  | 'database-replaced'
+  | 'anchor-original-staged'
+  | 'anchor-replaced';
+
+export type CompanionRestoreTestHooks = Readonly<{
+  afterPhase?: (phase: CompanionRestorePhase) => void;
 }>;
 
 export async function createCompanionOnlyBackup(
@@ -161,6 +174,7 @@ export async function verifyCompanionOnlyBackup(
   request: CompanionBackupRequest,
 ): Promise<CompanionBackupResult> {
   validateEncryptionKey(request.encryptionKey);
+  assertNoRestoreArtifacts(request.databasePath, request.anchorPath);
   const paths = await validateBackupPaths(request, 'existing');
   return withExclusiveMaintenanceLock(paths.databasePath, async () => {
     await assertNoSqliteSidecars(paths.databasePath);
@@ -186,18 +200,49 @@ async function verifyBackupArtifact(
   backupPath: string,
   expectedMetadata: GenerationZeroMetadata,
 ): Promise<CompanionBackupResult> {
+  const artifact = await readVerifiedBackupArtifact(request, backupPath);
+  try {
+    if (
+      artifact.metadata.instanceId !== expectedMetadata.instanceId ||
+      artifact.metadata.budgetKeyHash !== expectedMetadata.budgetKeyHash ||
+      artifact.metadata.currencyCode !== expectedMetadata.currencyCode ||
+      artifact.metadata.schemaVersion !== expectedMetadata.schemaVersion
+    ) {
+      throw new Error('The companion backup metadata does not match.');
+    }
+    return artifact.result;
+  } finally {
+    artifact.snapshot.fill(0);
+    artifact.anchor.fill(0);
+  }
+}
+
+type VerifiedBackupArtifact = Readonly<{
+  anchor: Buffer;
+  metadata: GenerationZeroMetadata;
+  result: CompanionBackupResult;
+  snapshot: Buffer;
+}>;
+
+async function readVerifiedBackupArtifact(
+  request: CompanionBackupRequest,
+  backupPath: string,
+): Promise<VerifiedBackupArtifact> {
   const temporaryPath = `${backupPath}.${randomUUID()}.verify.sqlite`;
+  let snapshot: Buffer | undefined;
+  let anchorBytes: Buffer | undefined;
   try {
     const envelope = await readEnvelope(backupPath);
-    const snapshot = decryptSnapshot(envelope, request.encryptionKey);
+    snapshot = decryptSnapshot(envelope, request.encryptionKey);
+    anchorBytes = Buffer.from(envelope.anchor, 'base64');
     if (
       sha256(snapshot) !== envelope.databaseSha256 ||
-      sha256(Buffer.from(envelope.anchor, 'base64')) !== envelope.anchorSha256
+      sha256(anchorBytes) !== envelope.anchorSha256
     ) {
       throw new Error('The companion backup hash does not match.');
     }
     const anchorPayload = parseIntegrityAnchorBytes(
-      Buffer.from(envelope.anchor, 'base64'),
+      anchorBytes,
       request.anchorMacKey,
     );
     await writeFile(temporaryPath, snapshot, { mode: 0o600, flag: 'wx' });
@@ -210,34 +255,252 @@ async function verifyBackupArtifact(
         metadata.instanceId !== envelope.instanceId ||
         metadata.budgetKeyHash !== envelope.budgetKeyHash ||
         metadata.currencyCode !== envelope.currencyCode ||
-        metadata.schemaVersion !== envelope.schemaVersion ||
-        metadata.instanceId !== expectedMetadata.instanceId ||
-        metadata.budgetKeyHash !== expectedMetadata.budgetKeyHash ||
-        metadata.currencyCode !== expectedMetadata.currencyCode ||
-        metadata.schemaVersion !== expectedMetadata.schemaVersion
+        metadata.schemaVersion !== envelope.schemaVersion
       ) {
         throw new Error('The companion backup metadata does not match.');
       }
+      return {
+        anchor: anchorBytes,
+        metadata,
+        result: {
+          backupSha256: sha256(await readFile(backupPath)),
+          schemaVersion: envelope.schemaVersion,
+          budgetKeyHash: envelope.budgetKeyHash,
+        },
+        snapshot,
+      };
     } finally {
       database.close();
     }
-    return {
-      backupSha256: sha256(await readFile(backupPath)),
-      schemaVersion: envelope.schemaVersion,
-      budgetKeyHash: envelope.budgetKeyHash,
-    };
   } finally {
+    if (snapshot === undefined || anchorBytes === undefined) {
+      snapshot?.fill(0);
+      anchorBytes?.fill(0);
+    }
     await rm(temporaryPath, { force: true });
     await removeSqliteSidecars(temporaryPath);
   }
 }
 
 export async function restoreCompanionOnlyBackup(
-  _request: CompanionBackupRequest,
+  request: CompanionBackupRequest,
+  testHooks: CompanionRestoreTestHooks = {},
 ): Promise<CompanionBackupResult> {
-  throw new Error(
-    'Companion restore activation requires explicit destructive-capability authorization.',
+  validateEncryptionKey(request.encryptionKey);
+  assertNoRestoreArtifacts(request.databasePath, request.anchorPath);
+  const paths = await validateBackupPaths(request, 'existing');
+  assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
+  return withExclusiveMaintenanceLock(paths.databasePath, async () => {
+    await assertNoSqliteSidecars(paths.databasePath);
+    assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
+    const artifact = await readVerifiedBackupArtifact(
+      request,
+      paths.backupPath,
+    );
+    try {
+      return await replaceCompanionPair(paths, artifact, request, testHooks);
+    } finally {
+      artifact.snapshot.fill(0);
+      artifact.anchor.fill(0);
+    }
+  });
+}
+
+type RestorePaths = Readonly<{
+  databasePath: string;
+  anchorPath: string;
+  backupPath: string;
+}>;
+
+async function replaceCompanionPair(
+  paths: RestorePaths,
+  artifact: VerifiedBackupArtifact,
+  request: CompanionBackupRequest,
+  testHooks: CompanionRestoreTestHooks,
+): Promise<CompanionBackupResult> {
+  const operationId = randomUUID();
+  const databaseStagePath = restoreSibling(
+    paths.databasePath,
+    operationId,
+    'stage',
   );
+  const databaseRollbackPath = restoreSibling(
+    paths.databasePath,
+    operationId,
+    'rollback',
+  );
+  const anchorStagePath = restoreSibling(
+    paths.anchorPath,
+    operationId,
+    'stage',
+  );
+  const anchorRollbackPath = restoreSibling(
+    paths.anchorPath,
+    operationId,
+    'rollback',
+  );
+  const intentPath = path.join(
+    path.dirname(paths.anchorPath),
+    `.finance-companion-restore-intent-${operationId}.json`,
+  );
+  const state = {
+    anchorInstalled: false,
+    anchorOriginalStaged: false,
+    databaseInstalled: false,
+    databaseOriginalStaged: false,
+  };
+  try {
+    await writePublishedBackup(databaseStagePath, artifact.snapshot);
+    await writePublishedBackup(anchorStagePath, artifact.anchor);
+    await verifyRestoreStages(
+      databaseStagePath,
+      anchorStagePath,
+      request,
+      artifact.metadata,
+    );
+    await writeRestoreIntent(intentPath, artifact.result.backupSha256);
+    testHooks.afterPhase?.('intent-written');
+
+    await rename(paths.databasePath, databaseRollbackPath);
+    state.databaseOriginalStaged = true;
+    testHooks.afterPhase?.('database-original-staged');
+    await rename(databaseStagePath, paths.databasePath);
+    state.databaseInstalled = true;
+    testHooks.afterPhase?.('database-replaced');
+
+    await rename(paths.anchorPath, anchorRollbackPath);
+    state.anchorOriginalStaged = true;
+    testHooks.afterPhase?.('anchor-original-staged');
+    await rename(anchorStagePath, paths.anchorPath);
+    state.anchorInstalled = true;
+    testHooks.afterPhase?.('anchor-replaced');
+
+    await removeRestoreArtifacts([
+      databaseRollbackPath,
+      anchorRollbackPath,
+      intentPath,
+    ]);
+    return artifact.result;
+  } catch (error) {
+    if (error instanceof SimulatedRestoreInterruption) {
+      throw error;
+    }
+    const wasRolledBack = await rollbackCompanionPair(paths, {
+      anchorRollbackPath,
+      databaseRollbackPath,
+      ...state,
+    });
+    if (!wasRolledBack) {
+      throw new Error('Companion restore requires recovery.');
+    }
+    await removeRestoreArtifacts([
+      databaseStagePath,
+      anchorStagePath,
+      databaseRollbackPath,
+      anchorRollbackPath,
+      intentPath,
+    ]);
+    throw error;
+  }
+}
+
+async function verifyRestoreStages(
+  databasePath: string,
+  anchorPath: string,
+  request: CompanionBackupRequest,
+  expectedMetadata: GenerationZeroMetadata,
+): Promise<void> {
+  const database = openCompanionDatabase(databasePath, true);
+  try {
+    verifySqliteDatabase(database);
+    const metadata = generationZeroMetadata(database, request);
+    const anchor = await readIntegrityAnchor(anchorPath, request.anchorMacKey);
+    validateGenerationZeroAnchor(anchor, metadata);
+    if (
+      metadata.instanceId !== expectedMetadata.instanceId ||
+      metadata.budgetKeyHash !== expectedMetadata.budgetKeyHash ||
+      metadata.currencyCode !== expectedMetadata.currencyCode ||
+      metadata.schemaVersion !== expectedMetadata.schemaVersion
+    ) {
+      throw new Error(
+        'The staged companion restore does not match its backup.',
+      );
+    }
+  } finally {
+    database.close();
+  }
+  await assertNoSqliteSidecars(databasePath);
+}
+
+async function writeRestoreIntent(
+  intentPath: string,
+  backupSha256: string,
+): Promise<void> {
+  await writePublishedBackup(
+    intentPath,
+    Buffer.from(canonicalJson({ backupSha256, formatVersion: 1 }), 'utf8'),
+  );
+}
+
+async function rollbackCompanionPair(
+  paths: RestorePaths,
+  state: Readonly<{
+    databaseOriginalStaged: boolean;
+    databaseInstalled: boolean;
+    anchorOriginalStaged: boolean;
+    anchorInstalled: boolean;
+    databaseRollbackPath: string;
+    anchorRollbackPath: string;
+  }>,
+): Promise<boolean> {
+  try {
+    if (state.anchorInstalled) await unlink(paths.anchorPath);
+    if (state.anchorOriginalStaged) {
+      await rename(state.anchorRollbackPath, paths.anchorPath);
+    }
+    if (state.databaseInstalled) await unlink(paths.databasePath);
+    if (state.databaseOriginalStaged) {
+      await rename(state.databaseRollbackPath, paths.databasePath);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function restoreSibling(
+  protectedPath: string,
+  operationId: string,
+  type: 'stage' | 'rollback',
+): string {
+  return path.join(
+    path.dirname(protectedPath),
+    `.${path.basename(protectedPath)}.restore-${operationId}.${type}`,
+  );
+}
+
+function assertNoRestoreArtifacts(
+  databasePath: string,
+  anchorPath: string,
+): void {
+  if (hasRestoreRecoveryArtifacts(databasePath, anchorPath)) {
+    throw new Error('Companion restore requires recovery.');
+  }
+}
+
+async function removeRestoreArtifacts(paths: readonly string[]): Promise<void> {
+  for (const artifactPath of paths) {
+    await unlink(artifactPath).catch(error => {
+      if (!isMissingPathError(error)) throw error;
+    });
+  }
+}
+
+export class SimulatedRestoreInterruption extends Error {
+  constructor() {
+    super('The synthetic restore was interrupted.');
+    this.name = 'SimulatedRestoreInterruption';
+  }
 }
 
 function generationZeroMetadata(
@@ -508,5 +771,14 @@ function isCanonicalBase64(
   return (
     bytes.toString('base64') === value &&
     (expectedBytes === undefined || bytes.length === expectedBytes)
+  );
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
   );
 }

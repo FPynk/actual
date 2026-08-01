@@ -71,13 +71,7 @@ export async function initializeCompanionDatabaseAndAnchor(
     if (paths.databaseExists) {
       const database = openCompanionDatabase(paths.databasePath, true);
       try {
-        const appliedVersions = verifyAppliedMigrationHistory(
-          database,
-          migrations,
-        );
-        if (appliedVersions.size !== migrations.length) {
-          throw new Error('Existing companion migration state is incomplete.');
-        }
+        verifyAppliedMigrationHistory(database, migrations);
         await verifyExistingGenerationZeroState(
           database,
           paths.anchorPath,
@@ -176,15 +170,15 @@ function applyVerifiedMigrations(
   migrations: readonly Migration[],
 ): void {
   const appliedVersions = verifyAppliedMigrationHistory(database, migrations);
-  for (const migration of migrations) {
-    if (appliedVersions.has(migration.version)) continue;
-    database
-      .transaction(() => {
+  database
+    .transaction(() => {
+      for (const migration of migrations) {
+        if (appliedVersions.has(migration.version)) continue;
         applyMigration(database, migration);
-        verifySqliteDatabase(database);
-      })
-      .immediate();
-  }
+      }
+      verifySqliteDatabase(database);
+    })
+    .immediate();
 }
 
 function applyMigration(
