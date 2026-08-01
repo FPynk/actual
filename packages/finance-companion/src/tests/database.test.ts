@@ -1,6 +1,14 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -49,10 +57,10 @@ describe('FIN-11 companion database lifecycle', () => {
     await rm(temporaryDirectory, { recursive: true, force: true });
   });
 
-  it('initializes migrations 001 through 005, a stable principal, and a generation-zero anchor', async () => {
+  it('initializes migrations 001 through 007, a stable principal, and a generation-zero anchor', async () => {
     const initialized = await initializeCompanionDatabaseAndAnchor(request);
     expect(initialized).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 7,
       writeCapabilityState: 'disabled',
     });
 
@@ -70,7 +78,7 @@ describe('FIN-11 companion database lifecycle', () => {
           )
           .get(),
       ).toMatchObject({
-        version: 5,
+        version: 7,
         checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     } finally {
@@ -84,7 +92,146 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedBudgetKeyHash: request.budgetKeyHash,
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
-    ).resolves.toEqual({ schemaVersion: 5, writeCapabilityState: 'disabled' });
+    ).resolves.toEqual({ schemaVersion: 7, writeCapabilityState: 'disabled' });
+  });
+
+  it('upgrades a valid 001-005 database through contiguous checksummed 006-007 history', async () => {
+    const legacyMigrationsDirectory = path.join(
+      temporaryDirectory,
+      'legacy-migrations',
+    );
+    await mkdir(legacyMigrationsDirectory);
+    const migrationNames = [
+      '001-instance-and-principal.sql',
+      '002-request-replay-and-job-runs.sql',
+      '003-source-import-identities.sql',
+      '004-review-candidates.sql',
+      '005-amazon-enrichment.sql',
+    ];
+    for (const migrationName of migrationNames) {
+      await copyFile(
+        path.join(request.migrationsDirectory, migrationName),
+        path.join(legacyMigrationsDirectory, migrationName),
+      );
+    }
+    await initializeCompanionDatabaseAndAnchor({
+      ...request,
+      migrationsDirectory: legacyMigrationsDirectory,
+    });
+    const legacyDatabase = openCompanionDatabase(request.databasePath, true);
+    try {
+      expect(
+        legacyDatabase
+          .prepare('SELECT version FROM schema_migrations ORDER BY version')
+          .all(),
+      ).toEqual([1, 2, 3, 4, 5].map(version => ({ version })));
+    } finally {
+      legacyDatabase.close();
+    }
+
+    await expect(
+      initializeCompanionDatabaseAndAnchor(request),
+    ).resolves.toMatchObject({
+      schemaVersion: 7,
+      writeCapabilityState: 'disabled',
+    });
+    const upgradedDatabase = openCompanionDatabase(request.databasePath, true);
+    try {
+      expect(
+        upgradedDatabase
+          .prepare(
+            'SELECT version, name, checksum FROM schema_migrations ORDER BY version',
+          )
+          .all(),
+      ).toEqual(
+        expect.arrayContaining(
+          Array.from({ length: 7 }, (_, index) => ({
+            version: index + 1,
+            name: expect.any(String),
+            checksum: expect.stringMatching(/^[0-9a-f]{64}$/),
+          })),
+        ),
+      );
+    } finally {
+      upgradedDatabase.close();
+    }
+  });
+
+  it('keeps the 006 receipt parent empty and insert-blocked while allowing NULL candidate references', async () => {
+    await initializeCompanionDatabaseAndAnchor(request);
+    const database = openCompanionDatabase(request.databasePath, true);
+    try {
+      expect(() =>
+        database
+          .prepare('INSERT INTO application_receipts (id) VALUES (?)')
+          .run(randomUUID()),
+      ).toThrow('application receipts are not enabled');
+      expect(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM application_receipts')
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(() =>
+        database
+          .prepare('INSERT OR IGNORE INTO application_receipts (id) VALUES (?)')
+          .run(randomUUID()),
+      ).toThrow('application receipts are not enabled');
+      expect(
+        database
+          .prepare('SELECT COUNT(*) AS count FROM application_receipts')
+          .get(),
+      ).toEqual({ count: 0 });
+
+      database
+        .prepare(
+          `INSERT INTO amazon_charge_matches
+           (id, matcher_version, currency_code, score, reason_codes_json, status, created_at, decided_at)
+           VALUES ('migration-candidate', 2, 'USD', 100, '["exact-parent-sum"]', 'pending', '2026-01-01T00:00:00.000Z', NULL)`,
+        )
+        .run();
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO amazon_match_transactions
+             (match_id, actual_transaction_id, actual_target_version, allocated_amount, application_status, application_receipt_id)
+             VALUES ('migration-candidate', 'actual-parent', ?, -100, 'pending', NULL)`,
+          )
+          .run('a'.repeat(64)),
+      ).not.toThrow();
+      expect(() =>
+        database
+          .prepare(
+            "UPDATE amazon_match_transactions SET application_status = 'applying', application_receipt_id = ? WHERE match_id = 'migration-candidate'",
+          )
+          .run(randomUUID()),
+      ).toThrow('FOREIGN KEY constraint failed');
+      expect(
+        database
+          .prepare("PRAGMA foreign_key_list('amazon_match_transactions')")
+          .all(),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            table: 'application_receipts',
+            from: 'application_receipt_id',
+            to: 'id',
+          }),
+        ]),
+      );
+      expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+      expect(database.prepare('PRAGMA integrity_check').get()).toEqual({
+        integrity_check: 'ok',
+      });
+      expect(
+        database
+          .prepare(
+            "SELECT write_capability_state FROM companion_instance WHERE singleton_key = 'main'",
+          )
+          .get(),
+      ).toEqual({ write_capability_state: 'disabled' });
+    } finally {
+      database.close();
+    }
   });
 
   it('fails closed and records recovery_required when the anchor cannot be proven', async () => {
@@ -99,7 +246,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 5,
+      schemaVersion: 7,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -128,7 +275,7 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
     ).resolves.toEqual({
-      schemaVersion: 5,
+      schemaVersion: 7,
       writeCapabilityState: 'recovery_required',
     });
   });
@@ -146,11 +293,11 @@ describe('FIN-11 companion database lifecycle', () => {
       expectedCurrencyCode: request.budgetCurrencyCode,
     };
     await expect(createCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 7,
       budgetKeyHash: request.budgetKeyHash,
     });
     await expect(verifyCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 7,
     });
     const database = openCompanionDatabase(request.databasePath, true);
     try {
@@ -164,7 +311,7 @@ describe('FIN-11 companion database lifecycle', () => {
     }
     await writeFile(request.anchorPath, '{"synthetic":"damaged"}');
     await expect(restoreCompanionOnlyBackup(backup)).resolves.toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 7,
       budgetKeyHash: request.budgetKeyHash,
     });
     await expect(
@@ -175,7 +322,24 @@ describe('FIN-11 companion database lifecycle', () => {
         expectedBudgetKeyHash: request.budgetKeyHash,
         expectedCurrencyCode: request.budgetCurrencyCode,
       }),
-    ).resolves.toEqual({ schemaVersion: 5, writeCapabilityState: 'disabled' });
+    ).resolves.toEqual({ schemaVersion: 7, writeCapabilityState: 'disabled' });
+    const restoredDatabase = openCompanionDatabase(request.databasePath, true);
+    try {
+      expect(
+        restoredDatabase
+          .prepare('SELECT COUNT(*) AS count FROM application_receipts')
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        restoredDatabase
+          .prepare(
+            "SELECT write_capability_state FROM companion_instance WHERE singleton_key = 'main'",
+          )
+          .get(),
+      ).toEqual({ write_capability_state: 'disabled' });
+    } finally {
+      restoredDatabase.close();
+    }
     expect((await readFile(backup.backupPath)).length).toBeGreaterThan(0);
   });
 

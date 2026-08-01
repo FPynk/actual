@@ -163,7 +163,7 @@ describe('FIN-11 database safety gates', () => {
       initializeCompanionDatabaseAndAnchor(initialization),
     ).resolves.toMatchObject({
       instanceId,
-      schemaVersion: 5,
+      schemaVersion: 7,
     });
   });
 
@@ -174,7 +174,7 @@ describe('FIN-11 database safety gates', () => {
     ],
     [
       'newer schema version',
-      "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (6, '006-future.sql', '2026-01-01T00:00:00.000Z', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
+      "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (8, '008-future.sql', '2026-01-01T00:00:00.000Z', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
     ],
   ])('refuses a %s without changing the bound database', async (_, sql) => {
     await initializeCompanionDatabaseAndAnchor(initialization);
@@ -336,7 +336,7 @@ describe('FIN-11 database safety gates', () => {
           },
         },
       ),
-    ).resolves.toMatchObject({ ok: true, schemaVersion: 5 });
+    ).resolves.toMatchObject({ ok: true, schemaVersion: 7 });
     expect(observedExclusiveLock).toBe(true);
   });
 
@@ -455,7 +455,7 @@ describe('FIN-11 database safety gates', () => {
           expectedCurrencyCode: initialization.budgetCurrencyCode,
         }),
       ).resolves.toEqual({
-        schemaVersion: 5,
+        schemaVersion: 7,
         writeCapabilityState: 'recovery_required',
       });
     },

@@ -359,7 +359,7 @@ describe('runFinanceCompanionCommand', () => {
       expect(standardError).toEqual([]);
       expect(JSON.parse(standardOutput.at(-1) ?? '')).toEqual({
         ok: true,
-        schemaVersion: 5,
+        schemaVersion: 7,
         writeCapabilityState: 'disabled',
       });
     } finally {

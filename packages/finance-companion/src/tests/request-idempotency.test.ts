@@ -1,4 +1,5 @@
 import {
+  calculateAmazonUploadRequestReplayHash,
   calculateRequestReplayHash,
   createAmazonUploadSemanticRequest,
 } from '#http/request-idempotency';
@@ -20,7 +21,7 @@ describe('FIN-13 request semantic hashing', () => {
   it('rejects unknown upload fields and accepts only byte hashes instead of raw bytes', () => {
     const valid = {
       adapterVersion: 'amazon-import/v1',
-      mediaKind: 'text/csv',
+      mediaKind: 'amazon-export-json',
       byteHash: 'a'.repeat(64),
     };
     expect(createAmazonUploadSemanticRequest(valid)).toEqual(valid);
@@ -30,5 +31,30 @@ describe('FIN-13 request semantic hashing', () => {
     expect(() =>
       calculateRequestReplayHash({ amount: Number.MAX_SAFE_INTEGER + 1 }),
     ).toThrow('safe integers');
+  });
+
+  it('hashes only the exact Amazon semantic projection from a runtime upload', () => {
+    const semanticRequest = {
+      adapterVersion: 'amazon-import/v1' as const,
+      mediaKind: 'amazon-export-json' as const,
+      byteHash: 'a'.repeat(64),
+    };
+    let runtimeFieldWasRead = false;
+    const runtimeUpload = {
+      ...semanticRequest,
+      get bytes(): never {
+        runtimeFieldWasRead = true;
+        throw new Error('Raw bytes must not be traversed by semantic hashing.');
+      },
+      get discard(): never {
+        runtimeFieldWasRead = true;
+        throw new Error('Cleanup functions must not be traversed by hashing.');
+      },
+    };
+
+    expect(calculateAmazonUploadRequestReplayHash(runtimeUpload)).toBe(
+      calculateRequestReplayHash(semanticRequest),
+    );
+    expect(runtimeFieldWasRead).toBe(false);
   });
 });

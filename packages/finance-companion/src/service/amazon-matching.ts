@@ -225,15 +225,22 @@ export function createSqliteAmazonMatchingRepository(databasePath: string) {
       const database = openCompanionDatabase(databasePath, true);
       try {
         database
-          .prepare(
-            "UPDATE amazon_charge_matches SET status = 'stale' WHERE id = ? AND status = 'pending'",
-          )
-          .run(matchId);
-        database
-          .prepare(
-            "UPDATE amazon_match_transactions SET application_status = 'stale' WHERE match_id = ? AND application_status = 'pending'",
-          )
-          .run(matchId);
+          .transaction(() => {
+            database
+              .prepare(
+                "UPDATE amazon_charge_matches SET status = 'stale' WHERE id = ? AND status = 'pending'",
+              )
+              .run(matchId);
+            database
+              .prepare(
+                "UPDATE amazon_match_transactions SET application_status = 'stale' WHERE match_id = ? AND application_status = 'pending'",
+              )
+              .run(matchId);
+            database
+              .prepare('DELETE FROM amazon_review_deferrals WHERE match_id = ?')
+              .run(matchId);
+          })
+          .immediate();
       } finally {
         database.close();
       }

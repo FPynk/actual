@@ -134,7 +134,7 @@ describe.sequential('finance companion HTTP security boundary', () => {
     const session = await login(server);
     const traversal = createMultipartUpload(
       'boundary-traversal',
-      '../../orders.csv',
+      '../../orders.json',
       Buffer.from('date,amount\n'),
     );
     expect(
@@ -149,11 +149,22 @@ describe.sequential('finance companion HTTP security boundary', () => {
 
     const archive = createMultipartUpload(
       'boundary-archive',
-      'orders.csv',
+      'orders.json',
       Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00]),
     );
     expect(
       await authenticatedUpload(server, session, 'boundary-archive', archive),
+    ).toMatch(/^HTTP\/1\.1 400 /);
+    expect(await readdir(uploadTemporaryParentDirectory)).toEqual([]);
+
+    const csv = createMultipartUpload(
+      'boundary-csv',
+      'orders.csv',
+      Buffer.from('date,amount\n2026-01-01,100\n'),
+      'text/csv',
+    );
+    expect(
+      await authenticatedUpload(server, session, 'boundary-csv', csv),
     ).toMatch(/^HTTP\/1\.1 400 /);
     expect(await readdir(uploadTemporaryParentDirectory)).toEqual([]);
 
@@ -191,8 +202,8 @@ describe.sequential('finance companion HTTP security boundary', () => {
 
     const valid = createMultipartUpload(
       'boundary-valid',
-      'orders.csv',
-      Buffer.from('date,amount\n2026-01-01,100\n'),
+      'orders.json',
+      Buffer.from('{}'),
     );
     const validResponse = await authenticatedUpload(
       server,
@@ -200,7 +211,7 @@ describe.sequential('finance companion HTTP security boundary', () => {
       'boundary-valid',
       valid,
     );
-    expect(validResponse).toMatch(/^HTTP\/1\.1 501 /);
+    expect(validResponse).toMatch(/^HTTP\/1\.1 500 /);
     expect(validResponse.toLowerCase()).not.toContain('access-control-allow');
     expect(await readdir(uploadTemporaryParentDirectory)).toEqual([]);
   });
@@ -211,8 +222,8 @@ describe.sequential('finance companion HTTP security boundary', () => {
     const partialBody = Buffer.from(
       [
         '--boundary-abort',
-        'Content-Disposition: form-data; name="file"; filename="orders.csv"',
-        'Content-Type: text/csv',
+        'Content-Disposition: form-data; name="file"; filename="orders.json"',
+        'Content-Type: application/json',
         '',
         'date,amount\n',
       ].join('\r\n'),
@@ -270,13 +281,14 @@ function createMultipartUpload(
   boundary: string,
   filename: string,
   file: Buffer,
+  contentType = 'application/json',
 ): Buffer {
   return Buffer.concat([
     Buffer.from(
       [
         `--${boundary}`,
         `Content-Disposition: form-data; name="file"; filename="${filename}"`,
-        'Content-Type: text/csv',
+        `Content-Type: ${contentType}`,
         '',
         '',
       ].join('\r\n'),

@@ -654,6 +654,17 @@ application request and receipt can mutate only one parent/split graph. Group
 status is `partially_applied` until every selected parent is applied; an error
 on one parent does not make another parent's receipt ambiguous.
 
+#### `amazon_review_deferrals`
+
+| Column        | Type | Constraint              | Purpose                                 |
+| ------------- | ---- | ----------------------- | --------------------------------------- |
+| `match_id`    | text | primary/foreign key     | Deferred Amazon charge-match candidate  |
+| `deferred_at` | text | not null, UTC timestamp | Time the companion-only choice was made |
+
+Deferral is an overlay on a pending match, not a new 005 match status. Reopen
+deletes the row. Any stale revalidation deletes the row in the same companion
+transaction so stale always overrides deferred.
+
 #### `amazon_transaction_item_allocations`
 
 | Column                        | Type    | Constraint                         | Purpose                                      |
@@ -923,6 +934,15 @@ a companion ownership marker and configuration checks rather than claimed as
 universal enforcement. Network filesystems are unsupported.
 
 #### `application_receipts`
+
+Migration 006 currently reserves only the strict UUID `id` parent required by
+the immutable 005 Amazon foreign keys. An unconditional trigger rejects every
+insert, including `INSERT OR IGNORE`, so this compatibility table stays empty
+and does not enable receipts or Actual writes. The full schema below remains a
+future gated design. FIN-44 must implement it in migration 008 or later by
+asserting `COUNT(*) = 0`, rebuilding the guaranteed-empty parent with foreign
+keys enabled, recreating its primary/unique keys and child foreign keys, and
+running `foreign_key_check` before commit.
 
 | Column                        | Type    | Constraint           | Purpose                                                                                  |
 | ----------------------------- | ------- | -------------------- | ---------------------------------------------------------------------------------------- |

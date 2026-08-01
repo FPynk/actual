@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { request as createRequest, createServer } from 'node:http';
 import type { Server } from 'node:http';
 import os from 'node:os';
@@ -8,8 +8,11 @@ import path from 'node:path';
 import type { FinanceCompanionConfiguration } from '#config';
 import { openCompanionDatabase } from '#database/connection';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
+import { createSqliteSourceIdentityRepository } from '#database/source-identity-repository';
 import { createSqliteLocalPrincipalRepository } from '#database/sqlite-local-principal-repository';
+import { calculateRequestReplayHash } from '#http/request-idempotency';
 import { createFinanceCompanionHttpApplication } from '#http/server';
+import { SqliteReconciliationCandidateRepository } from '#reconciliation/sqlite-reconciliation-candidate-repository';
 import {
   createFinanceCompanionSecurity,
   hashOwnerBootstrapCredential,
@@ -22,6 +25,8 @@ describe('FIN-13 HTTP request idempotency', () => {
   let temporaryDirectory: string;
   let databasePath: string;
   let server: Server;
+  let reviewDatabase: ReturnType<typeof openCompanionDatabase>;
+  let validExport: string;
 
   beforeEach(async () => {
     temporaryDirectory = await mkdtemp(
@@ -62,6 +67,14 @@ describe('FIN-13 HTTP request idempotency', () => {
       localPrincipalRepository:
         createSqliteLocalPrincipalRepository(databasePath),
     });
+    validExport = await readFile(
+      path.resolve(
+        import.meta.dirname,
+        'fixtures/amazon-export-one-order.json',
+      ),
+      'utf8',
+    );
+    reviewDatabase = openCompanionDatabase(databasePath, true);
     server = createServer(
       createFinanceCompanionHttpApplication(
         configuration,
@@ -69,6 +82,36 @@ describe('FIN-13 HTTP request idempotency', () => {
         security,
         createSqliteRequestReplayRepository(databasePath),
         temporaryDirectory,
+        {
+          adapter: {
+            execute: async request => {
+              if (request.kind !== 'read-budget-snapshot') {
+                return { kind: 'read-actual-target', target: null };
+              }
+              return {
+                kind: 'read-budget-snapshot',
+                snapshot: {
+                  contractVersion: 1,
+                  budget: {
+                    budgetKeyHash: configuration.budgetKeyHash,
+                    currencyCode: configuration.budgetCurrencyCode,
+                    capturedAt: '2026-01-10T00:00:00.000Z',
+                  },
+                  transactions: [],
+                },
+              };
+            },
+            getHealth: () => 'healthy',
+            getActiveOperationStatus: () => null,
+          },
+          amazonDatabasePath: databasePath,
+          candidateRepository: new SqliteReconciliationCandidateRepository(
+            reviewDatabase,
+          ),
+          sourceIdentityRepository:
+            createSqliteSourceIdentityRepository(databasePath),
+          now: () => new Date('2026-01-10T00:00:00.000Z'),
+        },
       ),
     );
     await listen(server);
@@ -76,6 +119,7 @@ describe('FIN-13 HTTP request idempotency', () => {
 
   afterEach(async () => {
     await close(server);
+    reviewDatabase.close();
     await rm(temporaryDirectory, { recursive: true, force: true });
   });
 
@@ -85,33 +129,51 @@ describe('FIN-13 HTTP request idempotency', () => {
       server,
       session,
       'a-valid-idempotency-key',
-      'one',
+      validExport,
     );
-    expect(first.statusCode).toBe(501);
+    expect(first.statusCode).toBe(201);
     expect(first.headers['content-type']).toBe(
-      'application/problem+json; charset=utf-8',
+      'application/json; charset=utf-8',
     );
     expect(first.body).toMatchObject({
-      code: 'feature_not_implemented',
+      status: 'completed',
+      replayed: false,
+      receipt: { acceptedCount: 3, rejectedCount: 0 },
     });
     expect(Object.keys(first.body).sort()).toEqual([
-      'code',
-      'message',
-      'requestId',
-      'retryable',
+      'candidateCount',
+      'receipt',
+      'replayed',
+      'status',
+      'version',
     ]);
     expect(JSON.stringify(first.body)).not.toContain(credential);
     expect(JSON.stringify(first.body)).not.toContain(session.csrfToken);
+    expect(
+      reviewDatabase
+        .prepare(
+          'SELECT request_hash AS requestHash FROM request_replays WHERE idempotency_key = ?',
+        )
+        .get('a-valid-idempotency-key'),
+    ).toEqual({
+      requestHash: calculateRequestReplayHash({
+        adapterVersion: 'amazon-import/v1',
+        byteHash: createHash('sha256')
+          .update(Buffer.from(validExport, 'ascii'))
+          .digest('hex'),
+        mediaKind: 'amazon-export-json',
+      }),
+    });
 
     const replay = await upload(
       server,
       session,
       'a-valid-idempotency-key',
-      'one',
+      validExport,
     );
-    expect(replay.statusCode).toBe(501);
+    expect(replay.statusCode).toBe(201);
     expect(replay.headers['content-type']).toBe(
-      'application/problem+json; charset=utf-8',
+      'application/json; charset=utf-8',
     );
     expect(replay.body).toEqual(first.body);
 
@@ -119,7 +181,7 @@ describe('FIN-13 HTTP request idempotency', () => {
       server,
       session,
       'a-valid-idempotency-key',
-      'two',
+      `${validExport}\n`,
     );
     expect(changed.statusCode).toBe(409);
     expect(changed.body).toMatchObject({
@@ -141,17 +203,22 @@ describe('FIN-13 HTTP request idempotency', () => {
       server,
       session,
       'a-valid-idempotency-key',
-      'one',
+      validExport,
     );
     expect(inProgress.statusCode).toBe(409);
     expect(inProgress.body).toMatchObject({
       code: 'operation_in_progress',
       message: 'The operation is already in progress.',
     });
+    expect(
+      (await readdir(temporaryDirectory)).filter(name =>
+        name.startsWith('finance-companion-upload-'),
+      ),
+    ).toEqual([]);
 
-    const missing = await upload(server, session, undefined, 'three');
+    const missing = await upload(server, session, undefined, validExport);
     expect(missing.statusCode).toBe(400);
-    const invalid = await upload(server, session, 'short', 'four');
+    const invalid = await upload(server, session, 'short', validExport);
     expect(invalid.statusCode).toBe(400);
   });
 });
@@ -191,10 +258,10 @@ function upload(
   const body = Buffer.from(
     [
       `--${boundary}`,
-      'Content-Disposition: form-data; name="file"; filename="orders.csv"',
-      'Content-Type: text/csv',
+      'Content-Disposition: form-data; name="file"; filename="orders.json"',
+      'Content-Type: application/json',
       '',
-      `date,amount\n2026-01-01,${content}`,
+      content,
       `--${boundary}--`,
       '',
     ].join('\r\n'),
