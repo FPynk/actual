@@ -1,4 +1,20 @@
 import './styles.css';
+import {
+  classificationConfirmationCopy,
+  classificationReviewRefFromPath,
+  isClassificationReviewDetail,
+  isClassificationReviewList,
+  renderClassificationDetailBody,
+  renderClassificationListBody,
+} from './classification-review.ts';
+import type {
+  ClassificationReviewAction,
+  ClassificationReviewDetail,
+  ClassificationReviewList,
+} from './classification-review.ts';
+import { formatMinorUnits } from './format.ts';
+
+export { formatMinorUnits } from './format.ts';
 
 export type ReconciliationReviewCandidate = Readonly<{
   version: 1;
@@ -96,6 +112,45 @@ export class FinanceCompanionApi {
     return body;
   }
 
+  async listClassificationReviews(): Promise<ClassificationReviewList> {
+    return this.getJson(
+      '/api/v1/classification-reviews',
+      isClassificationReviewList,
+    );
+  }
+
+  async readClassificationReview(
+    reviewRef: string,
+  ): Promise<ClassificationReviewDetail> {
+    return this.getJson(
+      `/api/v1/classification-reviews/${encodeURIComponent(reviewRef)}`,
+      isClassificationReviewDetail,
+    );
+  }
+
+  async decideClassificationReview(
+    reviewRef: string,
+    decision: 'approve' | 'reject',
+    action: ClassificationReviewAction | null,
+  ): Promise<ClassificationReviewDetail> {
+    if (this.session === null) {
+      throw new Error('Your session has ended. Please sign in again.');
+    }
+    const response = await this.request(
+      `/api/v1/classification-reviews/${encodeURIComponent(reviewRef)}/decision`,
+      jsonRequest(
+        'POST',
+        decision === 'approve' ? { action, decision } : { decision },
+        this.session.csrfToken,
+      ),
+    );
+    const body = await readJson(response);
+    if (!response.ok || !isClassificationReviewDetail(body)) {
+      throw new Error(readProblem(body));
+    }
+    return body;
+  }
+
   private async getJson<T>(
     url: string,
     valid: (value: unknown) => value is T,
@@ -157,7 +212,58 @@ export function mountFinanceCompanionApplication(
       error => renderError(root, error, renderList),
     );
   };
+  const renderClassificationList = () => {
+    root.innerHTML = renderLoading('Loading classification suggestions…');
+    void api.listClassificationReviews().then(
+      list => {
+        root.innerHTML = reviewLayout(
+          'Classification review',
+          renderClassificationListBody(list),
+          'classification',
+        );
+        bindClassificationPage(
+          root,
+          api,
+          renderClassificationList,
+          renderClassificationDetail,
+        );
+        root
+          .querySelector<HTMLAnchorElement>('[data-classification-link]')
+          ?.focus();
+      },
+      error => renderError(root, error, renderClassificationList),
+    );
+  };
+  const renderClassificationDetail = (reviewRef: string) => {
+    root.innerHTML = renderLoading('Loading classification suggestion…');
+    void api.readClassificationReview(reviewRef).then(
+      review => {
+        root.innerHTML = reviewLayout(
+          'Classification suggestion',
+          renderClassificationDetailBody(review),
+          'classification',
+        );
+        bindClassificationPage(
+          root,
+          api,
+          renderClassificationList,
+          renderClassificationDetail,
+          review,
+        );
+        root.querySelector<HTMLElement>('#review-title')?.focus();
+      },
+      error => renderError(root, error, renderClassificationList),
+    );
+  };
   const renderAuthenticatedRoute = () => {
+    if (window.location.pathname.startsWith('/classification')) {
+      const reviewRef = classificationReviewRefFromPath(
+        window.location.pathname,
+      );
+      if (reviewRef === null) renderClassificationList();
+      else renderClassificationDetail(reviewRef);
+      return;
+    }
     const reviewId = reconciliationReviewIdFromPath(window.location.pathname);
     if (reviewId === null) renderList();
     else renderDetail(reviewId);
@@ -178,6 +284,31 @@ export function mountFinanceCompanionApplication(
     renderDetail(reviewId);
   });
   root.addEventListener('click', event => {
+    const link = (event.target as Element).closest<HTMLAnchorElement>(
+      '[data-classification-link]',
+    );
+    if (link === null) return;
+    event.preventDefault();
+    const reviewRef = link.dataset.classificationLink;
+    if (reviewRef === undefined) return;
+    window.history.pushState(
+      {},
+      '',
+      `/classification/${encodeURIComponent(reviewRef)}`,
+    );
+    renderClassificationDetail(reviewRef);
+  });
+  root.addEventListener('click', event => {
+    const section = (event.target as Element).closest<HTMLAnchorElement>(
+      '[data-review-section]',
+    )?.dataset.reviewSection;
+    if (section !== 'reconciliation' && section !== 'classification') return;
+    event.preventDefault();
+    window.history.pushState({}, '', `/${section}`);
+    if (section === 'classification') renderClassificationList();
+    else renderList();
+  });
+  root.addEventListener('click', event => {
     if ((event.target as Element).closest('[data-logout]') === null) return;
     void api.logout().then(
       () => {
@@ -188,15 +319,13 @@ export function mountFinanceCompanionApplication(
     );
   });
   window.addEventListener('popstate', () => {
-    const reviewId = reconciliationReviewIdFromPath(window.location.pathname);
-    if (reviewId === null) renderList();
-    else renderDetail(reviewId);
+    renderAuthenticatedRoute();
   });
   renderLogin();
 }
 
 export function renderFinanceCompanionLoginShell(message = ''): string {
-  return `<section aria-labelledby="finance-companion-title" class="login-shell"><h1 id="finance-companion-title">Finance Companion</h1><p>Sign in to review local reconciliation suggestions.</p><form aria-label="Sign in"><label for="owner-credential">Owner credential</label><input id="owner-credential" name="credential" type="password" autocomplete="off" required /><button type="submit">Sign in</button></form><p role="status" aria-live="polite">${escapeHtml(message)}</p></section>`;
+  return `<section aria-labelledby="finance-companion-title" class="login-shell"><h1 id="finance-companion-title">Finance Companion</h1><p>Sign in to review local finance suggestions.</p><form aria-label="Sign in"><label for="owner-credential">Owner credential</label><input id="owner-credential" name="credential" type="password" autocomplete="off" required /><button type="submit">Sign in</button></form><p role="status" aria-live="polite">${escapeHtml(message)}</p></section>`;
 }
 
 export function renderLoading(message: string): string {
@@ -210,7 +339,7 @@ export function renderReconciliationList(
     list.candidates.length === 0
       ? '<p class="empty-state">No reconciliation suggestions are ready to review.</p>'
       : `<ol class="candidate-list">${list.candidates.map(candidate => `<li><a data-review-link="${escapeHtml(candidate.reviewId)}" href="/reconciliation/${encodeURIComponent(candidate.reviewId)}"><strong>${escapeHtml(candidate.confidence)}</strong><span>${candidate.score}/100 · ${escapeHtml(statusLabel(candidate.status))}${candidate.competingCandidateCount > 0 ? ` · ${candidate.competingCandidateCount} competing suggestion${candidate.competingCandidateCount === 1 ? '' : 's'}` : ''}</span></a></li>`).join('')}</ol>`;
-  return reviewLayout('Reconciliation review', body);
+  return reviewLayout('Reconciliation review', body, 'reconciliation');
 }
 
 export function renderReconciliationDetail(
@@ -233,11 +362,16 @@ export function renderReconciliationDetail(
   return reviewLayout(
     'Reconciliation suggestion',
     `<a class="back" href="/reconciliation" data-review-list>Back to suggestions</a><h2 id="review-title" tabindex="-1">${escapeHtml(candidate.confidence)} (${candidate.score}/100)</h2><p>${escapeHtml(statusLabel(candidate.status))}</p>${status}${renderEvidence(candidate.evidence)}<h3>Why this was suggested</h3><ul>${candidate.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>${actions}`,
+    'reconciliation',
   );
 }
 
-function reviewLayout(title: string, body: string): string {
-  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header>${body}</main>`;
+function reviewLayout(
+  title: string,
+  body: string,
+  activeSection: 'reconciliation' | 'classification',
+): string {
+  return `<main class="review-shell" aria-labelledby="review-page-title"><header><h1 id="review-page-title">${escapeHtml(title)}</h1><button class="secondary" data-logout type="button">Sign out</button></header><nav class="review-navigation" aria-label="Review types"><a ${activeSection === 'reconciliation' ? 'aria-current="page"' : ''} data-review-section="reconciliation" href="/reconciliation">Reconciliation</a><a ${activeSection === 'classification' ? 'aria-current="page"' : ''} data-review-section="classification" href="/classification">Classification</a></nav>${body}</main>`;
 }
 function bindPage(
   root: HTMLElement,
@@ -290,6 +424,103 @@ function bindPage(
       );
     });
 }
+
+function bindClassificationPage(
+  root: HTMLElement,
+  api: FinanceCompanionApi,
+  renderList: () => void,
+  renderDetail: (reviewRef: string) => void,
+  review?: ClassificationReviewDetail,
+): void {
+  root
+    .querySelector<HTMLAnchorElement>('[data-classification-list]')
+    ?.addEventListener('click', event => {
+      event.preventDefault();
+      window.history.pushState({}, '', '/classification');
+      renderList();
+    });
+  if (review === undefined) return;
+  const dialog = root.querySelector<HTMLDialogElement>('dialog');
+  let selected:
+    | Readonly<{
+        decision: 'approve' | 'reject';
+        action: ClassificationReviewAction | null;
+      }>
+    | undefined;
+  let openingButton: HTMLButtonElement | undefined;
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-classification-decision]')
+    .forEach(button =>
+      button.addEventListener('click', () => {
+        openingButton = button;
+        selected = {
+          decision:
+            button.dataset.classificationDecision === 'approve'
+              ? 'approve'
+              : 'reject',
+          action:
+            button.dataset.classificationAction === 'categorize_once'
+              ? 'categorize_once'
+              : button.dataset.classificationAction === 'create_rule'
+                ? 'create_rule'
+                : null,
+        };
+        const confirmationCopy = dialog?.querySelector<HTMLElement>(
+          '[data-confirmation-copy]',
+        );
+        if (confirmationCopy !== null && confirmationCopy !== undefined) {
+          confirmationCopy.textContent = classificationConfirmationCopy(
+            review,
+            selected.decision,
+            selected.action,
+          );
+        }
+        dialog?.showModal();
+        dialog
+          ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+          ?.focus();
+      }),
+    );
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-cancel-decision]')
+    ?.addEventListener('click', () => {
+      selected = undefined;
+      dialog.close();
+      openingButton?.focus();
+    });
+  dialog
+    ?.querySelector<HTMLButtonElement>('[data-confirm-decision]')
+    ?.addEventListener('click', () => {
+      if (selected === undefined) return;
+      const decision = selected;
+      dialog.close();
+      root.innerHTML = renderLoading(
+        'Rechecking Actual before recording your decision…',
+      );
+      void api
+        .decideClassificationReview(
+          review.reviewRef,
+          decision.decision,
+          decision.action,
+        )
+        .then(
+          result => {
+            root.innerHTML = reviewLayout(
+              'Classification suggestion',
+              renderClassificationDetailBody(result),
+              'classification',
+            );
+            bindClassificationPage(root, api, renderList, renderDetail, result);
+            focusReconciliationReviewOutcome(selector =>
+              root.querySelector<HTMLElement>(selector),
+            );
+          },
+          error =>
+            renderError(root, error, () => renderDetail(review.reviewRef)),
+        );
+    });
+}
+
 function renderError(
   root: HTMLElement,
   error: unknown,
@@ -411,35 +642,6 @@ function renderEvidenceColumn(
   currencyCode: string,
 ): string {
   return `<section><h4>${escapeHtml(title)}</h4><dl><dt>Date</dt><dd>${escapeHtml(evidence.date)}</dd><dt>Amount</dt><dd class="financial-number">${escapeHtml(formatMinorUnits(evidence.amountMinorUnits, currencyCode))}</dd><dt>Payee or merchant</dt><dd>${escapeHtml(evidence.merchant)}</dd><dt>Account</dt><dd>${escapeHtml(evidence.accountName)}</dd><dt>State</dt><dd>${escapeHtml(evidence.state)}</dd></dl></section>`;
-}
-export function formatMinorUnits(
-  amountMinorUnits: number,
-  currencyCode: string,
-): string {
-  if (!Number.isSafeInteger(amountMinorUnits)) {
-    throw new TypeError('The minor-unit amount must be a safe integer.');
-  }
-  let fractionDigits: number;
-  try {
-    const resolvedFractionDigits = new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currencyCode,
-    }).resolvedOptions().maximumFractionDigits;
-    if (resolvedFractionDigits === undefined) {
-      throw new RangeError('Currency fraction digits are unavailable.');
-    }
-    fractionDigits = resolvedFractionDigits;
-  } catch {
-    return `${amountMinorUnits} minor units (${currencyCode || 'unknown currency'})`;
-  }
-  const sign = amountMinorUnits < 0 ? '-' : '';
-  const digits = Math.abs(amountMinorUnits)
-    .toString()
-    .padStart(fractionDigits + 1, '0');
-  if (fractionDigits === 0) return `${sign}${digits} ${currencyCode}`;
-  const integerDigits = digits.slice(0, -fractionDigits);
-  const decimalDigits = digits.slice(-fractionDigits);
-  return `${sign}${integerDigits}.${decimalDigits} ${currencyCode}`;
 }
 function readProblem(value: unknown): string {
   return typeof value === 'object' &&
