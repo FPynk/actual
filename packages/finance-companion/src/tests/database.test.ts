@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +7,7 @@ import path from 'node:path';
 import {
   createCompanionOnlyBackup,
   restoreCompanionOnlyBackup,
+  SimulatedRestoreInterruption,
   verifyCompanionOnlyBackup,
 } from '#database/backup';
 import { openCompanionDatabase } from '#database/connection';
@@ -131,7 +133,7 @@ describe('FIN-11 companion database lifecycle', () => {
     });
   });
 
-  it('creates and verifies a backup while restore activation remains gated', async () => {
+  it('creates, verifies, and restores a paired generation-zero backup', async () => {
     const initialized = await initializeCompanionDatabaseAndAnchor(request);
     const backup = {
       databasePath: request.databasePath,
@@ -150,9 +152,177 @@ describe('FIN-11 companion database lifecycle', () => {
     await expect(verifyCompanionOnlyBackup(backup)).resolves.toMatchObject({
       schemaVersion: 5,
     });
-    await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
-      'explicit destructive-capability authorization',
-    );
+    const database = openCompanionDatabase(request.databasePath, true);
+    try {
+      database
+        .prepare(
+          "UPDATE companion_instance SET write_capability_state = 'recovery_required' WHERE singleton_key = 'main'",
+        )
+        .run();
+    } finally {
+      database.close();
+    }
+    await writeFile(request.anchorPath, '{"synthetic":"damaged"}');
+    await expect(restoreCompanionOnlyBackup(backup)).resolves.toMatchObject({
+      schemaVersion: 5,
+      budgetKeyHash: request.budgetKeyHash,
+    });
+    await expect(
+      verifyCompanionIntegrity({
+        databasePath: request.databasePath,
+        anchorPath: request.anchorPath,
+        anchorMacKey: request.anchorMacKey,
+        expectedBudgetKeyHash: request.budgetKeyHash,
+        expectedCurrencyCode: request.budgetCurrencyCode,
+      }),
+    ).resolves.toEqual({ schemaVersion: 5, writeCapabilityState: 'disabled' });
     expect((await readFile(backup.backupPath)).length).toBeGreaterThan(0);
   });
+
+  it.each([
+    'intent-written',
+    'database-original-staged',
+    'database-replaced',
+    'anchor-original-staged',
+    'anchor-replaced',
+  ] as const)(
+    'fails closed after a synthetic interruption at %s',
+    async phase => {
+      const initialized = await initializeCompanionDatabaseAndAnchor(request);
+      const backup = {
+        databasePath: request.databasePath,
+        anchorPath: request.anchorPath,
+        backupPath: path.join(temporaryDirectory, 'companion.backup'),
+        encryptionKey: randomBytes(32),
+        anchorMacKey: request.anchorMacKey,
+        expectedInstanceId: initialized.instanceId,
+        expectedBudgetKeyHash: request.budgetKeyHash,
+        expectedCurrencyCode: request.budgetCurrencyCode,
+      };
+      await createCompanionOnlyBackup(backup);
+
+      await expect(
+        restoreCompanionOnlyBackup(backup, {
+          afterPhase: reachedPhase => {
+            if (reachedPhase === phase) {
+              throw new SimulatedRestoreInterruption();
+            }
+          },
+        }),
+      ).rejects.toBeInstanceOf(SimulatedRestoreInterruption);
+      await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
+        'requires recovery',
+      );
+      if (phase === 'database-original-staged') {
+        expect(existsSync(request.databasePath)).toBe(false);
+      } else if (phase === 'anchor-original-staged') {
+        expect(existsSync(request.databasePath)).toBe(true);
+        expect(existsSync(request.anchorPath)).toBe(false);
+      } else {
+        await expect(
+          verifyCompanionIntegrity({
+            databasePath: request.databasePath,
+            anchorPath: request.anchorPath,
+            anchorMacKey: request.anchorMacKey,
+            expectedBudgetKeyHash: request.budgetKeyHash,
+            expectedCurrencyCode: request.budgetCurrencyCode,
+          }),
+        ).resolves.toMatchObject({ writeCapabilityState: 'recovery_required' });
+      }
+    },
+  );
+
+  it('restores the original pair after a non-crash replacement failure', async () => {
+    const initialized = await initializeCompanionDatabaseAndAnchor(request);
+    const backup = {
+      databasePath: request.databasePath,
+      anchorPath: request.anchorPath,
+      backupPath: path.join(temporaryDirectory, 'companion.backup'),
+      encryptionKey: randomBytes(32),
+      anchorMacKey: request.anchorMacKey,
+      expectedInstanceId: initialized.instanceId,
+      expectedBudgetKeyHash: request.budgetKeyHash,
+      expectedCurrencyCode: request.budgetCurrencyCode,
+    };
+    await createCompanionOnlyBackup(backup);
+    const originalDatabase = await readFile(request.databasePath);
+    const originalAnchor = await readFile(request.anchorPath);
+
+    await expect(
+      restoreCompanionOnlyBackup(backup, {
+        afterPhase: phase => {
+          if (phase === 'database-replaced') {
+            throw new Error('synthetic failure');
+          }
+        },
+      }),
+    ).rejects.toThrow('synthetic failure');
+    expect(await readFile(request.databasePath)).toEqual(originalDatabase);
+    expect(await readFile(request.anchorPath)).toEqual(originalAnchor);
+  });
+
+  it.each(['database-rollback', 'anchor-rollback', 'intent'] as const)(
+    'keeps the restored pair when cleanup cannot remove %s',
+    async failedArtifact => {
+      const initialized = await initializeCompanionDatabaseAndAnchor(request);
+      const backup = {
+        databasePath: request.databasePath,
+        anchorPath: request.anchorPath,
+        backupPath: path.join(temporaryDirectory, 'companion.backup'),
+        encryptionKey: randomBytes(32),
+        anchorMacKey: request.anchorMacKey,
+        expectedInstanceId: initialized.instanceId,
+        expectedBudgetKeyHash: request.budgetKeyHash,
+        expectedCurrencyCode: request.budgetCurrencyCode,
+      };
+      await createCompanionOnlyBackup(backup);
+      const database = openCompanionDatabase(request.databasePath, true);
+      try {
+        database
+          .prepare(
+            "UPDATE companion_instance SET write_capability_state = 'recovery_required' WHERE singleton_key = 'main'",
+          )
+          .run();
+      } finally {
+        database.close();
+      }
+      await writeFile(request.anchorPath, '{"synthetic":"damaged"}');
+
+      await expect(
+        restoreCompanionOnlyBackup(backup, {
+          beforeCleanupArtifactRemoval: artifact => {
+            if (artifact === failedArtifact) {
+              throw new Error('synthetic cleanup failure');
+            }
+          },
+        }),
+      ).rejects.toThrow('completed but cleanup requires recovery');
+      expect(existsSync(request.databasePath)).toBe(true);
+      expect(existsSync(request.anchorPath)).toBe(true);
+      const restoredDatabase = openCompanionDatabase(
+        request.databasePath,
+        true,
+      );
+      try {
+        expect(
+          restoredDatabase
+            .prepare(
+              'SELECT write_capability_state FROM companion_instance WHERE singleton_key = ?',
+            )
+            .get('main'),
+        ).toEqual({ write_capability_state: 'disabled' });
+      } finally {
+        restoredDatabase.close();
+      }
+      await expect(
+        readIntegrityAnchor(request.anchorPath, request.anchorMacKey),
+      ).resolves.toMatchObject({
+        budgetKeyHash: request.budgetKeyHash,
+        writeCapabilityGeneration: 0,
+      });
+      await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow(
+        'requires recovery',
+      );
+    },
+  );
 });

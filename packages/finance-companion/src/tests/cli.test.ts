@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -6,6 +7,7 @@ import path from 'node:path';
 
 import { runFinanceCompanionCommand } from '#cli';
 import type { FinanceCompanionConfiguration } from '#config';
+import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { FinanceCompanionSecurity } from '#security/local-security';
 import { BankSyncJobError } from '#service/bank-sync';
 
@@ -13,12 +15,7 @@ const commands = [
   'test:db',
   'test:adapter',
   'test:e2e',
-  'db:migrate',
   'owner:rotate',
-  'backup:create',
-  'backup:verify',
-  'backup:restore',
-  'integrity:verify',
   'smoke:container',
 ] as const;
 const scaffoldPackageScriptCommands = commands.filter(
@@ -134,6 +131,29 @@ describe('runFinanceCompanionCommand', () => {
     expect(standardError.join('')).toContain('operation_in_progress');
   });
 
+  it('does not expose an arbitrary bank-sync error code', async () => {
+    const standardError: string[] = [];
+    const exitCode = await runFinanceCompanionCommand(
+      'job:bank-sync',
+      () => undefined,
+      message => standardError.push(message),
+      undefined,
+      undefined,
+      undefined,
+      ['--idempotency-key', 'a-valid-idempotency-key'],
+      async () => {
+        const error = Object.assign(new Error('synthetic'), {
+          code: 'unexpected_error_code',
+        });
+        throw error;
+      },
+    );
+    expect(exitCode).toBe(64);
+    expect(standardError).toEqual([
+      '{"code":"configuration_error","ok":false}\n',
+    ]);
+  });
+
   it('translates a spawned CLI SIGTERM into a persisted cancellation result', async () => {
     const fixture = path.resolve(
       import.meta.dirname,
@@ -226,6 +246,98 @@ describe('runFinanceCompanionCommand', () => {
       expect(exitCode).toBe(0);
       expect(startedSecurity).toBeDefined();
       expect(await startedSecurity?.login(credential)).not.toBeNull();
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('runs synthetic backup restore and integrity verification through the CLI', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(os.tmpdir(), 'finance-companion-lifecycle-cli-'),
+    );
+    try {
+      const dataDirectory = path.join(temporaryDirectory, 'data');
+      await mkdir(dataDirectory);
+      const backupEncryptionKeyFile = path.join(
+        temporaryDirectory,
+        'backup.key',
+      );
+      const backupEncryptionKey = randomBytes(32);
+      const integrityMacKey = randomBytes(32);
+      await writeFile(backupEncryptionKeyFile, backupEncryptionKey, {
+        mode: 0o600,
+      });
+      const configuration: FinanceCompanionConfiguration = {
+        bindAddress: '127.0.0.1',
+        port: 4100,
+        origin: 'http://127.0.0.1:4100',
+        dataDirectory,
+        databasePath: path.join(dataDirectory, 'companion.sqlite'),
+        integrityAnchorPath: path.join(temporaryDirectory, 'integrity.anchor'),
+        integrityMacKeyFile: undefined,
+        integrityMacKey: integrityMacKey.toString('base64url'),
+        backupEncryptionKeyFile,
+        budgetKeyHash: 'a'.repeat(64),
+        budgetCurrencyCode: 'USD',
+        ownerBootstrapCredential: undefined,
+        ownerBootstrapCredentialFile: undefined,
+      };
+      await initializeCompanionDatabaseAndAnchor({
+        databasePath: configuration.databasePath,
+        migrationsDirectory: path.resolve(
+          import.meta.dirname,
+          '../../migrations',
+        ),
+        anchorPath: configuration.integrityAnchorPath,
+        anchorMacKey: integrityMacKey,
+        budgetKeyHash: configuration.budgetKeyHash,
+        budgetCurrencyCode: configuration.budgetCurrencyCode,
+        createOwnerCredentialHash: async () => 'synthetic-owner-hash',
+      });
+      const backupPath = path.join(temporaryDirectory, 'companion.backup');
+      const standardOutput: string[] = [];
+      const standardError: string[] = [];
+
+      await expect(
+        runFinanceCompanionCommand(
+          'backup:create',
+          message => standardOutput.push(message),
+          message => standardError.push(message),
+          () => configuration,
+          undefined,
+          undefined,
+          ['--backup-path', backupPath],
+        ),
+      ).resolves.toBe(0);
+      await writeFile(
+        configuration.integrityAnchorPath,
+        '{"synthetic":"damaged"}',
+      );
+      await expect(
+        runFinanceCompanionCommand(
+          'backup:restore',
+          message => standardOutput.push(message),
+          message => standardError.push(message),
+          () => configuration,
+          undefined,
+          undefined,
+          ['--backup-path', backupPath],
+        ),
+      ).resolves.toBe(0);
+      await expect(
+        runFinanceCompanionCommand(
+          'integrity:verify',
+          message => standardOutput.push(message),
+          message => standardError.push(message),
+          () => configuration,
+        ),
+      ).resolves.toBe(0);
+      expect(standardError).toEqual([]);
+      expect(JSON.parse(standardOutput.at(-1) ?? '')).toEqual({
+        ok: true,
+        schemaVersion: 5,
+        writeCapabilityState: 'disabled',
+      });
     } finally {
       await rm(temporaryDirectory, { recursive: true, force: true });
     }

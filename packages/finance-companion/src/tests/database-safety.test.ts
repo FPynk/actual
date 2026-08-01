@@ -8,11 +8,15 @@ import Database from 'better-sqlite3';
 
 import {
   createCompanionOnlyBackup,
+  restoreCompanionOnlyBackup,
   verifyCompanionOnlyBackup,
 } from '#database/backup';
 import type { CompanionBackupRequest } from '#database/backup';
+import { runDatabaseLifecycleCommand } from '#database/lifecycle-cli';
+import { withExclusiveMaintenanceLock } from '#database/maintenance-lock';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { InitializeCompanionDatabaseRequest } from '#database/migrate';
+import { writeIntegrityAnchor } from '#integrity/anchor';
 import { sha256 } from '#integrity/canonical-hash';
 import { verifyCompanionIntegrity } from '#integrity/verify';
 
@@ -94,7 +98,7 @@ describe('FIN-11 database safety gates', () => {
     expect(existsSync(initialization.anchorPath)).toBe(false);
   });
 
-  it('refuses an existing migration-001-only database instead of forward migrating it', async () => {
+  it('forwards an existing generation-zero migration-001 database transactionally', async () => {
     const migration = await readFile(
       path.join(
         initialization.migrationsDirectory,
@@ -102,6 +106,8 @@ describe('FIN-11 database safety gates', () => {
       ),
       'utf8',
     );
+    const instanceId = randomUUID();
+    const createdAt = new Date().toISOString();
     const database = new Database(initialization.databasePath);
     try {
       database.exec(migration);
@@ -112,17 +118,76 @@ describe('FIN-11 database safety gates', () => {
         .run(
           1,
           '001-instance-and-principal.sql',
-          new Date().toISOString(),
+          createdAt,
           sha256(Buffer.from(migration, 'utf8')),
         );
+      database
+        .prepare(
+          'INSERT INTO companion_instance (singleton_key, instance_id, budget_key_hash, budget_currency_code, write_capability_state, write_capability_generation, write_capability_event_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          'main',
+          instanceId,
+          initialization.budgetKeyHash,
+          initialization.budgetCurrencyCode,
+          'disabled',
+          0,
+          null,
+          createdAt,
+        );
+      database
+        .prepare(
+          'INSERT INTO local_principals (id, credential_hash, created_at, rotated_at) VALUES (?, ?, ?, ?)',
+        )
+        .run(randomUUID(), 'test-owner-hash', createdAt, null);
     } finally {
       database.close();
     }
-    await writeFile(initialization.anchorPath, 'existing-anchor');
+    await writeIntegrityAnchor(
+      initialization.anchorPath,
+      {
+        formatVersion: 1,
+        budgetKeyHash: initialization.budgetKeyHash,
+        writeCapabilityGeneration: 0,
+        writeCapabilityEventHash: null,
+        highestIssuedIntentSequence: 0,
+        highestIssuedIntentHash: null,
+        highestAppliedReceiptSequence: 0,
+        highestAppliedReceiptHash: null,
+        lastVerifiedPairedBackupManifestHash: null,
+      },
+      initialization.anchorMacKey,
+    );
 
     await expect(
       initializeCompanionDatabaseAndAnchor(initialization),
-    ).rejects.toThrow('migration state is incomplete');
+    ).resolves.toMatchObject({
+      instanceId,
+      schemaVersion: 5,
+    });
+  });
+
+  it.each([
+    [
+      'changed migration checksum',
+      "UPDATE schema_migrations SET checksum = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' WHERE version = 1",
+    ],
+    [
+      'newer schema version',
+      "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (6, '006-future.sql', '2026-01-01T00:00:00.000Z', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
+    ],
+  ])('refuses a %s without changing the bound database', async (_, sql) => {
+    await initializeCompanionDatabaseAndAnchor(initialization);
+    const database = new Database(initialization.databasePath);
+    try {
+      database.exec(sql);
+    } finally {
+      database.close();
+    }
+
+    await expect(
+      initializeCompanionDatabaseAndAnchor(initialization),
+    ).rejects.toThrow();
   });
 
   it.each([
@@ -187,6 +252,124 @@ describe('FIN-11 database safety gates', () => {
       'destination already exists',
     );
     expect(await readFile(backup.backupPath, 'utf8')).toBe('published-backup');
+  });
+
+  it('refuses backup and migration while interrupted restore artifacts remain', async () => {
+    const backup = await createBackupRequest();
+    const intentPath = path.join(
+      path.dirname(initialization.anchorPath),
+      `.finance-companion-restore-intent-${randomUUID()}.json`,
+    );
+    await writeFile(intentPath, 'retained');
+
+    await expect(createCompanionOnlyBackup(backup)).rejects.toThrow(
+      'requires recovery',
+    );
+    await expect(
+      initializeCompanionDatabaseAndAnchor(initialization),
+    ).rejects.toThrow('requires recovery');
+  });
+
+  it('keeps one maintenance lock across backup and existing-database migration', async () => {
+    await initializeCompanionDatabaseAndAnchor(initialization);
+    const backupEncryptionKeyPath = path.join(temporaryDirectory, 'backup.key');
+    await writeFile(backupEncryptionKeyPath, randomBytes(32), { mode: 0o600 });
+    let observedExclusiveLock = false;
+
+    await expect(
+      runDatabaseLifecycleCommand(
+        'db:migrate',
+        {
+          bindAddress: '127.0.0.1',
+          port: 4100,
+          origin: 'http://127.0.0.1:4100',
+          dataDirectory: temporaryDirectory,
+          databasePath: initialization.databasePath,
+          integrityAnchorPath: initialization.anchorPath,
+          integrityMacKeyFile: undefined,
+          integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+          backupEncryptionKeyFile: backupEncryptionKeyPath,
+          budgetKeyHash: initialization.budgetKeyHash,
+          budgetCurrencyCode: initialization.budgetCurrencyCode,
+          ownerBootstrapCredential: undefined,
+          ownerBootstrapCredentialFile: undefined,
+        },
+        ['--backup-path', path.join(temporaryDirectory, 'companion.backup')],
+        {
+          afterBackupBeforeMigration: async () => {
+            await expect(
+              withExclusiveMaintenanceLock(
+                initialization.databasePath,
+                async () => undefined,
+              ),
+            ).rejects.toThrow('Exclusive maintenance is required');
+            observedExclusiveLock = true;
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ ok: true, schemaVersion: 5 });
+    expect(observedExclusiveLock).toBe(true);
+  });
+
+  it.each([
+    [
+      'wrong budget',
+      (backup: CompanionBackupRequest) => ({
+        ...backup,
+        expectedBudgetKeyHash: 'b'.repeat(64),
+      }),
+    ],
+    [
+      'wrong currency',
+      (backup: CompanionBackupRequest) => ({
+        ...backup,
+        expectedCurrencyCode: 'EUR',
+      }),
+    ],
+  ] as const)(
+    'leaves the current pair untouched when restore has a %s',
+    async (_, change) => {
+      const backup = await createBackupRequest();
+      await createCompanionOnlyBackup(backup);
+      const originalDatabase = await readFile(initialization.databasePath);
+      const originalAnchor = await readFile(initialization.anchorPath);
+
+      await expect(
+        restoreCompanionOnlyBackup(change(backup)),
+      ).rejects.toThrow();
+      expect(await readFile(initialization.databasePath)).toEqual(
+        originalDatabase,
+      );
+      expect(await readFile(initialization.anchorPath)).toEqual(originalAnchor);
+    },
+  );
+
+  it('leaves the database untouched when the current anchor is missing', async () => {
+    const backup = await createBackupRequest();
+    await createCompanionOnlyBackup(backup);
+    const originalDatabase = await readFile(initialization.databasePath);
+    await rm(initialization.anchorPath);
+
+    await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow();
+    expect(await readFile(initialization.databasePath)).toEqual(
+      originalDatabase,
+    );
+  });
+
+  it('leaves the current pair untouched when the encrypted backup is tampered', async () => {
+    const backup = await createBackupRequest();
+    await createCompanionOnlyBackup(backup);
+    const originalDatabase = await readFile(initialization.databasePath);
+    const originalAnchor = await readFile(initialization.anchorPath);
+    const bytes = await readFile(backup.backupPath);
+    bytes[bytes.length - 2] ^= 1;
+    await writeFile(backup.backupPath, bytes);
+
+    await expect(restoreCompanionOnlyBackup(backup)).rejects.toThrow();
+    expect(await readFile(initialization.databasePath)).toEqual(
+      originalDatabase,
+    );
+    expect(await readFile(initialization.anchorPath)).toEqual(originalAnchor);
   });
 
   it('rejects a hard-link alias of a protected live file', async () => {

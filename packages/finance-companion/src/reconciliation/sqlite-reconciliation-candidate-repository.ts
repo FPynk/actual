@@ -40,7 +40,11 @@ const allowedReasonCodes = new Set<ReconciliationReasonCode>(
 );
 
 export class SqliteReconciliationCandidateRepository implements ReconciliationCandidateRepository {
-  constructor(private readonly database: Database.Database) {}
+  private readonly database: Database.Database;
+
+  constructor(database: Database.Database) {
+    this.database = database;
+  }
 
   findBySourceAndActual(
     sourceTransactionId: string,

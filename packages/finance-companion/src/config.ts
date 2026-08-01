@@ -46,6 +46,7 @@ export type FinanceCompanionConfiguration = Readonly<{
   integrityAnchorPath: string;
   integrityMacKeyFile: string | undefined;
   integrityMacKey: string | undefined;
+  backupEncryptionKeyFile?: string;
   budgetKeyHash: string;
   budgetCurrencyCode: string;
   ownerBootstrapCredential: string | undefined;
@@ -229,6 +230,12 @@ function parseFinanceCompanionConfiguration(
         ? undefined
         : path.resolve(environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE),
     integrityMacKey: environment.FINANCE_COMPANION_INTEGRITY_MAC_KEY,
+    backupEncryptionKeyFile:
+      environment.FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE === undefined
+        ? undefined
+        : path.resolve(
+            environment.FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE,
+          ),
     budgetKeyHash: calculateBudgetKeyHash(actualServerUrl, actualBudgetId),
     budgetCurrencyCode,
     ownerBootstrapCredential:

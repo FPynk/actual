@@ -34,6 +34,7 @@ describe('loadFinanceCompanionConfiguration', () => {
       integrityAnchorPath: 'C:\\integrity.anchor',
       integrityMacKeyFile: 'C:\\integrity.key',
       integrityMacKey: undefined,
+      backupEncryptionKeyFile: undefined,
       budgetKeyHash: calculateBudgetKeyHash(
         'https://actual.example.test',
         'budget-id',
@@ -109,6 +110,7 @@ describe('loadFinanceCompanionConfiguration', () => {
       integrityAnchorPath: 'C:\\integrity.anchor',
       integrityMacKeyFile: 'C:\\integrity.key',
       integrityMacKey: undefined,
+      backupEncryptionKeyFile: undefined,
       budgetKeyHash: calculateBudgetKeyHash(
         'https://actual.example.test',
         'budget-id',
@@ -143,6 +145,7 @@ describe('loadFinanceCompanionConfiguration', () => {
         integrityAnchorPath: 'C:\\integrity.anchor',
         integrityMacKeyFile: 'C:\\integrity.key',
         integrityMacKey: undefined,
+        backupEncryptionKeyFile: undefined,
         budgetKeyHash: calculateBudgetKeyHash(
           'https://actual.example.test',
           'budget-id',

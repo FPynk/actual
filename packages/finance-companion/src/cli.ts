@@ -2,39 +2,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadFinanceCompanionConfiguration } from './config.ts';
-import { openCompanionDatabase } from './database/connection.ts';
-import { createSqliteSourceIdentityRepository } from './database/source-identity-repository.ts';
-import { startFinanceCompanionHttpServer } from './http/server.ts';
-import { SqliteReconciliationCandidateRepository } from './reconciliation/sqlite-reconciliation-candidate-repository.ts';
-import { SqliteClassificationProposalRepository } from './reviews/sqlite-classification-repository.ts';
-import { createFinanceCompanionSecurity } from './security/local-security.ts';
-import type { LocalPrincipalRepository } from './security/local-security.ts';
-import {
-  createConfiguredActualAdapter,
-  runConfiguredBankSyncJob,
-} from './service/bank-sync-cli.ts';
-import {
-  bankSyncExitCode,
-  BankSyncJobError,
-  parseBankSyncCommandArguments,
-} from './service/bank-sync.ts';
+import { runDatabaseLifecycleCommand } from './database/lifecycle-cli.ts';
 import type {
+  FinanceCompanionSecurity,
+  LocalPrincipalRepository,
+} from './security/local-security.ts';
+import type {
+  BankSyncJobError,
   BankSyncJobSummary,
   ParsedBankSyncCommand,
 } from './service/bank-sync.ts';
-import { createDurableLocalPrincipalRepository } from './service/durable-principal-repository.ts';
-import { createSqliteRequestReplayRepository } from './service/request-replay-repository.ts';
 
 const NOT_IMPLEMENTED_COMMANDS = [
   'test:db',
   'test:adapter',
   'test:e2e',
-  'db:migrate',
   'owner:rotate',
-  'backup:create',
-  'backup:verify',
-  'backup:restore',
-  'integrity:verify',
   'smoke:container',
 ] as const;
 type FeatureNotImplementedCommand = (typeof NOT_IMPLEMENTED_COMMANDS)[number];
@@ -51,14 +34,16 @@ export async function runFinanceCompanionCommand(
   writeStandardOutput: (message: string) => void,
   writeStandardError: (message: string) => void,
   loadConfiguration = loadFinanceCompanionConfiguration,
-  loadLocalPrincipalRepository: (
+  loadLocalPrincipalRepository?: (
     configuration: ReturnType<typeof loadFinanceCompanionConfiguration>,
-  ) => Promise<LocalPrincipalRepository> = configuration =>
-    createDurableLocalPrincipalRepository(
-      configuration,
-      path.resolve(import.meta.dirname, '../migrations'),
-    ),
-  startHttpServer = startFinanceCompanionHttpServer,
+  ) => Promise<LocalPrincipalRepository>,
+  startHttpServer?: (
+    configuration: ReturnType<typeof loadFinanceCompanionConfiguration>,
+    staticUiDirectory: string,
+    security: FinanceCompanionSecurity,
+    requestReplayRepository: unknown,
+    reviewDependencies?: unknown,
+  ) => Promise<Readonly<{ close: (callback: () => void) => void }>>,
   commandArguments: readonly string[] = [],
   runBankSync?: (
     command_: ParsedBankSyncCommand,
@@ -76,18 +61,33 @@ export async function runFinanceCompanionCommand(
     return 78;
   }
   if (command === 'job:bank-sync') {
+    let BankSyncJobErrorConstructor: typeof BankSyncJobError | undefined;
     const cancellation = new AbortController();
     const cancel = () => cancellation.abort();
     process.once('SIGINT', cancel);
     process.once('SIGTERM', cancel);
     try {
+      const bankSync = await import('./service/bank-sync.ts');
+      BankSyncJobErrorConstructor = bankSync.BankSyncJobError;
+      const { bankSyncExitCode, parseBankSyncCommandArguments } = bankSync;
       const parsedCommand = parseBankSyncCommandArguments(commandArguments);
       let summary: BankSyncJobSummary;
       if (runBankSync === undefined) {
         const configuration = loadConfiguration();
+        const { createDurableLocalPrincipalRepository } =
+          await import('./service/durable-principal-repository.ts');
+        const { runConfiguredBankSyncJob } =
+          await import('./service/bank-sync-cli.ts');
         summary = await runConfiguredBankSyncJob(
           configuration,
-          await loadLocalPrincipalRepository(configuration),
+          await (
+            loadLocalPrincipalRepository ??
+            (value =>
+              createDurableLocalPrincipalRepository(
+                value,
+                path.resolve(import.meta.dirname, '../migrations'),
+              ))
+          )(configuration),
           parsedCommand,
           cancellation.signal,
         );
@@ -98,7 +98,10 @@ export async function runFinanceCompanionCommand(
       return bankSyncExitCode(summary);
     } catch (error) {
       const code =
-        error instanceof BankSyncJobError ? error.code : 'configuration_error';
+        BankSyncJobErrorConstructor !== undefined &&
+        error instanceof BankSyncJobErrorConstructor
+          ? error.code
+          : 'configuration_error';
       writeStandardError(`${JSON.stringify({ code, ok: false })}\n`);
       return code === 'adapter_unavailable' || code === 'operation_in_progress'
         ? 69
@@ -108,21 +111,64 @@ export async function runFinanceCompanionCommand(
       process.removeListener('SIGTERM', cancel);
     }
   }
+  if (
+    command === 'db:migrate' ||
+    command === 'backup:create' ||
+    command === 'backup:verify' ||
+    command === 'backup:restore' ||
+    command === 'integrity:verify'
+  ) {
+    try {
+      const result = await runDatabaseLifecycleCommand(
+        command,
+        loadConfiguration(),
+        commandArguments,
+      );
+      writeStandardOutput(`${JSON.stringify(result)}\n`);
+      return 0;
+    } catch {
+      writeStandardError('{"ok":false,"code":"database_lifecycle_failed"}\n');
+      return 65;
+    }
+  }
   if (command !== 'start') {
     writeStandardError('{"ok":false,"code":"invalid_command"}\n');
     return 64;
   }
   const configuration = loadConfiguration();
+  const { createFinanceCompanionSecurity } =
+    await import('./security/local-security.ts');
+  const { createDurableLocalPrincipalRepository } =
+    await import('./service/durable-principal-repository.ts');
+  const { startFinanceCompanionHttpServer } = await import('./http/server.ts');
+  const { openCompanionDatabase } = await import('./database/connection.ts');
+  const { createSqliteRequestReplayRepository } =
+    await import('./service/request-replay-repository.ts');
+  const { createSqliteSourceIdentityRepository } =
+    await import('./database/source-identity-repository.ts');
+  const { SqliteReconciliationCandidateRepository } =
+    await import('./reconciliation/sqlite-reconciliation-candidate-repository.ts');
+  const { SqliteClassificationProposalRepository } =
+    await import('./reviews/sqlite-classification-repository.ts');
+  const { createConfiguredActualAdapter } =
+    await import('./service/bank-sync-cli.ts');
+  const getLocalPrincipalRepository =
+    loadLocalPrincipalRepository ??
+    (value =>
+      createDurableLocalPrincipalRepository(
+        value,
+        path.resolve(import.meta.dirname, '../migrations'),
+      ));
   const security = await createFinanceCompanionSecurity({
     bootstrapCredential: configuration.ownerBootstrapCredential,
     bootstrapCredentialFile: configuration.ownerBootstrapCredentialFile,
-    localPrincipalRepository: await loadLocalPrincipalRepository(configuration),
+    localPrincipalRepository: await getLocalPrincipalRepository(configuration),
   });
   const reviewDatabase =
-    startHttpServer === startFinanceCompanionHttpServer
+    startHttpServer === undefined
       ? openCompanionDatabase(configuration.databasePath, true)
       : undefined;
-  const server = await startHttpServer(
+  const server = await (startHttpServer ?? startFinanceCompanionHttpServer)(
     configuration,
     path.resolve(import.meta.dirname, '../ui'),
     security,

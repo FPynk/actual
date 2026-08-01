@@ -19,6 +19,7 @@ import {
   canonicalExistingRegularFile,
   canonicalUnusedFile,
 } from './path-safety.ts';
+import { hasRestoreRecoveryArtifacts } from './restore-journal.ts';
 
 type Migration = Readonly<{
   version: number;
@@ -52,9 +53,22 @@ export async function initializeCompanionDatabase(
 export async function initializeCompanionDatabaseAndAnchor(
   request: InitializeCompanionDatabaseRequest,
 ): Promise<MigrationResult> {
+  return initializeCompanionDatabaseAndAnchorWithLock(request, false);
+}
+
+export async function initializeCompanionDatabaseAndAnchorDuringMaintenance(
+  request: InitializeCompanionDatabaseRequest,
+): Promise<MigrationResult> {
+  return initializeCompanionDatabaseAndAnchorWithLock(request, true);
+}
+
+async function initializeCompanionDatabaseAndAnchorWithLock(
+  request: InitializeCompanionDatabaseRequest,
+  alreadyHoldsMaintenanceLock: boolean,
+): Promise<MigrationResult> {
   const migrations = await loadMigrations(request.migrationsDirectory);
   const initialPaths = await inspectInitializationPaths(request);
-  return withExclusiveMaintenanceLock(initialPaths.databasePath, async () => {
+  const initialize = async (): Promise<MigrationResult> => {
     const paths = await inspectInitializationPaths(request);
     if (
       paths.databaseExists !== initialPaths.databaseExists ||
@@ -67,17 +81,14 @@ export async function initializeCompanionDatabaseAndAnchor(
     if (paths.databaseExists !== paths.anchorExists) {
       throw new Error('Companion database and anchor state is incomplete.');
     }
+    if (hasRestoreRecoveryArtifacts(paths.databasePath, paths.anchorPath)) {
+      throw new Error('Companion restore requires recovery.');
+    }
     await assertNoSqliteSidecars(paths.databasePath);
     if (paths.databaseExists) {
       const database = openCompanionDatabase(paths.databasePath, true);
       try {
-        const appliedVersions = verifyAppliedMigrationHistory(
-          database,
-          migrations,
-        );
-        if (appliedVersions.size !== migrations.length) {
-          throw new Error('Existing companion migration state is incomplete.');
-        }
+        verifyAppliedMigrationHistory(database, migrations);
         await verifyExistingGenerationZeroState(
           database,
           paths.anchorPath,
@@ -109,7 +120,10 @@ export async function initializeCompanionDatabaseAndAnchor(
     } finally {
       database.close();
     }
-  });
+  };
+  return alreadyHoldsMaintenanceLock
+    ? initialize()
+    : withExclusiveMaintenanceLock(initialPaths.databasePath, initialize);
 }
 
 function applyInitialMigrationsAndInitialize(
@@ -176,15 +190,15 @@ function applyVerifiedMigrations(
   migrations: readonly Migration[],
 ): void {
   const appliedVersions = verifyAppliedMigrationHistory(database, migrations);
-  for (const migration of migrations) {
-    if (appliedVersions.has(migration.version)) continue;
-    database
-      .transaction(() => {
+  database
+    .transaction(() => {
+      for (const migration of migrations) {
+        if (appliedVersions.has(migration.version)) continue;
         applyMigration(database, migration);
-        verifySqliteDatabase(database);
-      })
-      .immediate();
-  }
+      }
+      verifySqliteDatabase(database);
+    })
+    .immediate();
 }
 
 function applyMigration(
