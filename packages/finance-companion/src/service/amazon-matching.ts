@@ -10,7 +10,16 @@ import { openCompanionDatabase } from '#database/connection';
 import { targetVersionHash } from '#reviews/classification';
 import { sha256Parts } from '#service/amazon-export-repository';
 
-export const amazonMatcherVersion = 1 as const;
+export const amazonMatcherVersion = 2 as const;
+const maximumAmazonExactSubsetSearchSteps = 1_000_000;
+const maximumAmazonExactCandidateSets = 10_000;
+
+export class AmazonMatchCandidateSearchLimitError extends Error {
+  constructor() {
+    super('Amazon candidate search exceeded its deterministic safety limit.');
+    this.name = 'AmazonMatchCandidateSearchLimitError';
+  }
+}
 
 export const amazonMatchReasonCodes = [
   'currency-match',
@@ -100,14 +109,16 @@ export function buildAmazonMatchCandidates(
       candidates.push(diagnosticCandidate(target, 'target-capacity-exhausted'));
       continue;
     }
-    const sources = request.sources.filter(source => {
-      if (source.currencyCode !== request.budgetCurrencyCode) return false;
-      return hasAvailableCapacity(source, request.capacityUses);
-    });
+    const sources = request.sources
+      .filter(source => source.currencyCode === request.budgetCurrencyCode)
+      .map(source => sourceWithRemainingCapacity(source, request.capacityUses))
+      .filter((source): source is AmazonSourceComponent => source !== null);
     const matchingSignSources = sources.filter(source =>
       target.amountMinorUnits < 0
-        ? source.amount < 0 || source.amount > 0
-        : source.sourceComponentKind === 'refund' && source.amount > 0,
+        ? source.sourceComponentKind !== 'refund'
+        : target.amountMinorUnits > 0 &&
+          source.sourceComponentKind === 'refund' &&
+          source.amount > 0,
     );
     const exactAllocationSets = exactSubsets(
       matchingSignSources,
@@ -154,6 +165,7 @@ export async function generateAmazonMatchCandidates(
     if (
       graph === null ||
       graph.parent.reconciled ||
+      pendingTarget.matcherVersion !== amazonMatcherVersion ||
       graph.targetVersionHash !== pendingTarget.actualTargetVersion ||
       graph.targetVersionHash !== targetVersionHash(graph)
     ) {
@@ -200,7 +212,7 @@ export function createSqliteAmazonMatchingRepository(databasePath: string) {
       try {
         return database
           .prepare(`SELECT mt.match_id AS matchId, mt.actual_transaction_id AS actualTransactionId,
-              mt.actual_target_version AS actualTargetVersion
+              mt.actual_target_version AS actualTargetVersion, m.matcher_version AS matcherVersion
             FROM amazon_match_transactions mt
             JOIN amazon_charge_matches m ON m.id = mt.match_id
             WHERE m.status = 'pending'`)
@@ -242,7 +254,7 @@ export function createSqliteAmazonMatchingRepository(databasePath: string) {
         const refunds = database
           .prepare(`
           SELECT r.id AS amazon_refund_id, r.amazon_order_id, r.source_refund_key,
-                 n.namespace, r.currency_code, r.refund_date, r.amount
+                 n.namespace, o.currency_code, r.refund_date, r.amount
           FROM amazon_refunds r
           JOIN amazon_orders o ON o.id = r.amazon_order_id
           JOIN source_namespaces n ON n.id = o.source_namespace_id
@@ -338,24 +350,49 @@ function exactSubsets(
   targetAmount: number,
 ) {
   const sorted = [...sources].sort(compareSources);
-  const states = new Map<
-    number,
-    readonly (readonly AmazonSourceComponent[])[]
-  >();
-  states.set(0, [[]]);
-  for (const source of sorted) {
-    for (const [amount, allocationSets] of [...states.entries()]) {
-      const nextAmount = amount + source.amount;
-      if (!Number.isSafeInteger(nextAmount)) continue;
-      const existing = states.get(nextAmount) ?? [];
-      const additions = allocationSets.map(allocations => [
-        ...allocations,
-        source,
-      ]);
-      states.set(nextAmount, [...existing, ...additions].slice(0, 100));
-    }
+  const amounts = sorted.map(source => BigInt(source.amount));
+  const target = BigInt(targetAmount);
+  const suffixMinimums = new Array<bigint>(sorted.length + 1).fill(0n);
+  const suffixMaximums = new Array<bigint>(sorted.length + 1).fill(0n);
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const amount = amounts[index] ?? 0n;
+    suffixMinimums[index] =
+      (suffixMinimums[index + 1] ?? 0n) + (amount < 0n ? amount : 0n);
+    suffixMaximums[index] =
+      (suffixMaximums[index + 1] ?? 0n) + (amount > 0n ? amount : 0n);
   }
-  return states.get(targetAmount) ?? [];
+  const exactSets: AmazonSourceComponent[][] = [];
+  let searchSteps = 0;
+  function findExactSubsets(
+    index: number,
+    currentAmount: bigint,
+    allocations: readonly AmazonSourceComponent[],
+  ) {
+    searchSteps += 1;
+    if (searchSteps > maximumAmazonExactSubsetSearchSteps) {
+      throw new AmazonMatchCandidateSearchLimitError();
+    }
+    if (
+      currentAmount + (suffixMinimums[index] ?? 0n) > target ||
+      currentAmount + (suffixMaximums[index] ?? 0n) < target
+    ) {
+      return;
+    }
+    if (index === sorted.length) {
+      if (exactSets.length >= maximumAmazonExactCandidateSets) {
+        throw new AmazonMatchCandidateSearchLimitError();
+      }
+      exactSets.push([...allocations]);
+      return;
+    }
+    findExactSubsets(index + 1, currentAmount, allocations);
+    const source = sorted[index];
+    if (source === undefined) return;
+    const nextAmount = currentAmount + (amounts[index] ?? 0n);
+    findExactSubsets(index + 1, nextAmount, [...allocations, source]);
+  }
+  findExactSubsets(0, 0n, []);
+  return exactSets;
 }
 
 function candidateFromExactAllocations(
@@ -418,18 +455,27 @@ function diagnosticCandidate(
   };
 }
 
-function hasAvailableCapacity(
+function sourceWithRemainingCapacity(
   source: AmazonSourceComponent,
   uses: readonly CapacityUse[],
-) {
+): AmazonSourceComponent | null {
   const used = uses
     .filter(
       use =>
         use.sourceIdentityHash === source.sourceIdentityHash &&
         use.sourceComponentKind === source.sourceComponentKind,
     )
-    .reduce((sum, use) => sum + Math.abs(use.allocatedAmount), 0);
-  return used + Math.abs(source.amount) <= Math.abs(source.amount);
+    .reduce((sum, use) => sum + BigInt(Math.abs(use.allocatedAmount)), 0n);
+  const sourceAmount = BigInt(source.amount);
+  const remainingMagnitude =
+    (sourceAmount < 0n ? -sourceAmount : sourceAmount) - used;
+  if (remainingMagnitude <= 0n) return null;
+  return {
+    ...source,
+    amount: Number(
+      sourceAmount < 0n ? -remainingMagnitude : remainingMagnitude,
+    ),
+  };
 }
 
 function hasTargetCapacityUse(targetId: string, uses: readonly CapacityUse[]) {
@@ -493,14 +539,32 @@ function orderComponents(
           item.discount_amount,
         0,
       );
+    const assignedTax = items
+      .filter(item => item.amazon_order_id === order.amazon_order_id)
+      .reduce((sum, item) => sum + item.tax_amount, 0);
+    const assignedShipping = items
+      .filter(item => item.amazon_order_id === order.amazon_order_id)
+      .reduce((sum, item) => sum + item.shipping_amount, 0);
     const identity = sha256Parts([
       order.namespace,
       `order/${order.marketplace}/${order.external_order_id}`,
     ]);
     const expectedCharge = -order.order_total + order.gift_card_total;
-    const rounding = expectedCharge - sourceItemTotal - order.gift_card_total;
+    const unassignedTax = -Math.max(order.tax_total - assignedTax, 0);
+    const unassignedShipping = -Math.max(
+      order.shipping_total - assignedShipping,
+      0,
+    );
+    const rounding =
+      expectedCharge -
+      sourceItemTotal -
+      order.gift_card_total -
+      unassignedTax -
+      unassignedShipping;
     return [
       adjustment(identity, 'gift_card', order, order.gift_card_total),
+      adjustment(identity, 'tax', order, unassignedTax),
+      adjustment(identity, 'shipping', order, unassignedShipping),
       adjustment(identity, 'rounding', order, rounding),
     ].filter(value => value.amount !== 0);
   });
@@ -526,7 +590,7 @@ function component(
 
 function adjustment(
   identity: string,
-  kind: 'gift_card' | 'rounding',
+  kind: 'gift_card' | 'tax' | 'shipping' | 'rounding',
   order: OrderRow,
   amount: number,
 ): AmazonSourceComponent {
@@ -623,7 +687,7 @@ function candidateId(
   target: AmazonTarget,
   allocations: readonly AmazonSourceComponent[],
 ) {
-  return `amazon-v1-${createHash('sha256')
+  return `amazon-v${amazonMatcherVersion}-${createHash('sha256')
     .update(
       JSON.stringify([
         target.id,
@@ -706,4 +770,5 @@ type PendingTargetRow = Readonly<{
   matchId: string;
   actualTransactionId: string;
   actualTargetVersion: string;
+  matcherVersion: number;
 }>;

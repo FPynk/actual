@@ -1,4 +1,15 @@
-import { buildAmazonMatchCandidates } from '#service/amazon-matching';
+import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { openCompanionDatabase } from '#database/connection';
+import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
+import { createSqliteSourceIdentityRepository } from '#database/source-identity-repository';
+import {
+  buildAmazonMatchCandidates,
+  createSqliteAmazonMatchingRepository,
+} from '#service/amazon-matching';
 import type {
   AmazonSourceComponent,
   AmazonTarget,
@@ -112,6 +123,68 @@ describe('FIN-40 signed Amazon matching', () => {
     ).toBeUndefined();
   });
 
+  it('never treats a refund as a charge component even when it can make an exact charge sum', () => {
+    const candidates = build({
+      sources: [
+        source('purchase', 'merchandise', -100),
+        source('discount', 'discount', 50),
+        source('refund', 'refund', 50),
+      ],
+      targets: [target('charge', -50)],
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.allocations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceComponentKind: 'merchandise' }),
+        expect.objectContaining({ sourceComponentKind: 'discount' }),
+      ]),
+    );
+    expect(candidates[0]?.allocations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceComponentKind: 'refund' }),
+      ]),
+    );
+  });
+
+  it('uses the remaining source capacity for a partial prior reservation', () => {
+    const sourceValue = source('partially-used', 'merchandise', -100);
+    const candidates = build({
+      sources: [sourceValue],
+      targets: [target('remaining', -60), target('full', -100)],
+      capacityUses: [
+        {
+          sourceIdentityHash: sourceValue.sourceIdentityHash,
+          sourceComponentKind: 'merchandise',
+          actualTransactionId: 'prior-parent',
+          allocatedAmount: -40,
+        },
+      ],
+    });
+
+    expect(candidates).toMatchObject([
+      {
+        target: { id: 'remaining' },
+        allocations: [{ amount: -60 }],
+      },
+    ]);
+    expect(candidates.some(candidate => candidate.target.id === 'full')).toBe(
+      false,
+    );
+  });
+
+  it('returns every competing exact candidate instead of truncating the set', () => {
+    const candidates = build({
+      sources: Array.from({ length: 101 }, (_, index) =>
+        source(`item-${index}`, 'merchandise', -1),
+      ),
+      targets: [target('charge', -1)],
+    });
+
+    expect(candidates).toHaveLength(101);
+    expect(new Set(candidates.map(candidate => candidate.id)).size).toBe(101);
+  });
+
   it('subtracts applied reservation tombstones and active holds before proposing capacity', () => {
     const sourceValue = source('reserved-item', 'merchandise', -100);
     const candidates = build({
@@ -171,6 +244,63 @@ describe('FIN-40 signed Amazon matching', () => {
       reasonCodes: ['target-reconciled'],
     });
   });
+
+  it('makes unassigned order tax and shipping explicit instead of hiding them in rounding', async () => {
+    const temporaryDirectory = await mkdtemp(
+      path.join(os.tmpdir(), 'finance-companion-amazon-match-'),
+    );
+    const databasePath = path.join(temporaryDirectory, 'companion.sqlite');
+    try {
+      await initializeCompanionDatabaseAndAnchor({
+        databasePath,
+        migrationsDirectory: path.resolve(
+          import.meta.dirname,
+          '../../migrations',
+        ),
+        anchorPath: path.join(temporaryDirectory, 'anchor.json'),
+        anchorMacKey: randomBytes(32),
+        budgetKeyHash: 'a'.repeat(64),
+        budgetCurrencyCode: 'USD',
+        createOwnerCredentialHash: async () => 'owner',
+      });
+      const sourceNamespaceId = createSqliteSourceIdentityRepository(
+        databasePath,
+      ).createSourceNamespace({
+        kind: 'amazon_profile',
+        namespace: 'amazon-profile/v1/11111111-1111-1111-1111-111111111111',
+        displayName: 'Synthetic profile',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }).id;
+      insertOrderWithUnassignedTaxAndShipping(databasePath, sourceNamespaceId);
+
+      const components =
+        createSqliteAmazonMatchingRepository(
+          databasePath,
+        ).readSourceComponents();
+
+      expect(
+        components
+          .filter(component => component.amazonItemId === null)
+          .map(component => [component.sourceComponentKind, component.amount]),
+      ).toEqual(
+        expect.arrayContaining([
+          ['gift_card', 200],
+          ['tax', -20],
+          ['shipping', -30],
+        ]),
+      );
+      expect(
+        components.some(
+          component => component.sourceComponentKind === 'rounding',
+        ),
+      ).toBe(false);
+      expect(
+        components.reduce((sum, component) => sum + component.amount, 0),
+      ).toBe(-950);
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
 });
 
 function build(
@@ -215,6 +345,36 @@ function source(
     currencyCode: 'USD',
     date: '2026-01-01',
     sourceComponentKind,
-    sourceIdentityHash: identity.padEnd(64, '0'),
+    sourceIdentityHash: identity.padEnd(64, 'x'),
   };
+}
+
+function insertOrderWithUnassignedTaxAndShipping(
+  databasePath: string,
+  sourceNamespaceId: string,
+) {
+  const database = openCompanionDatabase(databasePath, true);
+  try {
+    database
+      .prepare(`INSERT INTO amazon_orders
+        (id, source_namespace_id, marketplace, external_order_id, order_date, currency_code,
+         item_subtotal, tax_total, shipping_total, discount_total, gift_card_total, refund_total,
+         order_total, first_observed_at, last_observed_at)
+        VALUES (?, ?, 'amazon.com', 'order-1', '2026-01-01', 'USD',
+                1000, 100, 50, 0, 200, 0, 1150,
+                '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`)
+      .run('11111111-1111-1111-1111-111111111111', sourceNamespaceId);
+    database
+      .prepare(`INSERT INTO amazon_items
+        (id, amazon_order_id, amazon_shipment_id, source_item_key, external_item_id, title,
+         quantity, unit_amount, tax_amount, shipping_amount, discount_amount, refund_amount)
+        VALUES (?, ?, NULL, 'item/item-1', 'item-1', 'Synthetic item',
+                1, 1000, 80, 20, 0, 0)`)
+      .run(
+        '22222222-2222-2222-2222-222222222222',
+        '11111111-1111-1111-1111-111111111111',
+      );
+  } finally {
+    database.close();
+  }
 }
