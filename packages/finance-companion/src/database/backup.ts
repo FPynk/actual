@@ -26,6 +26,7 @@ import type { IntegrityAnchorV1 } from '#integrity/anchor';
 import { canonicalJson, sha256 } from '#integrity/canonical-hash';
 
 import { openCompanionDatabase, verifySqliteDatabase } from './connection.ts';
+import { assertNoUnresolvedBankSyncEvidence } from './generation-zero.ts';
 import { withExclusiveMaintenanceLock } from './maintenance-lock.ts';
 import {
   assertDistinctExistingFiles,
@@ -324,6 +325,12 @@ export async function restoreCompanionOnlyBackup(
   return withExclusiveMaintenanceLock(paths.databasePath, async () => {
     await assertNoSqliteSidecars(paths.databasePath);
     assertNoRestoreArtifacts(paths.databasePath, paths.anchorPath);
+    const liveDatabase = openCompanionDatabase(paths.databasePath, true);
+    try {
+      assertNoUnresolvedBankSyncEvidence(liveDatabase);
+    } finally {
+      liveDatabase.close();
+    }
     const artifact = await readVerifiedBackupArtifact(
       request,
       paths.backupPath,
@@ -574,6 +581,7 @@ function generationZeroMetadata(
   database: ReturnType<typeof openCompanionDatabase>,
   request: CompanionBackupRequest,
 ): GenerationZeroMetadata {
+  assertNoUnresolvedBankSyncEvidence(database);
   const instance = database
     .prepare(
       'SELECT instance_id, budget_key_hash, budget_currency_code, write_capability_generation, write_capability_event_hash, write_capability_state FROM companion_instance WHERE singleton_key = ?',

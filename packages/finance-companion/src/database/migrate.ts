@@ -11,6 +11,7 @@ import { sha256 } from '#integrity/canonical-hash';
 
 import { openCompanionDatabase, verifySqliteDatabase } from './connection.ts';
 import type { CompanionDatabase } from './connection.ts';
+import { assertNoUnresolvedBankSyncEvidence } from './generation-zero.ts';
 import { withExclusiveMaintenanceLock } from './maintenance-lock.ts';
 import {
   assertDistinctExistingFiles,
@@ -309,6 +310,7 @@ async function verifyExistingGenerationZeroState(
 ): Promise<void> {
   try {
     verifySqliteDatabase(database);
+    assertNoUnresolvedBankSyncEvidence(database);
     const instance = database
       .prepare(
         'SELECT instance_id, budget_key_hash, budget_currency_code, write_capability_state, write_capability_generation, write_capability_event_hash FROM companion_instance WHERE singleton_key = ?',

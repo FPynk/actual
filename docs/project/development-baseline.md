@@ -12,7 +12,7 @@ changes and gives future regressions a known comparison point.
 - Starting commit: `822fbe3f96af21f276f3f41d686c796ddcd84285`
 - Starting commit subject: `Bump tar in the npm_and_yarn group across 1 directory (#8592)`
 - Project integration branch: `integration/finance-app`
-- Local checkout: `C:\Users\Andrew\Desktop\Side Projects\actual`
+- Local checkout: `<workspace>\actual`
 
 At the starting commit, `origin/master`, `upstream/master`, and the base of
 `integration/finance-app` were identical. The working tree and lockfile were

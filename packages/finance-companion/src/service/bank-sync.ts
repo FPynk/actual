@@ -7,6 +7,7 @@ import type {
 } from '#contracts/adapter';
 import { ActualAdapterError } from '#contracts/adapter';
 import { openCompanionDatabase } from '#database/connection';
+import { withExclusiveMaintenanceLockSync } from '#database/maintenance-lock';
 import { calculateRequestReplayHash } from '#http/request-idempotency';
 import { canonicalJson } from '#integrity/canonical-hash';
 
@@ -197,15 +198,37 @@ export type BankSyncJobRepository = Readonly<{
 export function createSqliteBankSyncJobRepository(
   databasePath: string,
 ): BankSyncJobRepository {
+  return createSqliteBankSyncJobRepositoryWithLockState(databasePath, false);
+}
+
+export function createSqliteBankSyncJobRepositoryDuringMaintenance(
+  databasePath: string,
+): BankSyncJobRepository {
+  return createSqliteBankSyncJobRepositoryWithLockState(databasePath, true);
+}
+
+function createSqliteBankSyncJobRepositoryWithLockState(
+  databasePath: string,
+  alreadyHoldsMaintenanceLock: boolean,
+): BankSyncJobRepository {
+  const create = (
+    scope: BankSyncJobScope,
+    accountIds: readonly string[],
+  ): ReturnType<BankSyncJobRepository['create']> =>
+    withDatabase(databasePath, database =>
+      database
+        .transaction(() => createJob(database, scope, accountIds))
+        .immediate(),
+    );
   return {
     find: scope =>
       withDatabase(databasePath, database => findJob(database, scope)),
     create: (scope, accountIds) =>
-      withDatabase(databasePath, database =>
-        database
-          .transaction(() => createJob(database, scope, accountIds))
-          .immediate(),
-      ),
+      alreadyHoldsMaintenanceLock
+        ? create(scope, accountIds)
+        : withExclusiveMaintenanceLockSync(databasePath, () =>
+            create(scope, accountIds),
+          ),
     markRunning: (jobId, startedAt) =>
       withDatabase(databasePath, database => {
         const result = database
