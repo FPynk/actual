@@ -215,6 +215,14 @@ security design after file-based adapters work.
 No Phase 9 implementation becomes `agent-ready` until P9.1 is approved. The
 initial companion remains useful and safe without this phase.
 
+FIN-42 concluded that the current Actual API and sync protocol cannot provide
+an authoritative cross-client fence or an atomic ledger-write outcome. The
+decision and required future boundary are recorded in
+[`distributed-write-boundary.md`](distributed-write-boundary.md). Therefore
+`write_capability_state` remains `disabled`; FIN-43 through FIN-47 and Actual
+rule/schedule creation remain deferred. Read-only review and companion-only
+metadata operations continue.
+
 ### Phase 10 — Integration and release quality
 
 | Key   | Work                                                                 | Type                         | Dependency                         | Delegation                                      | Definition of done                                                                                                               |
