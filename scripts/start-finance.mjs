@@ -186,9 +186,13 @@ export class FinanceLauncher {
       this.ensurePaths(this.paths);
       this.preflight(this.environment);
       await this.assertPortsAvailable([3001, 4100, 5006]);
+      this.throwIfStopping();
       await this.runOnce('configuration', ...this.commands.validateCompanion);
+      this.throwIfStopping();
       await this.runOnce('worker-build', ...this.commands.buildWorker);
+      this.throwIfStopping();
       await this.runOnce('companion-build', ...this.commands.buildCompanion);
+      this.throwIfStopping();
       const workerPath = path.join(repositoryRoot, 'packages', 'loot-core', 'lib-dist', 'browser', 'kcab.worker.dev.js');
       if (!this.workerExists(workerPath)) throw new Error('The loot-core worker build did not produce kcab.worker.dev.js.');
 
@@ -199,6 +203,7 @@ export class FinanceLauncher {
         ['actual', this.commands.actual],
         ['companion', this.commands.companion],
       ]) {
+        this.throwIfStopping();
         this.startChild(
           name,
           ...command,
@@ -222,6 +227,7 @@ export class FinanceLauncher {
   }
 
   startChild(name, executable, arguments_, allowExit = false, cwd = repositoryRoot) {
+    this.throwIfStopping();
     const child = this.spawnProcess(executable, arguments_, {
       cwd,
       detached: this.platform !== 'win32',
@@ -256,6 +262,13 @@ export class FinanceLauncher {
       return { ...this.nonCompanionEnvironment, BROWSER: 'none', PORT: '3001' };
     }
     return { ...this.nonCompanionEnvironment };
+  }
+
+  throwIfStopping() {
+    if (this.failure) throw this.failure;
+    if (this.shutdownRequested || this.shuttingDown) {
+      throw new LauncherStoppedError();
+    }
   }
 
   async runOnce(name, executable, arguments_) {

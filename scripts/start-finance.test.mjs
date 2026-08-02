@@ -272,6 +272,28 @@ test('shutdown aborts readiness immediately without writing a duplicate error', 
   );
 });
 
+test('shutdown during a pre-spawn awaited stage prevents every later child', async () => {
+  let releasePortCheck;
+  let portCheckStarted = false;
+  let firstPortCheck = true;
+  const { launcher, spawned } = testLauncher({
+    portAvailable: async () => {
+      if (!firstPortCheck) return;
+      firstPortCheck = false;
+      portCheckStarted = true;
+      await new Promise(resolve => {
+        releasePortCheck = resolve;
+      });
+    },
+  });
+  const starting = launcher.start({ noOpen: true });
+  while (!portCheckStarted) await Promise.resolve();
+  await launcher.requestShutdown();
+  releasePortCheck();
+  await assert.rejects(starting, LauncherStoppedError);
+  assert.equal(spawned.length, 0);
+});
+
 test('selects only recorded Windows child PIDs for graceful and forced cleanup', async () => {
   const { launcher, spawned } = testLauncher();
   const active = child(321);
