@@ -139,7 +139,6 @@ app.combine(
   preferencesApp,
   toolsApp,
   filtersApp,
-  financeApp,
   formulasApp,
   forecastApp,
   reportsApp,
