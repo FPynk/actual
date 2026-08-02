@@ -1,33 +1,97 @@
-#!/bin/bash -e
+#!/usr/bin/env node
 
-ROOT=`dirname $0`
+const { existsSync } = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
-cd "$ROOT/.."
+const repositoryRoot = path.resolve(__dirname, '..');
+const translationsRepositoryUrl =
+  'https://github.com/actualbudget/translations';
+const translationsDirectory = path.join(
+  'packages',
+  'desktop-client',
+  'locale',
+);
 
-SKIP_TRANSLATIONS=false
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --skip-translations)
-      SKIP_TRANSLATIONS=true
-      shift
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      exit 1
-      ;;
-  esac
-done
+function parseBuildBrowserArguments(argumentsToParse) {
+  let skipTranslations = false;
 
-if [ "$SKIP_TRANSLATIONS" = false ]; then
-  echo "Updating translations..."
-  if ! [ -d packages/desktop-client/locale ]; then
-      git clone https://github.com/actualbudget/translations packages/desktop-client/locale
-  fi
-  pushd packages/desktop-client/locale > /dev/null
-  git checkout .
-  git pull
-  popd > /dev/null
-  packages/desktop-client/bin/remove-untranslated-languages
-fi
+  for (const argument of argumentsToParse) {
+    if (argument === '--skip-translations') {
+      skipTranslations = true;
+      continue;
+    }
 
-lage build:browser --to=@actual-app/web
+    throw new Error(`Unknown argument: ${argument}`);
+  }
+
+  return { skipTranslations };
+}
+
+function runCommand(command, argumentsToRun, options = {}) {
+  const result = spawnSync(command, argumentsToRun, {
+    cwd: options.cwd,
+    shell: process.platform === 'win32',
+    stdio: options.stdio ?? 'inherit',
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status}`);
+  }
+}
+
+function updateTranslations(run, rootDirectory, directoryExists) {
+  const localeDirectory = path.join(rootDirectory, translationsDirectory);
+
+  console.log('Updating translations...');
+  if (!directoryExists(localeDirectory)) {
+    run(
+      'git',
+      ['clone', translationsRepositoryUrl, translationsDirectory],
+      { cwd: rootDirectory },
+    );
+  }
+
+  run('git', ['checkout', '.'], { cwd: localeDirectory });
+  run('git', ['pull'], { cwd: localeDirectory });
+  run(process.execPath, ['packages/desktop-client/bin/remove-untranslated-languages'], {
+    cwd: rootDirectory,
+  });
+}
+
+function buildBrowser({
+  argumentsToParse = process.argv.slice(2),
+  rootDirectory = repositoryRoot,
+  run = runCommand,
+  directoryExists = existsSync,
+} = {}) {
+  const { skipTranslations } = parseBuildBrowserArguments(argumentsToParse);
+
+  if (!skipTranslations) {
+    updateTranslations(run, rootDirectory, directoryExists);
+  }
+
+  run(process.platform === 'win32' ? 'lage.cmd' : 'lage', [
+    'build:browser',
+    '--to=@actual-app/web',
+  ], { cwd: rootDirectory });
+}
+
+if (require.main === module) {
+  try {
+    buildBrowser();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+}
+
+module.exports = {
+  buildBrowser,
+  parseBuildBrowserArguments,
+  runCommand,
+};

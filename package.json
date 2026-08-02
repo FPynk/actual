@@ -40,7 +40,7 @@
     "start:ios": "yarn build:browser && yarn workspace mobile-client start:ios",
     "start:android": "yarn build:browser && yarn workspace mobile-client start:android",
     "build:server": "yarn build:browser && yarn workspace @actual-app/sync-server build",
-    "build:browser": "./bin/package-browser",
+    "build:browser": "node ./bin/package-browser",
     "build:desktop": "./bin/package-electron",
     "build:plugins-service": "yarn workspace plugins-service build",
     "build:api": "yarn build --scope=@actual-app/api",
