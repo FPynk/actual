@@ -1,9 +1,10 @@
-import React, { Fragment, useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
 import type {
   ComponentProps,
   ComponentPropsWithoutRef,
   ComponentType,
   CSSProperties,
+  Key,
   ReactElement,
   ReactNode,
   SVGProps,
@@ -365,7 +366,7 @@ function defaultRenderSplitTransactionButton({
   key,
   ...props
 }: SplitTransactionButtonProps & {
-  key?: React.Key | null;
+  key?: Key | null;
 }): ReactElement<typeof SplitTransactionButton> {
   return <SplitTransactionButton key={key} {...props} />;
 }

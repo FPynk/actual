@@ -109,7 +109,7 @@ describe('ScheduledBankSyncRunner', () => {
   });
 
   it('records failures and prevents overlapping runner executions', async () => {
-    let rejectSync: (error: Error) => void = () => {};
+    let rejectSync: ((error: Error) => void) | undefined;
     schedulerTestState.syncAndDownload = vi.fn(
       () =>
         new Promise<void>((_resolve, reject) => {
@@ -125,6 +125,9 @@ describe('ScheduledBankSyncRunner', () => {
     );
 
     expect(schedulerTestState.syncAndDownload).toHaveBeenCalledTimes(1);
+    if (!rejectSync) {
+      throw new Error('The synthetic sync did not start.');
+    }
     rejectSync(new Error('synthetic sync failure'));
 
     await waitFor(() => {
