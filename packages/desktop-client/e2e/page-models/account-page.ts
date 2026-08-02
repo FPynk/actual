@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import { CloseAccountModal } from './close-account-modal';
 
 type TransactionEntry = {
+  date?: string;
   debit?: string;
   credit?: string;
   account?: string;
@@ -210,6 +211,15 @@ export class AccountPage {
     transactionRow: Locator,
     transaction: TransactionEntry,
   ) {
+    if (transaction.date) {
+      const dateCell = transactionRow.getByTestId('date');
+      await dateCell.click();
+      const dateInput = dateCell.getByRole('textbox');
+      await this.selectInputText(dateInput);
+      await dateInput.pressSequentially(transaction.date);
+      await this.page.keyboard.press('Tab');
+    }
+
     if (transaction.debit) {
       const debitCell = transactionRow.getByTestId('debit');
       await debitCell.click();
