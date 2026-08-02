@@ -66,6 +66,11 @@ export type CategorizationProposal = {
   explanation: string;
 };
 
+export type CategorizationProposalRequestResult = {
+  outcome: 'aborted' | 'complete' | 'failed';
+  proposals: CategorizationProposal[];
+};
+
 export type CategorizationApplyProposal = {
   categoryId: string;
   fingerprint: string;
@@ -242,26 +247,37 @@ export async function requestCategorizationProposalsSequentially({
   candidates,
   allowedCategoryIds,
   requestBatch,
+  signal,
 }: {
   candidates: PreparedCategorizationCandidate[];
   allowedCategoryIds: ReadonlySet<string>;
   requestBatch: (
     batch: PreparedCategorizationCandidate[],
+    signal: AbortSignal | undefined,
   ) => Promise<CategorizationProposal[]>;
-}): Promise<CategorizationProposal[]> {
+  signal?: AbortSignal;
+}): Promise<CategorizationProposalRequestResult> {
   const proposals: CategorizationProposal[] = [];
   for (const batch of splitCategorizationProviderBatches(candidates)) {
+    if (signal?.aborted) return { outcome: 'aborted', proposals };
+
+    let response: CategorizationProposal[];
+    try {
+      response = await requestBatch(batch, signal);
+    } catch {
+      return { outcome: signal?.aborted ? 'aborted' : 'failed', proposals };
+    }
     const batchProposals = validateCategorizationProposals(
       batch,
-      await requestBatch(batch),
+      response,
       allowedCategoryIds,
     );
     if (!batchProposals) {
-      throw new Error('invalid-categorization-response');
+      return { outcome: 'failed', proposals };
     }
     proposals.push(...batchProposals);
   }
-  return proposals;
+  return { outcome: 'complete', proposals };
 }
 
 export function getDefaultSelectedCategorizationCandidateIds(

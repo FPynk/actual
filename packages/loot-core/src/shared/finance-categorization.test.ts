@@ -156,26 +156,84 @@ describe('finance categorization', () => {
       },
     });
 
-    expect(proposals).toHaveLength(51);
+    expect(proposals).toEqual({
+      outcome: 'complete',
+      proposals: expect.arrayContaining([
+        expect.objectContaining({ candidateId: '0' }),
+      ]),
+    });
+    expect(proposals.proposals).toHaveLength(51);
     expect(requestedBatchSizes).toEqual([25, 25, 1]);
     expect(maximumActiveRequests).toBe(1);
   });
 
-  it('rejects invalid provider output before any apply operation', async () => {
-    await expect(
-      requestCategorizationProposalsSequentially({
-        candidates: [providerCandidate('one')],
-        allowedCategoryIds: new Set(['groceries']),
-        requestBatch: async () => [
-          {
-            candidateId: 'unknown',
-            categoryId: 'groceries',
-            confidence: 'high',
-            explanation: 'Invalid candidate.',
-          },
-        ],
-      }),
-    ).rejects.toThrow('invalid-categorization-response');
+  it('keeps completed batches reviewable when a later batch fails', async () => {
+    const candidates = Array.from({ length: 26 }, (_, index) =>
+      providerCandidate(String(index)),
+    );
+    const result = await requestCategorizationProposalsSequentially({
+      candidates,
+      allowedCategoryIds: new Set(['groceries']),
+      requestBatch: async batch => {
+        if (batch[0].candidateId === '25') {
+          throw new Error('network-failure');
+        }
+        return batch.map(candidate => ({
+          candidateId: candidate.candidateId,
+          categoryId: 'groceries',
+          confidence: 'high' as const,
+          explanation: 'Matches the merchant.',
+        }));
+      },
+    });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.proposals).toHaveLength(25);
+    expect(result.proposals[0]).toMatchObject({ candidateId: '0' });
+  });
+
+  it('stops before later batches after cancellation and keeps completed batches', async () => {
+    const candidates = Array.from({ length: 51 }, (_, index) =>
+      providerCandidate(String(index)),
+    );
+    const controller = new AbortController();
+    const requestedBatchSizes: number[] = [];
+    const result = await requestCategorizationProposalsSequentially({
+      candidates,
+      allowedCategoryIds: new Set(['groceries']),
+      signal: controller.signal,
+      requestBatch: async batch => {
+        requestedBatchSizes.push(batch.length);
+        controller.abort();
+        return batch.map(candidate => ({
+          candidateId: candidate.candidateId,
+          categoryId: 'groceries',
+          confidence: 'high' as const,
+          explanation: 'Matches the merchant.',
+        }));
+      },
+    });
+
+    expect(result.outcome).toBe('aborted');
+    expect(result.proposals).toHaveLength(25);
+    expect(requestedBatchSizes).toEqual([25]);
+  });
+
+  it('returns a failed result for invalid provider output before any apply operation', async () => {
+    const result = await requestCategorizationProposalsSequentially({
+      candidates: [providerCandidate('one')],
+      allowedCategoryIds: new Set(['groceries']),
+      requestBatch: async () => [
+        {
+          candidateId: 'unknown',
+          categoryId: 'groceries',
+          confidence: 'high',
+          explanation: 'Invalid candidate.',
+        },
+      ],
+    });
+
+    expect(result).toEqual({ outcome: 'failed', proposals: [] });
   });
 
   it('preselects only high-confidence proposals with a category', () => {

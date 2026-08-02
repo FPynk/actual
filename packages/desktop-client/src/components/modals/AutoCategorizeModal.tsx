@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { Button } from '@actual-app/components/button';
@@ -193,6 +193,16 @@ export function AutoCategorizeModal({
   );
   const [applySkippedCount, setApplySkippedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const isMountedRef = useRef(true);
+  const requestAbortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      requestAbortControllerRef.current?.abort();
+    };
+  }, []);
 
   const scopeOptions: Array<readonly [CategorizationScope['kind'], string]> = [
     ...(selectedTransactionIds.length > 0
@@ -275,14 +285,19 @@ export function AutoCategorizeModal({
 
   const requestProposals = async () => {
     if (!acceptedDisclosure) return;
+    const controller = new AbortController();
+    requestAbortControllerRef.current?.abort();
+    requestAbortControllerRef.current = controller;
     setError(null);
     setAcceptedDisclosure(false);
     setStage('requesting');
     try {
-      const proposals = await requestCategorizationProposalsSequentially({
+      const result = await requestCategorizationProposalsSequentially({
         candidates: preparedCandidates,
         allowedCategoryIds,
-        requestBatch: async batch => {
+        signal: controller.signal,
+        requestBatch: async (batch, signal) => {
+          if (signal?.aborted) throw new Error('categorization-aborted');
           const result = await send('finance-categorize', {
             model: settings.model,
             categorization_instruction: settings.masterPrompt,
@@ -302,27 +317,72 @@ export function AutoCategorizeModal({
           }));
         },
       });
+      if (
+        !isMountedRef.current ||
+        requestAbortControllerRef.current !== controller
+      ) {
+        return;
+      }
       const candidatesById = new Map(
         preparedCandidates.map(candidate => [candidate.candidateId, candidate]),
       );
-      const nextReviewRows = proposals.map(proposal => ({
+      const nextReviewRows = result.proposals.map(proposal => ({
         candidate: candidatesById.get(proposal.candidateId)!,
         proposal,
       }));
+      if (nextReviewRows.length === 0) {
+        if (result.outcome === 'aborted') {
+          setStage('consent');
+          return;
+        }
+        setError(
+          t(
+            'OpenAI did not return valid suggestions. No transactions were changed.',
+          ),
+        );
+        setStage('consent');
+        return;
+      }
       setReviewRows(nextReviewRows);
       setReviewPage(0);
       setSelectedCandidateIds(
-        getDefaultSelectedCategorizationCandidateIds(proposals),
+        getDefaultSelectedCategorizationCandidateIds(result.proposals),
       );
+      const unanalyzedCandidateCount =
+        preparedCandidates.length - result.proposals.length;
+      if (result.outcome === 'aborted') {
+        setError(
+          t(
+            'Stopped after completed batches. {{count}} expenses were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
+            { count: unanalyzedCandidateCount },
+          ),
+        );
+      } else if (result.outcome === 'failed') {
+        setError(
+          t(
+            'OpenAI stopped before every batch completed. {{count}} expenses were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
+            { count: unanalyzedCandidateCount },
+          ),
+        );
+      }
       setStage('review');
     } catch {
+      if (!isMountedRef.current) return;
       setError(
         t(
           'OpenAI did not return valid suggestions. No transactions were changed.',
         ),
       );
       setStage('consent');
+    } finally {
+      if (requestAbortControllerRef.current === controller) {
+        requestAbortControllerRef.current = null;
+      }
     }
+  };
+
+  const stopRequestingProposals = () => {
+    requestAbortControllerRef.current?.abort();
   };
 
   const applySelectedProposals = async () => {
@@ -382,6 +442,7 @@ export function AutoCategorizeModal({
     <Modal
       name="auto-categorize"
       containerProps={{ style: { width: 900, maxWidth: '95vw' } }}
+      onClose={stopRequestingProposals}
     >
       {({ state }) => (
         <>
@@ -516,12 +577,19 @@ export function AutoCategorizeModal({
             )}
 
             {stage === 'requesting' && (
-              <Information>
-                <Trans>
-                  Requesting categorization suggestions sequentially. Nothing is
-                  being changed yet.
-                </Trans>
-              </Information>
+              <>
+                <Information>
+                  <Trans>
+                    Requesting categorization suggestions sequentially. Nothing
+                    is being changed yet.
+                  </Trans>
+                </Information>
+                <ModalButtons>
+                  <Button onPress={stopRequestingProposals}>
+                    <Trans>Stop requesting</Trans>
+                  </Button>
+                </ModalButtons>
+              </>
             )}
 
             {stage === 'applying' && (
