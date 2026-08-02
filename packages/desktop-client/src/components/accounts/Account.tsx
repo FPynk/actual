@@ -16,6 +16,7 @@ import { View } from '@actual-app/components/view';
 import { listen, send } from '@actual-app/core/platform/client/connection';
 import * as undo from '@actual-app/core/platform/client/undo';
 import type { UndoState } from '@actual-app/core/server/undo';
+import type { AmazonTransaction } from '@actual-app/core/shared/finance/amazon';
 import { q } from '@actual-app/core/shared/query';
 import type { Query } from '@actual-app/core/shared/query';
 import {
@@ -644,6 +645,54 @@ class AccountInternal extends PureComponent<
           );
         }
       }
+    }
+  };
+
+  onAmazonImport = async () => {
+    try {
+      const { data } = await aqlQuery(
+        this.makeRootTransactionsQuery().select('*'),
+      );
+      const payeeNames = new Map(
+        this.props.payees.map(payee => [payee.id, payee.name]),
+      );
+      const transactions: AmazonTransaction[] = ungroupTransactions([
+        ...data,
+      ]).map(transaction => ({
+        id: transaction.id,
+        amount: transaction.amount,
+        date: transaction.date,
+        payee: transaction.payee ?? null,
+        payee_name:
+          transaction.payee == null
+            ? null
+            : (payeeNames.get(transaction.payee) ?? null),
+        imported_payee: transaction.imported_payee ?? null,
+        is_parent: transaction.is_parent,
+        is_child: transaction.is_child,
+        starting_balance_flag: transaction.starting_balance_flag,
+        reconciled: transaction.reconciled,
+        tombstone: transaction.tombstone,
+        _deleted: transaction._deleted,
+        transfer_id: transaction.transfer_id ?? null,
+      }));
+      this.props.dispatch(
+        pushModal({
+          modal: {
+            name: 'amazon-import-review',
+            options: { transactions },
+          },
+        }),
+      );
+    } catch {
+      this.props.dispatch(
+        addNotification({
+          notification: {
+            type: 'error',
+            message: t('Unable to load transactions for Amazon review.'),
+          },
+        }),
+      );
     }
   };
 
@@ -1859,6 +1908,7 @@ class AccountInternal extends PureComponent<
                 }
                 onSync={this.onSync}
                 onImport={this.onImport}
+                onAmazonImport={this.onAmazonImport}
                 onBatchDelete={this.onBatchDelete}
                 onBatchDuplicate={this.onBatchDuplicate}
                 onRunRules={this.onRunRules}

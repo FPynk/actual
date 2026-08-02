@@ -100,6 +100,7 @@ type AccountHeaderProps = {
   saveNameError: AccountNameFieldProps['saveNameError'];
   onSync: () => void;
   onImport: () => void;
+  onAmazonImport: () => void;
   onMenuSelect: AccountMenuProps['onMenuSelect'];
   onReconcile: ComponentProps<typeof ReconcileMenu>['onReconcile'];
   onBatchEdit: ComponentProps<typeof SelectedTransactionsButton>['onEdit'];
@@ -173,6 +174,7 @@ export function AccountHeader({
   saveNameError,
   onSync,
   onImport,
+  onAmazonImport,
   onMenuSelect,
   onReconcile,
   onBatchDelete,
@@ -365,14 +367,19 @@ export function AccountHeader({
           )}
 
           {account && !account.closed && (
-            <Button variant="bare" onPress={onImport}>
-              <SvgDownloadThickBottom
-                width={13}
-                height={13}
-                style={{ marginRight: 4 }}
-              />{' '}
-              <Trans>Import</Trans>
-            </Button>
+            <>
+              <Button variant="bare" onPress={onImport}>
+                <SvgDownloadThickBottom
+                  width={13}
+                  height={13}
+                  style={{ marginRight: 4 }}
+                />{' '}
+                <Trans>Import</Trans>
+              </Button>
+              <Button variant="bare" onPress={onAmazonImport}>
+                <Trans>Amazon review</Trans>
+              </Button>
+            </>
           )}
 
           {!showEmptyMessage && (
