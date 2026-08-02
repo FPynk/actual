@@ -2,8 +2,10 @@ import {
   financeMetadataVersion,
   financeReviewDecisions,
   financeReviewFeatures,
-  type FinanceMetadata,
-  type FinanceReviewDecisionRecord,
+} from '#types/finance';
+import type {
+  FinanceMetadata,
+  FinanceReviewDecisionRecord,
 } from '#types/finance';
 
 const maximumFinanceReviewCandidateKeyLength = 256;
@@ -60,6 +62,22 @@ export function findFinanceReviewDecision(
     decision =>
       decision.feature === feature && decision.candidateKey === candidateKey,
   );
+}
+
+export function withoutFinanceReviewDecision(
+  metadata: FinanceMetadata,
+  feature: FinanceReviewDecisionRecord['feature'],
+  candidateKey: string,
+): FinanceMetadata {
+  const currentMetadata = parseFinanceMetadata(metadata);
+
+  return {
+    reviewDecisions: currentMetadata.reviewDecisions.filter(
+      decision =>
+        decision.feature !== feature || decision.candidateKey !== candidateKey,
+    ),
+    version: financeMetadataVersion,
+  };
 }
 
 function parseFinanceReviewDecisionRecord(

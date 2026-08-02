@@ -2,8 +2,15 @@ import * as db from '#server/db';
 import { runHandler, runMutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { clearUndo, undo } from '#server/undo';
+import { withFinanceReviewDecision } from '#shared/finance-metadata';
 
-import { app, isReconciliationDecision } from './app';
+import {
+  app,
+  isReconciliationDecision,
+  isRecurringReviewDecision,
+  reopenRecurringReviewDecision,
+  saveRecurringReviewDecision,
+} from './app';
 
 async function prepareDuplicatePair() {
   await db.insertCategoryGroup({
@@ -138,5 +145,83 @@ describe('native reconciliation ledger decisions', () => {
 
     expect(await currentTransactions()).toHaveLength(2);
     expect(await app.handlers['finance/reconciliation-list']()).toEqual([]);
+  });
+});
+
+describe('recurring finance review decisions', () => {
+  beforeEach(async () => {
+    await prefs.loadPrefs();
+  });
+
+  afterEach(() => {
+    prefs.unloadPrefs();
+  });
+
+  it('persists deferred, rejected, and applied decisions by full candidate key', async () => {
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-1","payee-1","monthly"]',
+      decision: 'deferred',
+    });
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-2","payee-1","monthly"]',
+      decision: 'rejected',
+    });
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-3","payee-1","monthly"]',
+      decision: 'applied',
+    });
+
+    expect(
+      prefs.getFinanceMetadata().reviewDecisions.map(record => ({
+        candidateKey: record.candidateKey,
+        decision: record.decision,
+      })),
+    ).toEqual([
+      {
+        candidateKey: '["account-1","payee-1","monthly"]',
+        decision: 'deferred',
+      },
+      {
+        candidateKey: '["account-2","payee-1","monthly"]',
+        decision: 'rejected',
+      },
+      {
+        candidateKey: '["account-3","payee-1","monthly"]',
+        decision: 'applied',
+      },
+    ]);
+  });
+
+  it('reopens only the matching recurring decision', async () => {
+    await prefs.saveFinanceMetadata(
+      withFinanceReviewDecision(prefs.getFinanceMetadata(), {
+        candidateKey: 'amazon-order-1',
+        decision: 'applied',
+        feature: 'amazon',
+        updatedAt: '2026-08-02T12:00:00.000Z',
+      }),
+    );
+    await saveRecurringReviewDecision({
+      candidateKey: '["account","payee","monthly"]',
+      decision: 'deferred',
+    });
+
+    await reopenRecurringReviewDecision({
+      candidateKey: '["account","payee","monthly"]',
+    });
+
+    expect(prefs.getFinanceMetadata().reviewDecisions).toEqual([
+      {
+        candidateKey: 'amazon-order-1',
+        decision: 'applied',
+        feature: 'amazon',
+        updatedAt: '2026-08-02T12:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('rejects decisions that belong to other finance workflows', () => {
+    expect(isRecurringReviewDecision('deferred')).toBe(true);
+    expect(isRecurringReviewDecision('keep-both')).toBe(false);
   });
 });

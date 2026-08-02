@@ -5,10 +5,6 @@ import * as fs from '#platform/server/fs';
 import { logger, setVerboseMode } from '#platform/server/log';
 import * as sqlite from '#platform/server/sqlite';
 import { q } from '#shared/query';
-import {
-  createFinanceMetadata,
-  withFinanceReviewDecision,
-} from '#shared/finance-metadata';
 import { amountToInteger, integerToAmount } from '#shared/util';
 import type { Handlers } from '#types/handlers';
 
@@ -68,34 +64,6 @@ handlers['make-filters-from-conditions'] = async function ({
 }) {
   return rules.conditionsToAQL(conditions, { applySpecialCases });
 };
-
-handlers['finance/recurring/get-decision'] = async function ({
-  candidateKey,
-}) {
-  return prefs
-    .getFinanceMetadata()
-    .reviewDecisions.find(
-      decision =>
-        decision.feature === 'recurring' && decision.candidateKey === candidateKey,
-    );
-};
-
-handlers['finance/recurring/save-decision'] = mutator(async function ({
-  candidateKey,
-  decision,
-}) {
-  const currentMetadata = prefs.getFinanceMetadata() ?? createFinanceMetadata();
-  const finance = withFinanceReviewDecision(currentMetadata, {
-    candidateKey,
-    decision,
-    feature: 'recurring',
-    updatedAt: new Date().toISOString(),
-  });
-  await prefs.saveFinanceMetadata(finance);
-  return finance.reviewDecisions.find(
-    record => record.feature === 'recurring' && record.candidateKey === candidateKey,
-  );
-});
 
 handlers['query'] = async function (query) {
   if (query['table'] == null) {
@@ -163,6 +131,7 @@ handlers = installAPI(handlers) as Handlers;
 app.handlers = handlers;
 app.combine(
   authApp,
+  financeApp,
   schedulesApp,
   budgetApp,
   dashboardApp,
