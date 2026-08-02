@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   FinanceLauncher,
+  LauncherStoppedError,
   createServiceCommands,
   launcherEnvironment,
   parseArguments,
@@ -38,8 +39,14 @@ function testLauncher({ workerExists = true, portAvailable = async () => {}, fet
   const spawnProcess = (executable, arguments_, options) => {
     const result = child(nextPid++);
     spawned.push({ arguments_, executable, options, result });
-    if (arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ||
-      (arguments_.includes('vite') && arguments_.includes('build') && !arguments_.includes('--watch'))) {
+    if (
+      arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ||
+      (arguments_.includes('vite') &&
+        arguments_.includes('build') &&
+        !arguments_.includes('--watch')) ||
+      (arguments_.includes('@actual-app/finance-companion') &&
+        arguments_.includes('build'))
+    ) {
       queueMicrotask(() => result.emit('exit', 0, null));
     }
     if (executable === 'taskkill') queueMicrotask(() => result.emit('exit', 0, null));
@@ -123,9 +130,39 @@ test('starts in required order, waits for all readiness URLs, then opens proxied
     'http://127.0.0.1:5006/kcab/kcab.worker.dev.js',
     'http://127.0.0.1:4100/health',
   ]);
-  assert.deepEqual(spawned.slice(0, 7).map(item => item.arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ? 'configuration' : item.arguments_.includes('--watch') ? 'worker' : item.arguments_.includes('plugins-service') ? 'plugins' : item.arguments_.includes('@actual-app/web') ? 'frontend' : item.arguments_.includes('@actual-app/sync-server') ? 'actual' : item.arguments_.includes('@actual-app/finance-companion') ? 'companion' : 'worker-build'), [
-    'configuration', 'worker-build', 'worker', 'plugins', 'frontend', 'actual', 'companion',
-  ]);
+  assert.deepEqual(
+    spawned.slice(0, 8).map(item => {
+      if (
+        item.arguments_.some(argument =>
+          argument.includes('validate-finance-companion-config.ts'),
+        )
+      ) {
+        return 'configuration';
+      }
+      if (
+        item.arguments_.includes('@actual-app/finance-companion') &&
+        item.arguments_.includes('build')
+      ) {
+        return 'companion-build';
+      }
+      if (item.arguments_.includes('./dist/service/cli.js')) return 'companion';
+      if (item.arguments_.includes('--watch')) return 'worker';
+      if (item.arguments_.includes('plugins-service')) return 'plugins';
+      if (item.arguments_.includes('@actual-app/web')) return 'frontend';
+      if (item.arguments_.includes('@actual-app/sync-server')) return 'actual';
+      return 'worker-build';
+    }),
+    [
+      'configuration',
+      'worker-build',
+      'companion-build',
+      'worker',
+      'plugins',
+      'frontend',
+      'actual',
+      'companion',
+    ],
+  );
 });
 
 test('does not open a browser when requested and fails if the worker is absent', async () => {
@@ -159,19 +196,37 @@ test('rejects an absent secret file before any child starts without reading its 
   );
 });
 
-test('passes companion configuration only to its validator and companion child', async () => {
+test('passes companion configuration only to its validator and companion runtime child', async () => {
   const { launcher, spawned } = testLauncher();
   await launcher.start({ noOpen: true });
   const directSecret = 'synthetic-direct-secret';
   const configurationAndCompanion = spawned.filter(item =>
     item.arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ||
-    item.arguments_.includes('@actual-app/finance-companion'),
+    item.arguments_.includes('./dist/service/cli.js'),
   );
   assert.equal(configurationAndCompanion.every(item => item.options.env.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL === directSecret), true);
   const unrelated = spawned.filter(item => !configurationAndCompanion.includes(item));
   assert.equal(unrelated.every(item => !Object.keys(item.options.env).some(name => name.startsWith('FINANCE_COMPANION_'))), true);
   const actual = spawned.find(item => item.arguments_.includes('@actual-app/sync-server'));
+  const companionBuild = spawned.find(
+    item =>
+      item.arguments_.includes('@actual-app/finance-companion') &&
+      item.arguments_.includes('build'),
+  );
+  const companionRuntime = spawned.find(item =>
+    item.arguments_.includes('./dist/service/cli.js'),
+  );
   const frontend = spawned.find(item => item.arguments_.includes('@actual-app/web'));
+  assert.equal(
+    Object.keys(companionBuild.options.env).some(name =>
+      name.startsWith('FINANCE_COMPANION_'),
+    ),
+    false,
+  );
+  assert.equal(
+    companionRuntime.options.env.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL,
+    directSecret,
+  );
   assert.equal(actual.options.env.ACTUAL_HOSTNAME, '127.0.0.1');
   assert.equal(actual.options.env.NODE_ENV, 'development');
   assert.equal(frontend.options.env.BROWSER, 'none');
@@ -195,6 +250,26 @@ test('cleans up every owned child when readiness fails', async () => {
   const taskkill = spawned.filter(item => item.executable === 'taskkill');
   assert.equal(taskkill.length >= 5, true);
   assert.equal(taskkill.every(item => item.arguments_.includes('/T')), true);
+});
+
+test('shutdown aborts readiness immediately without writing a duplicate error', async () => {
+  let readinessFetchStarted;
+  const { errorOutput, launcher, spawned } = testLauncher({
+    fetchImplementation: (_url, { signal }) =>
+      new Promise((resolve, reject) => {
+        readinessFetchStarted = resolve;
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      }),
+  });
+  const starting = launcher.start({ noOpen: true });
+  while (readinessFetchStarted === undefined) await Promise.resolve();
+  await launcher.requestShutdown();
+  await assert.rejects(starting, LauncherStoppedError);
+  assert.equal(errorOutput.text, '');
+  assert.equal(
+    spawned.filter(item => item.executable === 'taskkill').length >= 5,
+    true,
+  );
 });
 
 test('selects only recorded Windows child PIDs for graceful and forced cleanup', async () => {

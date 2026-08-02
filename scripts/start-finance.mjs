@@ -12,6 +12,13 @@ const companionUrl = 'http://127.0.0.1:4100';
 const readinessTimeoutMilliseconds = 60_000;
 const shutdownGraceMilliseconds = 10_000;
 
+export class LauncherStoppedError extends Error {
+  constructor() {
+    super('Launcher stopped.');
+    this.name = 'LauncherStoppedError';
+  }
+}
+
 export function parseArguments(arguments_) {
   const noOpen = arguments_.includes('--no-open');
   const unknown = arguments_.filter(argument => argument !== '--no-open');
@@ -78,7 +85,8 @@ export function createServiceCommands() {
     watchPlugins: [yarnExecutable(), [...yarn, 'workspace', 'plugins-service', 'watch']],
     frontend: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/web', 'exec', 'vite', '--host', '127.0.0.1', '--port', '3001', '--strictPort', '--mode', 'browser']],
     actual: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/sync-server', 'start']],
-    companion: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/finance-companion', 'start']],
+    buildCompanion: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/finance-companion', 'build']],
+    companion: [process.execPath, ['./dist/service/cli.js', 'start']],
   };
 }
 
@@ -167,7 +175,10 @@ export class FinanceLauncher {
     this.commands = createServiceCommands(platform);
     this.children = [];
     this.shuttingDown = false;
+    this.shutdownRequested = false;
     this.failure = undefined;
+    this.reportedFailure = false;
+    this.readinessAbortController = new AbortController();
   }
 
   async start({ noOpen = false } = {}) {
@@ -177,6 +188,7 @@ export class FinanceLauncher {
       await this.assertPortsAvailable([3001, 4100, 5006]);
       await this.runOnce('configuration', ...this.commands.validateCompanion);
       await this.runOnce('worker-build', ...this.commands.buildWorker);
+      await this.runOnce('companion-build', ...this.commands.buildCompanion);
       const workerPath = path.join(repositoryRoot, 'packages', 'loot-core', 'lib-dist', 'browser', 'kcab.worker.dev.js');
       if (!this.workerExists(workerPath)) throw new Error('The loot-core worker build did not produce kcab.worker.dev.js.');
 
@@ -187,7 +199,14 @@ export class FinanceLauncher {
         ['actual', this.commands.actual],
         ['companion', this.commands.companion],
       ]) {
-        this.startChild(name, ...command);
+        this.startChild(
+          name,
+          ...command,
+          false,
+          name === 'companion'
+            ? path.join(repositoryRoot, 'packages', 'finance-companion')
+            : repositoryRoot,
+        );
       }
 
       await this.waitForReadiness();
@@ -202,9 +221,9 @@ export class FinanceLauncher {
     }
   }
 
-  startChild(name, executable, arguments_, allowExit = false) {
+  startChild(name, executable, arguments_, allowExit = false, cwd = repositoryRoot) {
     const child = this.spawnProcess(executable, arguments_, {
-      cwd: repositoryRoot,
+      cwd,
       detached: this.platform !== 'win32',
       env: this.childEnvironment(name),
       shell: false,
@@ -267,12 +286,20 @@ export class FinanceLauncher {
     const deadline = this.now() + this.readinessTimeout;
     let lastError = 'not responding';
     while (this.now() < deadline) {
+      if (this.shutdownRequested) throw new LauncherStoppedError();
       if (this.failure) throw this.failure;
       try {
-        const response = await this.fetchImplementation(url, { signal: AbortSignal.timeout(2_000) });
+        const response = await this.fetchImplementation(url, {
+          signal: AbortSignal.any([
+            this.readinessAbortController.signal,
+            AbortSignal.timeout(2_000),
+          ]),
+        });
         if (response.ok) return;
         lastError = `HTTP ${response.status}`;
       } catch (error) {
+        if (this.shutdownRequested) throw new LauncherStoppedError();
+        if (this.failure) throw this.failure;
         lastError = error instanceof Error ? error.message : String(error);
       }
       await this.sleep(250);
@@ -282,6 +309,7 @@ export class FinanceLauncher {
 
   async fail(message) {
     if (this.shuttingDown) return;
+    this.reportedFailure = true;
     this.errorOutput.write(`${message}\n`);
     await this.shutdown();
     this.onFailure();
@@ -290,11 +318,17 @@ export class FinanceLauncher {
   async shutdown() {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.readinessAbortController.abort();
     const records = [...this.children];
     await Promise.all(records.map(record => this.stopChild(record, false)));
     await this.sleep(shutdownGraceMilliseconds);
     await Promise.all(records.filter(({ child }) => child.exitCode === null && !child.killed).map(record => this.stopChild(record, true)));
     this.children = [];
+  }
+
+  async requestShutdown() {
+    this.shutdownRequested = true;
+    await this.shutdown();
   }
 
   async stopChild(record, force) {
@@ -340,13 +374,16 @@ async function main() {
   let launcher;
   try {
     launcher = new FinanceLauncher({ onFailure: () => { process.exitCode = 1; } });
-    const stop = () => void launcher.shutdown();
+    const stop = () => void launcher.requestShutdown();
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     await launcher.start(parseArguments(process.argv.slice(2)));
   } catch (error) {
     await launcher?.shutdown();
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    if (error instanceof LauncherStoppedError) return;
+    if (!launcher?.reportedFailure) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
     process.exitCode = 1;
   }
 }
