@@ -27,12 +27,12 @@ The supplied instruction is product-level guidance (for example, "classify work 
 
 The transaction-list toolbar action opens an **Auto-categorize** dialog. The dialog has exactly these mutually exclusive scopes:
 
-| Scope | Candidate set |
-| --- | --- |
-| Selected rows | Rows selected in the current transaction table. |
+| Scope          | Candidate set                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| Selected rows  | Rows selected in the current transaction table.                                               |
 | Current filter | All eligible rows in the current table query/filter, including rows outside the visible page. |
-| Date range | Eligible rows whose transaction date is in an inclusive start/end range. |
-| All eligible | Every eligible expense transaction in the open budget. |
+| Date range     | Eligible rows whose transaction date is in an inclusive start/end range.                      |
+| All eligible   | Every eligible expense transaction in the open budget.                                        |
 
 The dialog displays the resolved candidate count before sending anything. Its **Include already categorized expenses** checkbox is off by default. With it off, only rows without a category are candidates. With it on, categorised ordinary expenses are also candidates and can receive a proposed replacement; the preview always shows the current category and highlights a proposed change.
 
@@ -103,11 +103,19 @@ Use the Responses API with a server-side request, `store: false`, the chosen mod
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["candidate_id", "category_id", "confidence", "explanation"],
+          "required": [
+            "candidate_id",
+            "category_id",
+            "confidence",
+            "explanation"
+          ],
           "properties": {
             "candidate_id": { "type": "string" },
             "category_id": { "type": ["string", "null"] },
-            "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+            "confidence": {
+              "type": "string",
+              "enum": ["high", "medium", "low"]
+            },
             "explanation": { "type": "string", "maxLength": 240 }
           }
         }
@@ -121,13 +129,13 @@ Use the Responses API with a server-side request, `store: false`, the chosen mod
 
 ## Batching, cost, failures, and rate limits
 
-One preview runs at a time per browser session. The client divides the resolved candidates into batches of at most 25 and submits them sequentially to the server; the complete review opens only once every batch has a valid response. This keeps category context bounded, permits progress ("50 of 173 analyzed"), avoids a persistent job/queue for the first release, and makes cancellation immediate before the next batch.
+One preview runs at a time per browser session. The client divides the resolved candidates into batches of at most 25 and submits them sequentially to the server. The review opens after every batch succeeds, or with the completed batches when a later batch fails or the user stops the run. This keeps category context bounded, permits progress ("50 of 173 analyzed"), avoids a persistent job/queue for the first release, and makes cancellation immediate before the next batch.
 
 The dialog estimates request count from the candidate count and displays it before confirmation. It does not claim an invented dollar estimate because model pricing may change and the custom prompt/category text affects token use. The server returns OpenAI usage when available for a completed run so the review can display actual input/output token counts.
 
 - A 429 or transient 5xx is retried at most twice using `Retry-After` when supplied, otherwise capped exponential backoff with jitter. The UI stays cancellable.
 - Authentication/configuration errors stop the run and direct the user to settings without exposing key details.
-- A malformed, refused, incomplete, or disallowed response fails only that batch; already received proposals remain reviewable and the dialog identifies the failed rows. The user may retry failed rows.
+- A malformed, refused, incomplete, or disallowed response fails only that batch; already received proposals remain reviewable and the dialog shows how many expenses were not analyzed. The user starts a new preview to retry them.
 - Network timeouts and user cancellation stop future batches without applying anything. No preview is silently resumed after reload.
 - A server-side per-user/budget rate limit prevents concurrent expensive previews; the response tells the UI when it may retry.
 
