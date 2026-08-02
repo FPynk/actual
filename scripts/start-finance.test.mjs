@@ -120,12 +120,12 @@ function testLauncher({
   };
 }
 
-test('rejects unknown arguments and accepts --no-open', () => {
+void test('rejects unknown arguments and accepts --no-open', () => {
   assert.deepEqual(parseArguments(['--no-open']), { noOpen: true });
   assert.throws(() => parseArguments(['--wrong']), /Unknown argument/);
 });
 
-test('uses Node plus the committed Yarn release on Windows paths and stable disjoint persistent paths', () => {
+void test('uses Node plus the committed Yarn release on Windows paths and stable disjoint persistent paths', () => {
   const environment = { LOCALAPPDATA: 'C:\\Users\\Example\\AppData\\Local' };
   const first = persistentPaths(environment, 'win32');
   const second = persistentPaths(environment, 'win32');
@@ -163,7 +163,7 @@ test('uses Node plus the committed Yarn release on Windows paths and stable disj
   assert.match(yarnVersion.stdout, /^4\.17\.1/);
 });
 
-test('starts in required order, waits for all readiness URLs, then opens proxied Actual', async () => {
+void test('starts in required order, waits for all readiness URLs, then opens proxied Actual', async () => {
   const requested = [];
   const { launcher, opened, spawned } = testLauncher({
     fetchImplementation: async url => {
@@ -214,7 +214,7 @@ test('starts in required order, waits for all readiness URLs, then opens proxied
   );
 });
 
-test('does not open a browser when requested and fails if the worker is absent', async () => {
+void test('does not open a browser when requested and fails if the worker is absent', async () => {
   const missingWorker = testLauncher({ workerExists: false });
   await assert.rejects(
     missingWorker.launcher.start({ noOpen: true }),
@@ -226,7 +226,7 @@ test('does not open a browser when requested and fails if the worker is absent',
   assert.deepEqual(noOpen.opened, []);
 });
 
-test('fails before spawning when a required port is occupied and never includes secret values in its error', async () => {
+void test('fails before spawning when a required port is occupied and never includes secret values in its error', async () => {
   const { errorOutput, launcher, output, spawned } = testLauncher({
     portAvailable: async port => {
       if (port === 4100) throw new Error('Port 4100 is already in use.');
@@ -238,7 +238,7 @@ test('fails before spawning when a required port is occupied and never includes 
   assert.equal(errorOutput.text.includes('synthetic-direct-secret'), false);
 });
 
-test('rejects an absent secret file before any child starts without reading its contents', () => {
+void test('rejects an absent secret file before any child starts without reading its contents', () => {
   assert.throws(
     () =>
       preflightCompanionConfiguration({
@@ -249,7 +249,7 @@ test('rejects an absent secret file before any child starts without reading its 
   );
 });
 
-test('requires initialized companion artifacts before launching children', async () => {
+void test('requires initialized companion artifacts before launching children', async () => {
   const temporaryRoot = mkdtempSync(
     path.join(os.tmpdir(), 'finance-launcher-'),
   );
@@ -281,7 +281,7 @@ test('requires initialized companion artifacts before launching children', async
   }
 });
 
-test('accepts readable regular initialized companion artifacts', () => {
+void test('accepts readable regular initialized companion artifacts', () => {
   const temporaryRoot = mkdtempSync(
     path.join(os.tmpdir(), 'finance-launcher-'),
   );
@@ -312,7 +312,7 @@ test('accepts readable regular initialized companion artifacts', () => {
   }
 });
 
-test('passes companion configuration only to its validator and companion runtime child', async () => {
+void test('passes companion configuration only to its validator and companion runtime child', async () => {
   const { launcher, spawned } = testLauncher();
   await launcher.start({ noOpen: true });
   const directSecret = 'synthetic-direct-secret';
@@ -378,7 +378,7 @@ test('passes companion configuration only to its validator and companion runtime
   assert.equal(frontend.options.env.PORT, '3001');
 });
 
-test('stops startup on an unexpected child failure before opening a browser', async () => {
+void test('stops startup on an unexpected child failure before opening a browser', async () => {
   const { launcher, opened } = testLauncher({
     failingService: 'plugins-service',
   });
@@ -386,7 +386,7 @@ test('stops startup on an unexpected child failure before opening a browser', as
   assert.deepEqual(opened, []);
 });
 
-test('cleans up every owned child when readiness fails', async () => {
+void test('cleans up every owned child when readiness fails', async () => {
   let currentTime = 0;
   const { launcher, spawned } = testLauncher({
     fetchImplementation: async () => ({ ok: false, status: 503 }),
@@ -405,7 +405,7 @@ test('cleans up every owned child when readiness fails', async () => {
   );
 });
 
-test('shutdown aborts readiness immediately without writing a duplicate error', async () => {
+void test('shutdown aborts readiness immediately without writing a duplicate error', async () => {
   let readinessFetchStarted;
   const { errorOutput, launcher, spawned } = testLauncher({
     fetchImplementation: (_url, { signal }) =>
@@ -425,7 +425,7 @@ test('shutdown aborts readiness immediately without writing a duplicate error', 
   );
 });
 
-test('shutdown during a pre-spawn awaited stage prevents every later child', async () => {
+void test('shutdown during a pre-spawn awaited stage prevents every later child', async () => {
   let releasePortCheck;
   let portCheckStarted = false;
   let firstPortCheck = true;
@@ -447,7 +447,7 @@ test('shutdown during a pre-spawn awaited stage prevents every later child', asy
   assert.equal(spawned.length, 0);
 });
 
-test('selects only recorded Windows child PIDs for graceful and forced cleanup', async () => {
+void test('selects only recorded Windows child PIDs for graceful and forced cleanup', async () => {
   const { launcher, spawned } = testLauncher();
   const active = child(321);
   launcher.children = [{ name: 'owned', child: active }];
@@ -460,7 +460,7 @@ test('selects only recorded Windows child PIDs for graceful and forced cleanup',
   );
 });
 
-test('asks the companion to close its database before using Windows taskkill fallback', async () => {
+void test('asks the companion to close its database before using Windows taskkill fallback', async () => {
   const { launcher, spawned } = testLauncher();
   const companion = child(321);
   const worker = child(654);
@@ -478,7 +478,7 @@ test('asks the companion to close its database before using Windows taskkill fal
   );
 });
 
-test('launcher defaults preserve explicit paths while applying loopback service settings', () => {
+void test('launcher defaults preserve explicit paths while applying loopback service settings', () => {
   const environment = launcherEnvironment({
     ACTUAL_DATA_DIR: 'D:\\Actual State',
     FINANCE_COMPANION_DATA_DIR: 'D:\\Companion Data',
@@ -490,7 +490,7 @@ test('launcher defaults preserve explicit paths while applying loopback service 
   assert.equal(environment.ACTUAL_EXTERNAL_LOOT_CORE_WATCHER, '1');
 });
 
-test('the development frontend keeps worker middleware and does not auto-open a raw Vite tab', async () => {
+void test('the development frontend keeps worker middleware and does not auto-open a raw Vite tab', async () => {
   const frontendConfiguration = await readFile(
     new URL('../packages/desktop-client/vite.config.mts', import.meta.url),
     'utf8',

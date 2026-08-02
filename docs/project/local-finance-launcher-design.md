@@ -127,7 +127,11 @@ random 32-byte base64url directory nonce. The root must be an existing canonical
 non-symlink directory and otherwise empty when unowned; the canonical marker is
 written with exclusive-create semantics and restrictive mode. Later migrations
 verify the exact existing marker and never overwrite or silently rebind it. The
-launcher only verifies that this initialization exists.
+launcher only verifies that this initialization exists. Creation revalidates
+the canonical directory identity and contents immediately around the write. If
+a competing change prevents owner creation after a genuinely fresh database and
+anchor were created, the lifecycle removes only the identity-matched artifacts
+from that failed attempt. It never rolls back an existing database.
 
 Only the validation process and already-built companion runtime receive
 `FINANCE_COMPANION_*` variables. The companion build, worker, plugin, frontend,
@@ -153,8 +157,10 @@ readiness deadline. Startup checks the shutdown state after every awaited stage
 and immediately before each spawn, so a child cannot be launched after shutdown
 has taken its ownership snapshot.
 
-- Windows uses `taskkill /PID <owned-pid> /T` and escalates to `/F` only after
-  the grace period.
+- On Windows, the launcher first asks the direct companion child over its private
+  Node IPC channel to close its HTTP server and SQLite database. Other owned
+  process trees receive `taskkill /PID <owned-pid> /T`; any child still alive
+  after the grace period is escalated with `/F`.
 - POSIX children use their own process groups; the launcher signals only those
   groups and escalates after the same grace period.
 - A second shutdown signal may force the already-owned groups, but it never
@@ -176,12 +182,13 @@ and browser-opening adapters. Focused tests cover:
 - missing configuration with secret names only and no secret values;
 - missing one-time migration artifacts before child creation;
 - exclusive Actual API owner creation plus valid-rerun, mismatch, non-empty,
-  and symlink failure cases;
+  symlink, competing marker, unexpected entry, and directory-replacement cases;
 - secret delivery only to the validator and built companion runtime;
 - immediate readiness cancellation during shutdown;
 - shutdown during a pre-spawn stage with no late child creation;
 - `--no-open` and unknown arguments;
-- graceful and forced cleanup of only recorded child IDs;
+- graceful companion database shutdown and forced cleanup of only recorded
+  child IDs;
 - stable persistent directory reuse across two launches; and
 - automatic Actual URL choice through the port-5006 proxied origin.
 
@@ -198,5 +205,6 @@ startup. Document the two local URLs, automatic same-origin server selection,
 persistence, `--no-open`, port-conflict errors, and `Ctrl+C` shutdown.
 
 Rollback is a normal revert of the FIN-66 squash commit. The existing package
-commands remain available and no persistent data format changes, migration, or
-secret rotation is introduced.
+commands remain available, and FIN-66 introduces no companion database schema
+change or secret rotation. A successfully created Actual API `owner.json` is a
+persistent safety marker and is not deleted automatically during rollback.
