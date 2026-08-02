@@ -11,6 +11,11 @@ import {
   app,
   isReconciliationDecision,
   isRecurringReviewDecision,
+  getAmazonReviewDecisions,
+  getAmazonReviewOrders,
+  reopenAmazonReviewDecision,
+  saveAmazonReviewDecision,
+  saveAmazonReviewOrders,
   reopenRecurringReviewDecision,
   saveRecurringReviewDecision,
 } from './app';
@@ -226,6 +231,100 @@ describe('recurring finance review decisions', () => {
   it('rejects decisions that belong to other finance workflows', () => {
     expect(isRecurringReviewDecision('deferred')).toBe(true);
     expect(isRecurringReviewDecision('keep-both')).toBe(false);
+  });
+});
+
+describe('Amazon review persistence', () => {
+  const syntheticOrder = {
+    currency: 'USD',
+    date: '2026-08-01',
+    discountTotal: 0,
+    giftCardTotal: 0,
+    itemSubtotal: 1299,
+    items: [
+      {
+        discountAmount: 0,
+        id: 'synthetic-item',
+        quantity: 1,
+        refundAmount: 0,
+        shipmentId: null,
+        shippingAmount: 0,
+        taxAmount: 0,
+        title: 'Synthetic test item',
+        unitAmount: 1299,
+      },
+    ],
+    marketplace: 'amazon.com',
+    orderId: '111-2222222-3333333',
+    orderTotal: 1299,
+    refundTotal: 0,
+    refunds: [],
+    shipments: [],
+    shippingTotal: 0,
+    taxTotal: 0,
+  };
+
+  beforeEach(async () => {
+    await global.emptyDatabase()();
+    prefs.unloadPrefs();
+    await prefs.loadPrefs();
+  });
+
+  afterEach(async () => {
+    prefs.unloadPrefs();
+    await global.emptyDatabase()();
+  });
+
+  it('deduplicates normalized data and persists a reopenable decision without ledger writes', async () => {
+    expect(
+      await saveAmazonReviewOrders({ orders: [syntheticOrder] }),
+    ).toMatchObject({
+      status: 'saved',
+    });
+    expect(
+      await saveAmazonReviewOrders({ orders: [syntheticOrder] }),
+    ).toMatchObject({
+      status: 'saved',
+    });
+    const changedOrder = {
+      ...syntheticOrder,
+      items: [{ ...syntheticOrder.items[0], title: 'Updated synthetic item' }],
+    };
+    expect(await saveAmazonReviewOrders({ orders: [changedOrder] })).toEqual({
+      conflictingOrderIds: ['111-2222222-3333333'],
+      status: 'conflict',
+    });
+    expect(await getAmazonReviewOrders()).toEqual([syntheticOrder]);
+    expect(await currentTransactions()).toEqual([]);
+    expect(
+      await saveAmazonReviewOrders({
+        orders: [changedOrder],
+        replaceExistingOrderIds: ['111-2222222-3333333'],
+      }),
+    ).toMatchObject({ status: 'saved' });
+    expect(await getAmazonReviewOrders()).toEqual([changedOrder]);
+    expect(await currentTransactions()).toEqual([]);
+    await saveAmazonReviewDecision({
+      candidateKey: 'amazon:charge:111-2222222-3333333',
+      decision: 'deferred',
+    });
+
+    expect(await getAmazonReviewOrders()).toEqual([changedOrder]);
+    expect(await getAmazonReviewDecisions()).toMatchObject([
+      {
+        candidateKey: 'amazon:charge:111-2222222-3333333',
+        decision: 'deferred',
+      },
+    ]);
+    expect(await currentTransactions()).toEqual([]);
+
+    await reopenAmazonReviewDecision({
+      candidateKey: 'amazon:charge:111-2222222-3333333',
+    });
+
+    expect(await getAmazonReviewOrders()).toEqual([changedOrder]);
+    expect(await getAmazonReviewDecisions()).toEqual([]);
+    expect(await currentTransactions()).toEqual([]);
   });
 });
 

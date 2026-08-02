@@ -140,6 +140,7 @@ describe('native reconciliation candidates', () => {
     expect(candidate).toBeDefined();
 
     const metadata: FinanceMetadata = {
+      amazonOrders: [],
       version: 1,
       reviewDecisions: [
         {
@@ -208,6 +209,7 @@ describe('native reconciliation candidates', () => {
       payees,
     )[0];
     const currentDeferral: FinanceMetadata = {
+      amazonOrders: [],
       version: 1,
       reviewDecisions: [
         {

@@ -114,6 +114,87 @@ const canonicalCurrencyPattern = /^[A-Z]{3}$/;
 const canonicalDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 export const maximumAmazonImportFileSize = 10 * 1024 * 1024;
 
+/**
+ * Validates the compact normalized representation kept in budget metadata.
+ * It deliberately reconstructs the same canonical input used for uploads so
+ * persisted values get exactly the same bounds and canonicalization checks.
+ */
+export function normalizeAmazonReviewOrders(
+  value: unknown,
+): readonly AmazonOrder[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Amazon review orders are invalid.');
+  }
+  const sections: Record<string, unknown[]> = {
+    items: [],
+    orders: [],
+    refunds: [],
+    shipments: [],
+  };
+  for (const rawOrder of value) {
+    const order = requireRecord(rawOrder);
+    const items = order.items;
+    const shipments = order.shipments;
+    const refunds = order.refunds;
+    if (
+      !Array.isArray(items) ||
+      !Array.isArray(shipments) ||
+      !Array.isArray(refunds)
+    ) {
+      throw new Error('Amazon review order children are invalid.');
+    }
+    sections.orders.push({
+      currencyCode: order.currency,
+      discountTotal: order.discountTotal,
+      externalOrderId: order.orderId,
+      giftCardTotal: order.giftCardTotal,
+      itemSubtotal: order.itemSubtotal,
+      marketplace: order.marketplace,
+      orderDate: order.date,
+      orderTotal: order.orderTotal,
+      refundTotal: order.refundTotal,
+      shippingTotal: order.shippingTotal,
+      taxTotal: order.taxTotal,
+    });
+    for (const rawShipment of shipments) {
+      const shipment = requireRecord(rawShipment);
+      sections.shipments.push({
+        externalOrderId: order.orderId,
+        externalShipmentId: shipment.id,
+        shipmentDate: shipment.date,
+        shipmentTotal: shipment.total,
+      });
+    }
+    for (const rawItem of items) {
+      const item = requireRecord(rawItem);
+      sections.items.push({
+        discountAmount: item.discountAmount,
+        externalItemId: item.id,
+        externalOrderId: order.orderId,
+        quantity: item.quantity,
+        refundAmount: item.refundAmount,
+        shipmentKey: item.shipmentId,
+        shippingAmount: item.shippingAmount,
+        taxAmount: item.taxAmount,
+        title: item.title,
+        unitAmount: item.unitAmount,
+      });
+    }
+    for (const rawRefund of refunds) {
+      const refund = requireRecord(rawRefund);
+      sections.refunds.push({
+        amount: refund.amount,
+        externalOrderId: order.orderId,
+        externalRefundId: refund.id,
+        itemKey: refund.itemId,
+        reason: refund.reason,
+        refundDate: refund.date,
+      });
+    }
+  }
+  return parseCanonicalSections(sections);
+}
+
 export function parseAmazonJson(contents: string): readonly AmazonOrder[] {
   if (contents.length > maximumAmazonImportFileSize) {
     throw new Error('Amazon JSON file is too large.');
@@ -833,7 +914,9 @@ function createMatch(
   score: number,
   reasons: readonly AmazonMatchReason[],
 ): AmazonMatch {
-  const candidateKey = `amazon:${source.id}:${transaction?.id ?? 'none'}`;
+  // Source identifiers are bounded; including a transaction identifier could
+  // exceed the metadata decision-key limit without adding review value.
+  const candidateKey = `amazon:${source.id}`;
   return {
     candidateKey,
     evidenceFingerprint: JSON.stringify({
