@@ -1,4 +1,5 @@
 import { send } from '@actual-app/core/platform/client/connection';
+import type { AmazonTransaction } from '@actual-app/core/shared/finance/amazon';
 import type { IntegerAmount } from '@actual-app/core/shared/util';
 import type { File } from '@actual-app/core/types/file';
 import type {
@@ -56,7 +57,7 @@ export type Modal =
   | {
       name: 'amazon-import-review';
       options: {
-        transactions: TransactionEntity[];
+        transactions: AmazonTransaction[];
       };
     }
   | {
