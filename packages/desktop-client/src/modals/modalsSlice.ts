@@ -338,6 +338,9 @@ export type Modal =
       name: 'schedules-discover';
     }
   | {
+      name: 'reconciliation-review';
+    }
+  | {
       name: 'schedule-posts-offline-notification';
     }
   | {

@@ -12,6 +12,9 @@ import { batchUpdateTransactions } from '.';
 
 export async function mergeTransactions(
   transactions: Pick<TransactionEntity, 'id'>[],
+  {
+    preferredFieldsTransactionId,
+  }: { preferredFieldsTransactionId?: TransactionEntity['id'] } = {},
 ): Promise<TransactionEntity['id']> {
   // make sure all values have ids
   const txIds = transactions?.map(x => x?.id).filter(Boolean) || [];
@@ -26,7 +29,9 @@ export async function mergeTransactions(
   const bTransferId = b.transfer_id;
 
   // we don't need all the transfer logic if there are no transfers.
-  if (!aTransferId && !bTransferId) return mergeTransactionsNoTransfer(a, b);
+  if (!aTransferId && !bTransferId) {
+    return mergeTransactionsNoTransfer(a, b, preferredFieldsTransactionId);
+  }
 
   const transferAccount = aTransferId ? a.payee : b.payee;
 
@@ -110,8 +115,15 @@ async function mapAndValidateTransactions(
 export async function mergeTransactionsNoTransfer(
   a: TransactionEntity,
   b: TransactionEntity,
+  preferredFieldsTransactionId?: TransactionEntity['id'],
 ): Promise<TransactionEntity['id']> {
   const { keep, drop } = determineKeepDrop(a, b);
+  const preferredFieldsTransaction =
+    preferredFieldsTransactionId === a.id
+      ? a
+      : preferredFieldsTransactionId === b.id
+        ? b
+        : undefined;
 
   // Load subtransactions with a single query, then split by parent_id in memory
   const keepSubtransactions: TransactionEntity[] = [];
@@ -158,22 +170,25 @@ export async function mergeTransactionsNoTransfer(
       id: keep.id,
       is_parent: true,
       category: null, // Parent transactions with splits shouldn't have a category
-      payee: keep.payee || drop.payee,
-      notes: keep.notes || drop.notes,
+      payee: preferredFieldsTransaction?.payee || keep.payee || drop.payee,
+      notes: preferredFieldsTransaction?.notes || keep.notes || drop.notes,
       cleared: keep.cleared || drop.cleared,
       reconciled: keep.reconciled || drop.reconciled,
-      schedule: keep.schedule || drop.schedule,
+      schedule:
+        preferredFieldsTransaction?.schedule || keep.schedule || drop.schedule,
     } as unknown as TransactionEntity);
   } else {
     // Normal merge without subtransactions
     await db.updateTransaction({
       id: keep.id,
-      payee: keep.payee || drop.payee,
-      category: keep.category || drop.category,
-      notes: keep.notes || drop.notes,
+      payee: preferredFieldsTransaction?.payee || keep.payee || drop.payee,
+      category:
+        preferredFieldsTransaction?.category || keep.category || drop.category,
+      notes: preferredFieldsTransaction?.notes || keep.notes || drop.notes,
       cleared: keep.cleared || drop.cleared,
       reconciled: keep.reconciled || drop.reconciled,
-      schedule: keep.schedule || drop.schedule,
+      schedule:
+        preferredFieldsTransaction?.schedule || keep.schedule || drop.schedule,
     } as TransactionEntity);
   }
 

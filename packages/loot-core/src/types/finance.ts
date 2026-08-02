@@ -36,3 +36,41 @@ export type FinanceMetadata = {
   reviewDecisions: FinanceReviewDecisionRecord[];
   version: typeof financeMetadataVersion;
 };
+
+export type NativeReconciliationReason =
+  | 'same-imported-id'
+  | 'both-imported'
+  | 'same-date'
+  | 'nearby-date'
+  | 'same-payee'
+  | 'missing-payee'
+  | 'different-payee'
+  | 'cleared-state-differs';
+
+export type NativeReconciliationTransaction = Readonly<{
+  id: string;
+  date: string;
+  amount: number;
+  payee: string | null;
+  importedPayee: string | null;
+  importedId: string | null;
+  categoryId: string | null;
+  notes: string | null;
+  scheduleId: string | null;
+  cleared: boolean;
+}>;
+
+export type NativeReconciliationCandidate = Readonly<{
+  candidateKey: string;
+  fingerprint: string;
+  transactionIds: readonly [string, string];
+  accountId: string;
+  amount: number;
+  confidence: 'high' | 'medium' | 'low';
+  score: number;
+  reasons: readonly NativeReconciliationReason[];
+  transactions: readonly [
+    NativeReconciliationTransaction,
+    NativeReconciliationTransaction,
+  ];
+}>;

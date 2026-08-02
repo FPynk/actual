@@ -88,6 +88,7 @@ import { PostsOfflineNotification } from './schedules/PostsOfflineNotification';
 import { ScheduleEditModal } from './schedules/ScheduleEditModal';
 import { ScheduleLink } from './schedules/ScheduleLink';
 import { UpcomingLength } from './schedules/UpcomingLength';
+import { ReconciliationReviewModal } from './transactions/ReconciliationReviewModal';
 
 export function Modals() {
   const location = useLocation();
@@ -265,6 +266,9 @@ export function Modals() {
 
         case 'schedules-discover':
           return <DiscoverSchedules key={key} />;
+
+        case 'reconciliation-review':
+          return <ReconciliationReviewModal key={key} />;
 
         case 'schedules-upcoming-length':
           return <UpcomingLength key={key} />;
