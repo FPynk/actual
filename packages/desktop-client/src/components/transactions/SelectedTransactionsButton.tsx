@@ -38,6 +38,7 @@ type SelectedTransactionsButtonProps = {
   onLinkSchedule: (selectedIds: string[]) => void;
   onUnlinkSchedule: (selectedIds: string[]) => void;
   onCreateRule: (selectedIds: string[]) => void;
+  onAutoCategorize: (selectedIds: string[]) => void;
   onRunRules: (selectedIds: string[]) => void;
   onSetTransfer: (selectedIds: string[]) => void;
   onScheduleAction: (
@@ -59,6 +60,7 @@ export function SelectedTransactionsButton({
   onLinkSchedule,
   onUnlinkSchedule,
   onCreateRule,
+  onAutoCategorize,
   onRunRules,
   onSetTransfer,
   onScheduleAction,
@@ -326,6 +328,10 @@ export function SelectedTransactionsButton({
           : [
               { name: 'show', text: t('Show'), key: 'F' } as const,
               {
+                name: 'auto-categorize',
+                text: t('Auto-categorize'),
+              } as const,
+              {
                 name: 'duplicate',
                 text: t('Duplicate'),
                 key: 'U',
@@ -413,6 +419,9 @@ export function SelectedTransactionsButton({
         switch (name) {
           case 'show':
             onShow(selectedIds);
+            break;
+          case 'auto-categorize':
+            onAutoCategorize(selectedIds);
             break;
           case 'duplicate':
             onDuplicate(selectedIds);
