@@ -1,11 +1,19 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { link, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { createActualApiOwner } from '#actual/api-root-owner';
 import {
   createCompanionOnlyBackup,
   restoreCompanionOnlyBackup,
@@ -304,6 +312,8 @@ describe('FIN-11 database safety gates', () => {
 
   it('keeps one maintenance lock across backup and existing-database migration', async () => {
     await initializeCompanionDatabaseAndAnchor(initialization);
+    const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
+    await mkdir(actualApiDirectory);
     const backupEncryptionKeyPath = path.join(temporaryDirectory, 'backup.key');
     await writeFile(backupEncryptionKeyPath, randomBytes(32), { mode: 0o600 });
     let observedExclusiveLock = false;
@@ -316,6 +326,7 @@ describe('FIN-11 database safety gates', () => {
           port: 4100,
           origin: 'http://127.0.0.1:4100',
           dataDirectory: temporaryDirectory,
+          actualApiDirectory,
           databasePath: initialization.databasePath,
           integrityAnchorPath: initialization.anchorPath,
           integrityMacKeyFile: undefined,
@@ -341,6 +352,114 @@ describe('FIN-11 database safety gates', () => {
       ),
     ).resolves.toMatchObject({ ok: true, schemaVersion: 7 });
     expect(observedExclusiveLock).toBe(true);
+  });
+
+  it('creates an Actual API owner bound to a fresh migration result', async () => {
+    const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
+    await mkdir(actualApiDirectory);
+    const result = await runDatabaseLifecycleCommand(
+      'db:migrate',
+      {
+        bindAddress: '127.0.0.1',
+        port: 4100,
+        origin: 'http://127.0.0.1:4100',
+        dataDirectory: temporaryDirectory,
+        actualApiDirectory,
+        databasePath: initialization.databasePath,
+        integrityAnchorPath: initialization.anchorPath,
+        integrityMacKeyFile: undefined,
+        integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+        budgetKeyHash: initialization.budgetKeyHash,
+        budgetCurrencyCode: initialization.budgetCurrencyCode,
+        ownerBootstrapCredential: randomBytes(32).toString('base64url'),
+        ownerBootstrapCredentialFile: undefined,
+      },
+      [],
+    );
+    const owner = JSON.parse(
+      await readFile(path.join(actualApiDirectory, 'owner.json'), 'utf8'),
+    ) as Readonly<Record<string, unknown>>;
+    expect(owner).toMatchObject({
+      budgetBindingHash: initialization.budgetKeyHash,
+      companionInstanceId: result.instanceId,
+      formatVersion: 1,
+    });
+  });
+
+  it('rolls back fresh state when a competing owner marker appears', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: () =>
+          writeFile(path.join(actualApiDirectory, 'owner.json'), 'competitor'),
+      }),
+    ).rejects.toThrow('not empty');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(
+      await readFile(path.join(actualApiDirectory, 'owner.json'), 'utf8'),
+    ).toBe('competitor');
+  });
+
+  it('rolls back fresh state when an unexpected API directory entry appears', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: () =>
+          writeFile(path.join(actualApiDirectory, 'unexpected'), 'synthetic'),
+      }),
+    ).rejects.toThrow('not empty');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(existsSync(path.join(actualApiDirectory, 'owner.json'))).toBe(false);
+  });
+
+  it('rolls back fresh state when the API directory is replaced', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: async () => {
+          await rm(actualApiDirectory, { recursive: true });
+          await mkdir(actualApiDirectory);
+        },
+      }),
+    ).rejects.toThrow('changed during companion initialization');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(existsSync(path.join(actualApiDirectory, 'owner.json'))).toBe(false);
+  });
+
+  it('refuses an owner marker before fresh migration without creating state', async () => {
+    const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
+    await mkdir(actualApiDirectory);
+    await createActualApiOwner(
+      actualApiDirectory,
+      randomUUID(),
+      initialization.budgetKeyHash,
+    );
+    await expect(
+      runDatabaseLifecycleCommand(
+        'db:migrate',
+        {
+          bindAddress: '127.0.0.1',
+          port: 4100,
+          origin: 'http://127.0.0.1:4100',
+          dataDirectory: temporaryDirectory,
+          actualApiDirectory,
+          databasePath: initialization.databasePath,
+          integrityAnchorPath: initialization.anchorPath,
+          integrityMacKeyFile: undefined,
+          integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+          budgetKeyHash: initialization.budgetKeyHash,
+          budgetCurrencyCode: initialization.budgetCurrencyCode,
+          ownerBootstrapCredential: randomBytes(32).toString('base64url'),
+          ownerBootstrapCredentialFile: undefined,
+        },
+        [],
+      ),
+    ).rejects.toThrow('exists before companion initialization');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
   });
 
   it.each([
@@ -495,6 +614,38 @@ describe('FIN-11 database safety gates', () => {
       database.close();
     }
   });
+
+  async function createFreshActualApiDirectory(): Promise<string> {
+    const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
+    await mkdir(actualApiDirectory);
+    return actualApiDirectory;
+  }
+
+  function runFreshLifecycleMigration(
+    actualApiDirectory: string,
+    testHooks: Parameters<typeof runDatabaseLifecycleCommand>[3],
+  ) {
+    return runDatabaseLifecycleCommand(
+      'db:migrate',
+      {
+        bindAddress: '127.0.0.1',
+        port: 4100,
+        origin: 'http://127.0.0.1:4100',
+        dataDirectory: temporaryDirectory,
+        actualApiDirectory,
+        databasePath: initialization.databasePath,
+        integrityAnchorPath: initialization.anchorPath,
+        integrityMacKeyFile: undefined,
+        integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+        budgetKeyHash: initialization.budgetKeyHash,
+        budgetCurrencyCode: initialization.budgetCurrencyCode,
+        ownerBootstrapCredential: randomBytes(32).toString('base64url'),
+        ownerBootstrapCredentialFile: undefined,
+      },
+      [],
+      testHooks,
+    );
+  }
 
   async function createBackupRequest(): Promise<CompanionBackupRequest> {
     const initialized =

@@ -1,7 +1,11 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  createActualApiOwner,
+  prepareActualApiOwnerDirectory,
+} from '#actual/api-root-owner';
 import type { FinanceCompanionConfiguration } from '#config';
 import {
   createCompanionOnlyBackup,
@@ -29,6 +33,7 @@ type LifecycleCommand =
 
 export type DatabaseLifecycleTestHooks = Readonly<{
   afterBackupBeforeMigration?: () => void | Promise<void>;
+  afterFreshMigrationBeforeOwner?: () => void | Promise<void>;
 }>;
 
 export async function runDatabaseLifecycleCommand(
@@ -50,6 +55,63 @@ export async function runDatabaseLifecycleCommand(
       return await withExclusiveMaintenanceLock(
         lockedDatabasePath,
         async () => {
+          const databaseExists = existsSync(lockedDatabasePath);
+          const existingInstanceId = databaseExists
+            ? readCompanionInstanceId(lockedDatabasePath)
+            : undefined;
+          const actualApiOwner = await prepareActualApiOwnerDirectory(
+            required(configuration.actualApiDirectory),
+            databaseExists,
+            existingInstanceId,
+            configuration.budgetKeyHash,
+          );
+          const migrate = async () => {
+            const migration =
+              await initializeCompanionDatabaseAndAnchorDuringMaintenance({
+                databasePath: lockedDatabasePath,
+                migrationsDirectory: path.resolve(
+                  import.meta.dirname,
+                  '../../migrations',
+                ),
+                anchorPath: configuration.integrityAnchorPath,
+                anchorMacKey,
+                budgetKeyHash: configuration.budgetKeyHash,
+                budgetCurrencyCode: configuration.budgetCurrencyCode,
+                createOwnerCredentialHash: () =>
+                  hashOwnerBootstrapCredential(
+                    configuration.ownerBootstrapCredential,
+                    configuration.ownerBootstrapCredentialFile,
+                  ),
+              });
+            if (!actualApiOwner.ownerExists) {
+              const freshArtifacts = databaseExists
+                ? []
+                : await captureFreshArtifacts([
+                    lockedDatabasePath,
+                    configuration.integrityAnchorPath,
+                    `${lockedDatabasePath}-wal`,
+                    `${lockedDatabasePath}-shm`,
+                    `${lockedDatabasePath}-journal`,
+                  ]);
+              try {
+                if (!databaseExists) {
+                  await testHooks.afterFreshMigrationBeforeOwner?.();
+                }
+                await createActualApiOwner(
+                  actualApiOwner.actualApiDirectory,
+                  migration.instanceId,
+                  configuration.budgetKeyHash,
+                  actualApiOwner.directoryIdentity,
+                );
+              } catch (error) {
+                if (!databaseExists) {
+                  await removeFreshArtifacts(freshArtifacts);
+                }
+                throw error;
+              }
+            }
+            return { ok: true, ...migration };
+          };
           if (existsSync(lockedDatabasePath)) {
             const backupPath = parseBackupPath(arguments_);
             const encryptionKey = await loadBackupEncryptionKey(configuration);
@@ -62,24 +124,7 @@ export async function runDatabaseLifecycleCommand(
               );
               await createCompanionOnlyBackupDuringMaintenance(request);
               await testHooks.afterBackupBeforeMigration?.();
-              const migration =
-                await initializeCompanionDatabaseAndAnchorDuringMaintenance({
-                  databasePath: lockedDatabasePath,
-                  migrationsDirectory: path.resolve(
-                    import.meta.dirname,
-                    '../../migrations',
-                  ),
-                  anchorPath: configuration.integrityAnchorPath,
-                  anchorMacKey,
-                  budgetKeyHash: configuration.budgetKeyHash,
-                  budgetCurrencyCode: configuration.budgetCurrencyCode,
-                  createOwnerCredentialHash: () =>
-                    hashOwnerBootstrapCredential(
-                      configuration.ownerBootstrapCredential,
-                      configuration.ownerBootstrapCredentialFile,
-                    ),
-                });
-              return { ok: true, ...migration };
+              return await migrate();
             } finally {
               encryptionKey.fill(0);
             }
@@ -89,24 +134,7 @@ export async function runDatabaseLifecycleCommand(
               'Fresh companion initialization takes no arguments.',
             );
           }
-          const migration =
-            await initializeCompanionDatabaseAndAnchorDuringMaintenance({
-              databasePath: lockedDatabasePath,
-              migrationsDirectory: path.resolve(
-                import.meta.dirname,
-                '../../migrations',
-              ),
-              anchorPath: configuration.integrityAnchorPath,
-              anchorMacKey,
-              budgetKeyHash: configuration.budgetKeyHash,
-              budgetCurrencyCode: configuration.budgetCurrencyCode,
-              createOwnerCredentialHash: () =>
-                hashOwnerBootstrapCredential(
-                  configuration.ownerBootstrapCredential,
-                  configuration.ownerBootstrapCredentialFile,
-                ),
-            });
-          return { ok: true, ...migration };
+          return await migrate();
         },
       );
     }
@@ -146,6 +174,70 @@ export async function runDatabaseLifecycleCommand(
     }
   } finally {
     anchorMacKey.fill(0);
+  }
+}
+
+type FreshArtifact = Readonly<{ path: string; identity: string }>;
+
+async function captureFreshArtifacts(
+  paths: readonly string[],
+): Promise<readonly FreshArtifact[]> {
+  const artifacts = await Promise.all(
+    paths.map(async artifactPath => {
+      try {
+        const status = await lstat(artifactPath, { bigint: true });
+        if (!status.isFile() || status.isSymbolicLink()) {
+          throw new Error('Fresh companion state contains an unsafe artifact.');
+        }
+        return {
+          path: artifactPath,
+          identity: `${status.dev}:${status.ino}`,
+        };
+      } catch (error) {
+        if (isMissingPathError(error)) return undefined;
+        throw error;
+      }
+    }),
+  );
+  return artifacts.filter(
+    (artifact): artifact is FreshArtifact => artifact !== undefined,
+  );
+}
+
+async function removeFreshArtifacts(
+  artifacts: readonly FreshArtifact[],
+): Promise<void> {
+  for (const artifact of artifacts) {
+    try {
+      const status = await lstat(artifact.path, { bigint: true });
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        `${status.dev}:${status.ino}` !== artifact.identity
+      ) {
+        continue;
+      }
+      await unlink(artifact.path);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+  }
+}
+
+function readCompanionInstanceId(databasePath: string): string {
+  const database = openCompanionDatabase(databasePath, true);
+  try {
+    const instance = database
+      .prepare(
+        "SELECT instance_id FROM companion_instance WHERE singleton_key = 'main'",
+      )
+      .get() as Readonly<{ instance_id?: unknown }> | undefined;
+    if (instance === undefined || typeof instance.instance_id !== 'string') {
+      throw new Error('The companion database is not initialized.');
+    }
+    return instance.instance_id;
+  } finally {
+    database.close();
   }
 }
 
@@ -215,4 +307,20 @@ async function loadBackupEncryptionKey(
     throw new Error('The backup encryption key is invalid.');
   }
   return key;
+}
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) {
+    throw new Error('The Actual API directory is required.');
+  }
+  return value;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
 }

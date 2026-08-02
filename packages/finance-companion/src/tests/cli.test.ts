@@ -13,7 +13,10 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runFinanceCompanionCommand } from '#cli';
+import {
+  createGracefulCompanionShutdown,
+  runFinanceCompanionCommand,
+} from '#cli';
 import type { FinanceCompanionConfiguration } from '#config';
 import { initializeCompanionDatabaseAndAnchor } from '#database/migrate';
 import type { FinanceCompanionSecurity } from '#security/local-security';
@@ -29,6 +32,25 @@ const scaffoldPackageScriptCommands = ['owner:rotate'] as const;
 const implementedPackageScriptCommands = ['test:db', 'test:adapter'] as const;
 
 describe('runFinanceCompanionCommand', () => {
+  it('closes the server and review database once for launcher shutdown', async () => {
+    const close = vi.fn(callback => callback());
+    const closeDatabase = vi.fn();
+    const exitProcess = vi.fn();
+    const shutdown = createGracefulCompanionShutdown(
+      { close },
+      { close: closeDatabase },
+      exitProcess,
+    );
+
+    shutdown();
+    shutdown();
+    await Promise.resolve();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeDatabase).toHaveBeenCalledTimes(1);
+    expect(exitProcess).toHaveBeenCalledWith(0);
+  });
+
   it.each(commands)(
     'writes the exact feature result for %s before configuration access',
     async command => {

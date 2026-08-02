@@ -74,19 +74,16 @@ and do not put passwords or keys in a command history. Configure the allowed
 `FINANCE_COMPANION_*` environment variables for the PowerShell process that
 will run the companion. An unknown variable fails closed.
 
-Create separate local directories outside the checkout for the companion
-database, the Actual API working directory, the integrity anchor, and the two
-secret files Windows can safely read. This command creates empty directories
-only. It is reversible by removing these exact empty directories after the
-companion has been stopped and their contents are no longer needed.
+`corepack yarn start:finance` creates and reuses stable data directories outside
+the checkout for the Actual server, companion database, Actual API working
+directory, and integrity anchor. Do not delete those directories to repair a
+startup problem. You only need to create a protected directory for secret
+files. If you already have companion state in custom locations, keep the three
+explicit path variables shown below; explicit values take precedence.
 
 ```powershell
-$companionRoot = Join-Path $env:LOCALAPPDATA 'ActualFinanceCompanion'
 $secretRoot = Join-Path $env:LOCALAPPDATA 'ActualFinanceCompanionSecrets'
-$dataDirectory = Join-Path $companionRoot 'data'
-$actualApiDirectory = Join-Path $companionRoot 'actual-api'
-$anchorDirectory = Join-Path $companionRoot 'anchor'
-New-Item -ItemType Directory -Force $dataDirectory, $actualApiDirectory, $anchorDirectory, $secretRoot | Out-Null
+New-Item -ItemType Directory -Force $secretRoot | Out-Null
 ```
 
 Use a protected local secret mechanism to create these files outside the
@@ -140,25 +137,30 @@ $env:FINANCE_COMPANION_INTEGRITY_MAC_KEY = New-CanonicalBase64UrlSecret 32
 $env:FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL = New-CanonicalBase64UrlSecret 32
 ```
 
-Point the process at the directories and supported Windows secret sources.
-These commands contain only local paths, not secret values. The anchor is
-deliberately outside both the data and Actual API directories.
+Point the process at the supported Windows secret sources. These commands
+contain only local paths, not secret values. The launcher supplies the three
+disjoint state paths by default. Only set the path variables in the second
+block when continuing to use an existing custom location.
 
 ```powershell
-$env:FINANCE_COMPANION_DATA_DIR = $dataDirectory
-$env:FINANCE_COMPANION_ACTUAL_API_DIR = $actualApiDirectory
-$env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = Join-Path $anchorDirectory 'integrity-anchor.json'
 $env:FINANCE_COMPANION_ACTUAL_PASSWORD_FILE = Join-Path $secretRoot 'actual-password'
 $env:FINANCE_COMPANION_BACKUP_ENCRYPTION_KEY_FILE = Join-Path $secretRoot 'backup-encryption-key'
+```
+
+```powershell
+# Optional: retain an existing custom companion state location.
+$env:FINANCE_COMPANION_DATA_DIR = 'D:\Protected Finance\companion-data'
+$env:FINANCE_COMPANION_ACTUAL_API_DIR = 'D:\Protected Finance\actual-api'
+$env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = 'D:\Protected Finance\anchor\integrity-anchor.json'
 ```
 
 Set the three non-secret Actual binding values through your protected local
 configuration process before starting: `FINANCE_COMPANION_ACTUAL_SERVER_URL`,
 `FINANCE_COMPANION_ACTUAL_BUDGET_ID`, and
 `FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY`. The URL must be an absolute HTTP
-or HTTPS origin with no credentials, query, fragment, or path; the currency is
-three uppercase letters. Do not guess a budget ID or copy values from a shared
-terminal transcript.
+origin with no credentials, query, fragment, or path and must be exactly
+`http://127.0.0.1:5006`; the currency is three uppercase letters. Do not guess
+a budget ID or copy values from a shared terminal transcript.
 
 If the budget has its own end-to-end encryption password, also provide
 `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE`. This is optional:
@@ -172,9 +174,6 @@ It prints only variable names.
 
 ```powershell
 $requiredConfiguration = @(
-  'FINANCE_COMPANION_DATA_DIR',
-  'FINANCE_COMPANION_ACTUAL_API_DIR',
-  'FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH',
   'FINANCE_COMPANION_ACTUAL_PASSWORD_FILE',
   'FINANCE_COMPANION_INTEGRITY_MAC_KEY',
   'FINANCE_COMPANION_ACTUAL_SERVER_URL',
@@ -217,7 +216,21 @@ is allowed, and its file permissions must not grant group or other access.
 
 On a first initialization only, run the forward-only migration with the
 companion stopped. It creates companion SQLite state and the integrity anchor;
-it does not import, restore, or modify Actual data.
+it also creates the protected Actual API ownership marker. It does not import,
+restore, or modify Actual data.
+
+This is one-time setup, separate from daily `start:finance`: create the three
+stable state directories, export the same paths the launcher will use, then run
+the migration. Daily launcher startup reuses those paths.
+
+```powershell
+$companionRoot = Join-Path $env:LOCALAPPDATA 'ActualFinanceCompanion'
+$anchorDirectory = Join-Path $companionRoot 'anchor'
+$env:FINANCE_COMPANION_DATA_DIR = Join-Path $companionRoot 'data'
+$env:FINANCE_COMPANION_ACTUAL_API_DIR = Join-Path $companionRoot 'actual-api'
+$env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = Join-Path $anchorDirectory 'integrity-anchor.json'
+New-Item -ItemType Directory -Force $env:FINANCE_COMPANION_DATA_DIR, $env:FINANCE_COMPANION_ACTUAL_API_DIR, $anchorDirectory | Out-Null
+```
 
 ```powershell
 corepack yarn workspace @actual-app/finance-companion db:migrate
@@ -228,15 +241,22 @@ synthetic generation-zero backup, then use `db:migrate -- --backup-path` as
 described below. Migrations are forward-only: do not replace SQLite files by
 hand.
 
-Start the local UI. This first builds the companion and then runs it on the
-loopback address only.
+Start the complete local development stack. It validates the companion
+configuration without printing secret values, checks that ports `3001`, `4100`,
+and `5006` are unused, builds the browser worker, starts its watcher, the
+plugin watcher, Vite frontend, Actual sync server, and companion, then waits
+for all loopback health checks. The companion server URL must be exactly
+`http://127.0.0.1:5006`; this makes Actual's proxied frontend choose the same
+origin automatically.
 
 ```powershell
-corepack yarn workspace @actual-app/finance-companion start
+corepack yarn start:finance
 ```
 
-Open `http://127.0.0.1:4100` in the same machine's browser and sign in with
-the local owner credential. The session cookie is local, `HttpOnly`, and
+After readiness, it opens `http://127.0.0.1:5006` for Actual and
+`http://127.0.0.1:4100` for the companion. Use `corepack yarn start:finance --no-open`
+when you do not want browser tabs opened. Sign in to the companion with the
+local owner credential. The session cookie is local, `HttpOnly`, and
 `SameSite=Strict`; use **Sign out** when finished. The health endpoint is a
 minimal unauthenticated readiness check, not an operational dashboard:
 
@@ -244,9 +264,11 @@ minimal unauthenticated readiness check, not an operational dashboard:
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4100/health
 ```
 
-To stop the companion gracefully, press `Ctrl+C` in the PowerShell window that
-started it. Do this before a migration, backup, restore, checkout change, or
-any maintenance action.
+To stop every launcher-owned service gracefully, press `Ctrl+C` once in the
+PowerShell window that started it. It never searches for or stops an unrelated
+process, and it does not delete worker assets or persistent finance state. If
+a listed port is already in use, stop the known local process instead of
+changing a service to a public bind address.
 
 ## Use Actual for imports, rules, and reports
 
