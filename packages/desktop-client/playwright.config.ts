@@ -42,7 +42,7 @@ export default defineConfig({
         cwd: path.join(__dirname, '..', '..'),
         command: process.env.E2E_USE_BUILD
           ? `PORT=${e2ePort} node packages/desktop-client/bin/serve-build.mjs`
-          : 'yarn start',
+          : 'yarn start:actual --no-open',
         url: `http://localhost:${e2ePort}`,
         reuseExistingServer: !process.env.CI,
         stdout: 'ignore',
