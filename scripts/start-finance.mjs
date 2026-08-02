@@ -28,11 +28,14 @@ export class LauncherStoppedError extends Error {
 
 export function parseArguments(arguments_) {
   const noOpen = arguments_.includes('--no-open');
-  const unknown = arguments_.filter(argument => argument !== '--no-open');
+  const actualOnly = arguments_.includes('--actual-only');
+  const unknown = arguments_.filter(
+    argument => argument !== '--no-open' && argument !== '--actual-only',
+  );
   if (unknown.length > 0) {
     throw new Error(`Unknown argument: ${unknown.join(', ')}`);
   }
-  return { noOpen };
+  return { actualOnly, noOpen };
 }
 
 export function yarnExecutable() {
@@ -84,6 +87,8 @@ export function launcherEnvironment(
     FINANCE_COMPANION_BIND_ADDRESS: '127.0.0.1',
     FINANCE_COMPANION_PORT: '4100',
     FINANCE_COMPANION_ORIGIN: companionUrl,
+    FINANCE_COMPANION_ACTUAL_SERVER_URL:
+      environment.FINANCE_COMPANION_ACTUAL_SERVER_URL ?? actualUrl,
     FINANCE_COMPANION_DATA_DIR: paths.companionDataDirectory,
     FINANCE_COMPANION_ACTUAL_API_DIR: paths.actualApiDirectory,
     FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH: paths.integrityAnchorPath,
@@ -225,13 +230,16 @@ export function preflightCompanionConfiguration(environment) {
   }
 }
 
-export function ensurePersistentPaths(paths) {
-  for (const directory of [
-    paths.actualDataDirectory,
-    paths.companionDataDirectory,
-    paths.actualApiDirectory,
-    path.dirname(paths.integrityAnchorPath),
-  ]) {
+export function ensurePersistentPaths(paths, actualOnly = false) {
+  const directories = [paths.actualDataDirectory];
+  if (!actualOnly) {
+    directories.push(
+      paths.companionDataDirectory,
+      paths.actualApiDirectory,
+      path.dirname(paths.integrityAnchorPath),
+    );
+  }
+  for (const directory of directories) {
     mkdirSync(directory, { recursive: true });
   }
 }
@@ -297,17 +305,23 @@ export class FinanceLauncher {
     this.readinessAbortController = new AbortController();
   }
 
-  async start({ noOpen = false } = {}) {
+  async start({ actualOnly = false, noOpen = false } = {}) {
     try {
-      this.ensurePaths(this.paths);
-      this.preflight(this.environment);
-      await this.assertPortsAvailable([3001, 4100, 5006]);
-      this.throwIfStopping();
-      await this.runOnce('configuration', ...this.commands.validateCompanion);
+      this.ensurePaths(this.paths, actualOnly);
+      if (!actualOnly) this.preflight(this.environment);
+      await this.assertPortsAvailable(
+        actualOnly ? [3001, 5006] : [3001, 4100, 5006],
+      );
+      if (!actualOnly) {
+        this.throwIfStopping();
+        await this.runOnce('configuration', ...this.commands.validateCompanion);
+      }
       this.throwIfStopping();
       await this.runOnce('worker-build', ...this.commands.buildWorker);
-      this.throwIfStopping();
-      await this.runOnce('companion-build', ...this.commands.buildCompanion);
+      if (!actualOnly) {
+        this.throwIfStopping();
+        await this.runOnce('companion-build', ...this.commands.buildCompanion);
+      }
       this.throwIfStopping();
       const workerPath = path.join(
         repositoryRoot,
@@ -323,13 +337,14 @@ export class FinanceLauncher {
         );
       }
 
-      for (const [name, command] of [
+      const services = [
         ['worker', this.commands.watchWorker],
         ['plugins', this.commands.watchPlugins],
         ['frontend', this.commands.frontend],
         ['actual', this.commands.actual],
-        ['companion', this.commands.companion],
-      ]) {
+      ];
+      if (!actualOnly) services.push(['companion', this.commands.companion]);
+      for (const [name, command] of services) {
         this.throwIfStopping();
         this.startChild(
           name,
@@ -341,13 +356,15 @@ export class FinanceLauncher {
         );
       }
 
-      await this.waitForReadiness();
+      await this.waitForReadiness(actualOnly);
       if (!noOpen) {
         await this.openBrowser(actualUrl);
-        await this.openBrowser(companionUrl);
+        if (!actualOnly) await this.openBrowser(companionUrl);
       }
       this.output.write(
-        `Finance services are ready at ${actualUrl} and ${companionUrl}. Press Ctrl+C to stop.\n`,
+        actualOnly
+          ? `Actual is ready at ${actualUrl}. Press Ctrl+C to stop.\n`
+          : `Finance services are ready at ${actualUrl} and ${companionUrl}. Press Ctrl+C to stop.\n`,
       );
     } catch (error) {
       await this.shutdown();
@@ -436,14 +453,16 @@ export class FinanceLauncher {
     for (const port of ports) await this.portAvailable(port);
   }
 
-  async waitForReadiness() {
+  async waitForReadiness(actualOnly = false) {
     await this.waitForUrl(`${actualUrl}/info`, 'Actual server');
     await this.waitForUrl(`${actualUrl}/`, 'Actual frontend');
     await this.waitForUrl(
       `${actualUrl}/kcab/kcab.worker.dev.js`,
       'Actual worker',
     );
-    await this.waitForUrl(`${companionUrl}/health`, 'Finance Companion');
+    if (!actualOnly) {
+      await this.waitForUrl(`${companionUrl}/health`, 'Finance Companion');
+    }
   }
 
   async waitForUrl(url, name) {

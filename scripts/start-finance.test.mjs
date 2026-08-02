@@ -121,7 +121,14 @@ function testLauncher({
 }
 
 void test('rejects unknown arguments and accepts --no-open', () => {
-  assert.deepEqual(parseArguments(['--no-open']), { noOpen: true });
+  assert.deepEqual(parseArguments(['--no-open']), {
+    actualOnly: false,
+    noOpen: true,
+  });
+  assert.deepEqual(parseArguments(['--actual-only']), {
+    actualOnly: true,
+    noOpen: false,
+  });
   assert.throws(() => parseArguments(['--wrong']), /Unknown argument/);
 });
 
@@ -211,6 +218,42 @@ void test('starts in required order, waits for all readiness URLs, then opens pr
       'actual',
       'companion',
     ],
+  );
+});
+
+void test('starts Actual alone without any Finance Companion setup', async () => {
+  const requested = [];
+  const checkedPorts = [];
+  const { launcher, opened, spawned } = testLauncher({
+    fetchImplementation: async url => {
+      requested.push(url);
+      return { ok: true, status: 200 };
+    },
+    portAvailable: async port => checkedPorts.push(port),
+    preflight: () => {
+      throw new Error('Actual-only must not preflight Finance Companion.');
+    },
+  });
+  await launcher.start({ actualOnly: true });
+  assert.deepEqual(checkedPorts, [3001, 5006]);
+  assert.deepEqual(opened, ['http://127.0.0.1:5006']);
+  assert.deepEqual(requested, [
+    'http://127.0.0.1:5006/info',
+    'http://127.0.0.1:5006/',
+    'http://127.0.0.1:5006/kcab/kcab.worker.dev.js',
+  ]);
+  assert.equal(
+    spawned.every(
+      item =>
+        !item.arguments_.some(argument =>
+          argument.includes('@actual-app/finance-companion'),
+        ) &&
+        !item.arguments_.some(argument =>
+          argument.includes('validate-finance-companion-config.ts'),
+        ) &&
+        !item.arguments_.includes('./dist/service/cli.js'),
+    ),
+    true,
   );
 });
 
@@ -488,6 +531,17 @@ void test('launcher defaults preserve explicit paths while applying loopback ser
   assert.equal(environment.FINANCE_COMPANION_DATA_DIR, 'D:\\Companion Data');
   assert.equal(environment.ACTUAL_HOSTNAME, '127.0.0.1');
   assert.equal(environment.ACTUAL_EXTERNAL_LOOT_CORE_WATCHER, '1');
+  assert.equal(
+    environment.FINANCE_COMPANION_ACTUAL_SERVER_URL,
+    'http://127.0.0.1:5006',
+  );
+  assert.equal(
+    launcherEnvironment({
+      FINANCE_COMPANION_ACTUAL_SERVER_URL: 'http://127.0.0.1:9999',
+      LOCALAPPDATA: 'C:\\Unused',
+    }).FINANCE_COMPANION_ACTUAL_SERVER_URL,
+    'http://127.0.0.1:9999',
+  );
 });
 
 void test('the development frontend keeps worker middleware and does not auto-open a raw Vite tab', async () => {

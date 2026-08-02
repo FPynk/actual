@@ -57,15 +57,18 @@ artifacts but does not import a budget or contact an Actual server.
 corepack yarn install --immutable
 ```
 
-For a first look at Actual without personal data, start the normal web
-application and choose **View demo** during setup. This creates the built-in
-demo budget; it is separate from the companion.
+For a first look at Actual, or to create/open the budget that the companion
+will later read, start Actual by itself. This requires no companion settings or
+secrets and opens only the local Actual page after it is ready.
 
 ```powershell
-corepack yarn start
+corepack yarn start:actual
 ```
 
-Stop that development server with `Ctrl+C` in the same PowerShell window.
+Create or open a budget in Actual. To find the non-secret budget ID needed for
+the companion, open that budget and select **Settings** > **Advanced**, then
+copy **Budget ID** into your protected local configuration. Do not guess it.
+Stop Actual with `Ctrl+C` in the same PowerShell window when finished.
 
 ## Local companion configuration and secrets
 
@@ -154,13 +157,14 @@ $env:FINANCE_COMPANION_ACTUAL_API_DIR = 'D:\Protected Finance\actual-api'
 $env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = 'D:\Protected Finance\anchor\integrity-anchor.json'
 ```
 
-Set the three non-secret Actual binding values through your protected local
-configuration process before starting: `FINANCE_COMPANION_ACTUAL_SERVER_URL`,
-`FINANCE_COMPANION_ACTUAL_BUDGET_ID`, and
-`FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY`. The URL must be an absolute HTTP
-origin with no credentials, query, fragment, or path and must be exactly
-`http://127.0.0.1:5006`; the currency is three uppercase letters. Do not guess
-a budget ID or copy values from a shared terminal transcript.
+Set the two non-secret Actual binding values through your protected local
+configuration process before starting: `FINANCE_COMPANION_ACTUAL_BUDGET_ID`
+and `FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY`. The launcher supplies the
+local Actual URL `http://127.0.0.1:5006` automatically. If you explicitly set
+`FINANCE_COMPANION_ACTUAL_SERVER_URL`, it must still be exactly that URL; a
+different value fails before services start. The currency is three uppercase
+letters. Do not guess a budget ID or copy values from a shared terminal
+transcript.
 
 If the budget has its own end-to-end encryption password, also provide
 `FINANCE_COMPANION_ACTUAL_BUDGET_ENCRYPTION_PASSWORD_FILE`. This is optional:
@@ -176,7 +180,6 @@ It prints only variable names.
 $requiredConfiguration = @(
   'FINANCE_COMPANION_ACTUAL_PASSWORD_FILE',
   'FINANCE_COMPANION_INTEGRITY_MAC_KEY',
-  'FINANCE_COMPANION_ACTUAL_SERVER_URL',
   'FINANCE_COMPANION_ACTUAL_BUDGET_ID',
   'FINANCE_COMPANION_ACTUAL_BUDGET_CURRENCY'
 )
@@ -245,9 +248,9 @@ Start the complete local development stack. It validates the companion
 configuration without printing secret values, checks that ports `3001`, `4100`,
 and `5006` are unused, builds the browser worker, starts its watcher, the
 plugin watcher, Vite frontend, Actual sync server, and companion, then waits
-for all loopback health checks. The companion server URL must be exactly
-`http://127.0.0.1:5006`; this makes Actual's proxied frontend choose the same
-origin automatically.
+for all loopback health checks. The launcher supplies the companion server URL
+as exactly `http://127.0.0.1:5006`; this makes Actual's proxied frontend choose
+the same origin automatically.
 
 ```powershell
 corepack yarn start:finance
