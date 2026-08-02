@@ -33,6 +33,7 @@ import { CurrencySettings } from './Currency';
 import { EncryptionSettings } from './Encryption';
 import { ExperimentalFeatures } from './Experimental';
 import { ExportBudget } from './Export';
+import { FinanceCategorizationSettings } from './FinanceCategorizationSettings';
 import { FormatSettings } from './Format';
 import { LanguageSettings } from './LanguageSettings';
 import { RepairTransactions } from './RepairTransactions';
@@ -242,6 +243,7 @@ export function Settings() {
         <AuthSettings />
         <EncryptionSettings />
         <BudgetTypeSettings />
+        <FinanceCategorizationSettings />
         {isElectron() && <Backups />}
         <ExportBudget />
         <AdvancedToggle>

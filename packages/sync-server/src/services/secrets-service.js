@@ -19,6 +19,7 @@ export const SecretName = {
   akahu_appToken: 'akahu_appToken',
   enablebanking_applicationId: 'enablebanking_applicationId',
   enablebanking_secretKey: 'enablebanking_secretKey',
+  openai_apiKey: 'openai_apiKey',
 };
 
 function getSecretKey(name, fileId) {
@@ -41,7 +42,9 @@ class SecretsDb {
     }
 
     const secretKey = getSecretKey(name, fileId);
-    this.debug(`setting secret '${name}' to '${value}'`);
+    this.debug(
+      `setting secret '${name}' for ${fileId == null ? 'global' : 'budget'} scope`,
+    );
     return this.db.mutate(
       `INSERT OR REPLACE INTO secrets (name, value) VALUES (?, ?)`,
       [secretKey, value],

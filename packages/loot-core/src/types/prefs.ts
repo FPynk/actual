@@ -1,4 +1,7 @@
-import type { FinanceMetadata } from './finance';
+import {
+  financeCategorizationPreferenceId,
+  type FinanceMetadata,
+} from './finance';
 
 export type FeatureFlag =
   | 'goalTemplatesEnabled'
@@ -59,6 +62,7 @@ export type SyncedPrefs = Partial<
     | `flip-amount-${string}-${'csv' | 'qif'}`
     | `flags.${FeatureFlag}`
     | `learn-categories`
+    | typeof financeCategorizationPreferenceId
     | `show-hidden-tags`,
     string
   >
