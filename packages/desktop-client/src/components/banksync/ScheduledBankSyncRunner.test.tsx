@@ -75,7 +75,7 @@ describe('ScheduledBankSyncRunner', () => {
     schedulerTestState.accounts = [
       makeAccount(),
       makeAccount({ id: 'unselected' }),
-      makeAccount({ id: 'closed', closed: true }),
+      makeAccount({ id: 'closed', closed: 1 }),
       makeAccount({ id: 'unlinked', bank: null, account_sync_source: null }),
     ];
 
