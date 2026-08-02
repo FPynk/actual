@@ -216,17 +216,20 @@ is allowed, and its file permissions must not grant group or other access.
 
 On a first initialization only, run the forward-only migration with the
 companion stopped. It creates companion SQLite state and the integrity anchor;
-it does not import, restore, or modify Actual data.
+it also creates the protected Actual API ownership marker. It does not import,
+restore, or modify Actual data.
 
-For this standalone maintenance command only, export the same three stable
-paths the launcher will use. Daily `start:finance` startup supplies them
-automatically.
+This is one-time setup, separate from daily `start:finance`: create the three
+stable state directories, export the same paths the launcher will use, then run
+the migration. Daily launcher startup reuses those paths.
 
 ```powershell
 $companionRoot = Join-Path $env:LOCALAPPDATA 'ActualFinanceCompanion'
+$anchorDirectory = Join-Path $companionRoot 'anchor'
 $env:FINANCE_COMPANION_DATA_DIR = Join-Path $companionRoot 'data'
 $env:FINANCE_COMPANION_ACTUAL_API_DIR = Join-Path $companionRoot 'actual-api'
-$env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = Join-Path $companionRoot 'anchor\integrity-anchor.json'
+$env:FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH = Join-Path $anchorDirectory 'integrity-anchor.json'
+New-Item -ItemType Directory -Force $env:FINANCE_COMPANION_DATA_DIR, $env:FINANCE_COMPANION_ACTUAL_API_DIR, $anchorDirectory | Out-Null
 ```
 
 ```powershell

@@ -2,6 +2,10 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  createActualApiOwner,
+  prepareActualApiOwnerDirectory,
+} from '#actual/api-root-owner';
 import type { FinanceCompanionConfiguration } from '#config';
 import {
   createCompanionOnlyBackup,
@@ -50,6 +54,43 @@ export async function runDatabaseLifecycleCommand(
       return await withExclusiveMaintenanceLock(
         lockedDatabasePath,
         async () => {
+          const databaseExists = existsSync(lockedDatabasePath);
+          const existingInstanceId = databaseExists
+            ? readCompanionInstanceId(lockedDatabasePath)
+            : undefined;
+          const actualApiOwner = await prepareActualApiOwnerDirectory(
+            required(configuration.actualApiDirectory),
+            databaseExists,
+            existingInstanceId,
+            configuration.budgetKeyHash,
+          );
+          const migrate = async () => {
+            const migration =
+              await initializeCompanionDatabaseAndAnchorDuringMaintenance({
+                databasePath: lockedDatabasePath,
+                migrationsDirectory: path.resolve(
+                  import.meta.dirname,
+                  '../../migrations',
+                ),
+                anchorPath: configuration.integrityAnchorPath,
+                anchorMacKey,
+                budgetKeyHash: configuration.budgetKeyHash,
+                budgetCurrencyCode: configuration.budgetCurrencyCode,
+                createOwnerCredentialHash: () =>
+                  hashOwnerBootstrapCredential(
+                    configuration.ownerBootstrapCredential,
+                    configuration.ownerBootstrapCredentialFile,
+                  ),
+              });
+            if (!actualApiOwner.ownerExists) {
+              await createActualApiOwner(
+                actualApiOwner.actualApiDirectory,
+                migration.instanceId,
+                configuration.budgetKeyHash,
+              );
+            }
+            return { ok: true, ...migration };
+          };
           if (existsSync(lockedDatabasePath)) {
             const backupPath = parseBackupPath(arguments_);
             const encryptionKey = await loadBackupEncryptionKey(configuration);
@@ -62,24 +103,7 @@ export async function runDatabaseLifecycleCommand(
               );
               await createCompanionOnlyBackupDuringMaintenance(request);
               await testHooks.afterBackupBeforeMigration?.();
-              const migration =
-                await initializeCompanionDatabaseAndAnchorDuringMaintenance({
-                  databasePath: lockedDatabasePath,
-                  migrationsDirectory: path.resolve(
-                    import.meta.dirname,
-                    '../../migrations',
-                  ),
-                  anchorPath: configuration.integrityAnchorPath,
-                  anchorMacKey,
-                  budgetKeyHash: configuration.budgetKeyHash,
-                  budgetCurrencyCode: configuration.budgetCurrencyCode,
-                  createOwnerCredentialHash: () =>
-                    hashOwnerBootstrapCredential(
-                      configuration.ownerBootstrapCredential,
-                      configuration.ownerBootstrapCredentialFile,
-                    ),
-                });
-              return { ok: true, ...migration };
+              return await migrate();
             } finally {
               encryptionKey.fill(0);
             }
@@ -89,24 +113,7 @@ export async function runDatabaseLifecycleCommand(
               'Fresh companion initialization takes no arguments.',
             );
           }
-          const migration =
-            await initializeCompanionDatabaseAndAnchorDuringMaintenance({
-              databasePath: lockedDatabasePath,
-              migrationsDirectory: path.resolve(
-                import.meta.dirname,
-                '../../migrations',
-              ),
-              anchorPath: configuration.integrityAnchorPath,
-              anchorMacKey,
-              budgetKeyHash: configuration.budgetKeyHash,
-              budgetCurrencyCode: configuration.budgetCurrencyCode,
-              createOwnerCredentialHash: () =>
-                hashOwnerBootstrapCredential(
-                  configuration.ownerBootstrapCredential,
-                  configuration.ownerBootstrapCredentialFile,
-                ),
-            });
-          return { ok: true, ...migration };
+          return await migrate();
         },
       );
     }
@@ -146,6 +153,23 @@ export async function runDatabaseLifecycleCommand(
     }
   } finally {
     anchorMacKey.fill(0);
+  }
+}
+
+function readCompanionInstanceId(databasePath: string): string {
+  const database = openCompanionDatabase(databasePath, true);
+  try {
+    const instance = database
+      .prepare(
+        "SELECT instance_id FROM companion_instance WHERE singleton_key = 'main'",
+      )
+      .get() as Readonly<{ instance_id?: unknown }> | undefined;
+    if (instance === undefined || typeof instance.instance_id !== 'string') {
+      throw new Error('The companion database is not initialized.');
+    }
+    return instance.instance_id;
+  } finally {
+    database.close();
   }
 }
 
@@ -215,4 +239,11 @@ async function loadBackupEncryptionKey(
     throw new Error('The backup encryption key is invalid.');
   }
   return key;
+}
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) {
+    throw new Error('The Actual API directory is required.');
+  }
+  return value;
 }

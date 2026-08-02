@@ -18,6 +18,13 @@ reset or removed. Shutdown records only launched child process IDs: on Windows
 it uses `taskkill /PID ... /T`, escalating to `/F` after the grace period; on
 POSIX it signals only the owned process groups.
 
+The one-time `db:migrate` lifecycle now creates or verifies the protected
+Actual API `owner.json` marker under its existing maintenance lock. A fresh
+root must be empty; an existing marker is canonical, single-link, and bound to
+the companion instance and budget hash before it is accepted. Daily launcher
+preflight requires the database, marker, and integrity anchor before it starts
+any child.
+
 Focused synthetic coverage is in `scripts/start-finance.test.mjs`. It covers
 Windows launch selection, stable paths, startup order, readiness and browser
 opening, worker and port failures, secret configuration isolation, unexpected

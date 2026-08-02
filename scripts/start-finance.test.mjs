@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 // eslint-disable-next-line actual/no-extraneous-dependencies -- node:test is built into Node.
 import test from 'node:test';
 
@@ -39,11 +42,13 @@ function child(pid) {
 }
 
 function testLauncher({
+  environment = {},
   workerExists = true,
   portAvailable = async () => undefined,
   fetchImplementation,
   failingService,
   now,
+  preflight = () => undefined,
   readinessTimeout,
 } = {}) {
   const spawned = [];
@@ -88,6 +93,7 @@ function testLauncher({
         FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE: 'C:\\secrets\\mac',
         FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL: 'synthetic-direct-secret',
         LOCALAPPDATA: 'C:\\Finance State',
+        ...environment,
       },
       fetchImplementation:
         fetchImplementation ?? (async () => ({ ok: true, status: 200 })),
@@ -95,7 +101,7 @@ function testLauncher({
       output,
       errorOutput,
       ensurePaths: () => undefined,
-      preflight: () => undefined,
+      preflight,
       platform: 'win32',
       portAvailable,
       now,
@@ -234,6 +240,69 @@ test('rejects an absent secret file before any child starts without reading its 
       }),
     /FINANCE_COMPANION_ACTUAL_PASSWORD_FILE/,
   );
+});
+
+test('requires initialized companion artifacts before launching children', async () => {
+  const temporaryRoot = mkdtempSync(
+    path.join(os.tmpdir(), 'finance-launcher-'),
+  );
+  try {
+    const { launcher, spawned } = testLauncher({
+      environment: {
+        FINANCE_COMPANION_ACTUAL_API_DIR: path.join(
+          temporaryRoot,
+          'actual-api',
+        ),
+        FINANCE_COMPANION_ACTUAL_PASSWORD_FILE: undefined,
+        FINANCE_COMPANION_DATA_DIR: path.join(temporaryRoot, 'data'),
+        FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE: undefined,
+        FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH: path.join(
+          temporaryRoot,
+          'anchor',
+          'integrity-anchor.json',
+        ),
+      },
+      preflight: preflightCompanionConfiguration,
+    });
+    await assert.rejects(
+      launcher.start(),
+      /FINANCE_COMPANION_DATA_DIR\/companion\.sqlite/,
+    );
+    assert.equal(spawned.length, 0);
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
+});
+
+test('accepts readable regular initialized companion artifacts', () => {
+  const temporaryRoot = mkdtempSync(
+    path.join(os.tmpdir(), 'finance-launcher-'),
+  );
+  try {
+    const dataDirectory = path.join(temporaryRoot, 'data');
+    const actualApiDirectory = path.join(temporaryRoot, 'actual-api');
+    const anchorPath = path.join(
+      temporaryRoot,
+      'anchor',
+      'integrity-anchor.json',
+    );
+    mkdirSync(dataDirectory, { recursive: true });
+    mkdirSync(actualApiDirectory, { recursive: true });
+    mkdirSync(path.dirname(anchorPath), { recursive: true });
+    writeFileSync(path.join(dataDirectory, 'companion.sqlite'), 'synthetic');
+    writeFileSync(path.join(actualApiDirectory, 'owner.json'), '{}');
+    writeFileSync(anchorPath, '{}');
+    assert.doesNotThrow(() =>
+      preflightCompanionConfiguration({
+        FINANCE_COMPANION_ACTUAL_API_DIR: actualApiDirectory,
+        FINANCE_COMPANION_ACTUAL_SERVER_URL: 'http://127.0.0.1:5006',
+        FINANCE_COMPANION_DATA_DIR: dataDirectory,
+        FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH: anchorPath,
+      }),
+    );
+  } finally {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
 });
 
 test('passes companion configuration only to its validator and companion runtime child', async () => {

@@ -199,6 +199,29 @@ export function preflightCompanionConfiguration(environment) {
       );
     }
   }
+  for (const [name, filePath] of [
+    [
+      'FINANCE_COMPANION_DATA_DIR/companion.sqlite',
+      path.join(environment.FINANCE_COMPANION_DATA_DIR, 'companion.sqlite'),
+    ],
+    [
+      'FINANCE_COMPANION_ACTUAL_API_DIR/owner.json',
+      path.join(environment.FINANCE_COMPANION_ACTUAL_API_DIR, 'owner.json'),
+    ],
+    [
+      'FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH',
+      environment.FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH,
+    ],
+  ]) {
+    try {
+      accessSync(filePath, constants.R_OK);
+      if (!statSync(filePath).isFile()) throw new Error('not a file');
+    } catch {
+      throw new Error(
+        `Finance Companion is not initialized: ${name} is missing or unreadable. Run the documented one-time db:migrate before start:finance.`,
+      );
+    }
+  }
 }
 
 export function ensurePersistentPaths(paths) {
