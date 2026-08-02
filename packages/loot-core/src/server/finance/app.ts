@@ -1,9 +1,12 @@
+import * as asyncStorage from '#platform/server/asyncStorage';
+import { fetch } from '#platform/server/fetch';
 import { createApp } from '#server/app';
 import { aqlQuery } from '#server/aql';
 import * as db from '#server/db';
 import { mutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { createSchedule, updateSchedule } from '#server/schedules/app';
+import { getServer } from '#server/server-config';
 import { mergeTransactions } from '#server/transactions/merge';
 import { undoable } from '#server/undo';
 import {
@@ -21,6 +24,9 @@ import type {
 } from '#shared/finance/recurring-detector';
 import { q } from '#shared/query';
 import type {
+  FinanceCategorizationRequest,
+  FinanceCategorizationResponse,
+  FinanceCategorizationStatus,
   FinanceReviewDecision,
   FinanceReviewDecisionRecord,
 } from '#types/finance';
@@ -52,7 +58,99 @@ export type FinanceHandlers = {
   'finance/recurring/save-decision': typeof saveRecurringReviewDecision;
   'finance/recurring/reopen-decision': typeof reopenRecurringReviewDecision;
   'finance/recurring/apply': typeof applyRecurringPaymentCandidate;
+  'finance-categorization-status': typeof getCategorizationStatus;
+  'finance-categorize': typeof categorizeTransactions;
+  'finance-categorization-api-key-set': typeof setCategorizationApiKey;
 };
+
+type FinanceRequestError = { error: string };
+
+async function financeRequest<ResponseData>(
+  path: string,
+  method: string,
+  body?: unknown,
+): Promise<ResponseData | FinanceRequestError> {
+  const userToken = await asyncStorage.getItem('user-token');
+  const server = getServer();
+  const fileId = prefs.getPrefs()?.cloudFileId;
+  if (!userToken || !server || !fileId) {
+    return { error: 'unavailable' };
+  }
+
+  try {
+    const response = await fetch(`${server.BASE_SERVER}/finance${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-ACTUAL-TOKEN': userToken,
+        'X-Actual-File-Id': fileId,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+    if (!response.ok || payload?.status !== 'ok') {
+      return { error: payload?.reason || 'request-failed' };
+    }
+    return payload.data;
+  } catch {
+    return { error: 'network-failure' };
+  }
+}
+
+async function getCategorizationStatus() {
+  return await financeRequest<FinanceCategorizationStatus>('/status', 'GET');
+}
+
+async function categorizeTransactions(request: FinanceCategorizationRequest) {
+  return await financeRequest<FinanceCategorizationResponse>(
+    '/categorize',
+    'POST',
+    request,
+  );
+}
+
+async function setCategorizationApiKey({ value }: { value: string | null }) {
+  const userToken = await asyncStorage.getItem('user-token');
+  const server = getServer();
+  const fileId = prefs.getPrefs()?.cloudFileId;
+  if (!userToken || !server || !fileId) {
+    return { error: 'unavailable' };
+  }
+
+  const normalizedValue = value?.trim() ?? null;
+  if (value !== null && !normalizedValue) {
+    return { error: 'invalid-api-key' };
+  }
+
+  try {
+    const response = await fetch(
+      normalizedValue === null
+        ? `${server.BASE_SERVER}/secret/openai_apiKey`
+        : `${server.BASE_SERVER}/secret`,
+      {
+        method: normalizedValue === null ? 'DELETE' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-ACTUAL-TOKEN': userToken,
+          'X-Actual-File-Id': fileId,
+        },
+        body: JSON.stringify(
+          normalizedValue === null
+            ? {}
+            : { name: 'openai_apiKey', value: normalizedValue },
+        ),
+      },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      return { error: payload?.reason || 'request-failed' };
+    }
+    return { success: true };
+  } catch {
+    return { error: 'network-failure' };
+  }
+}
 
 async function decideNativeReconciliationCandidate({
   candidateKey,
@@ -383,3 +481,6 @@ app.method(
   'finance/recurring/apply',
   mutator(undoable(applyRecurringPaymentCandidate)),
 );
+app.method('finance-categorization-status', getCategorizationStatus);
+app.method('finance-categorize', categorizeTransactions);
+app.method('finance-categorization-api-key-set', setCategorizationApiKey);

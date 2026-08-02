@@ -38,11 +38,23 @@ app.post('/', async (req, res) => {
   const fileId = req.get('X-Actual-File-Id');
   const perBudgetFile = fileId != null;
 
-  if (!(name in SecretName)) {
+  if (!Object.hasOwn(SecretName, name)) {
     res.status(400).send({
       status: 'error',
       reason: 'invalid-secret-name',
       details: 'Unknown secret name',
+    });
+    return;
+  }
+
+  if (
+    name === SecretName.openai_apiKey &&
+    (typeof value !== 'string' || value.trim().length === 0)
+  ) {
+    res.status(400).send({
+      status: 'error',
+      reason: 'invalid-secret-value',
+      details: 'OpenAI API key must be a non-empty string',
     });
     return;
   }
@@ -85,7 +97,7 @@ app.delete('/:name', async (req, res) => {
   const fileId = req.get('X-Actual-File-Id');
   const perBudgetFile = fileId != null;
 
-  if (!(name in SecretName)) {
+  if (!Object.hasOwn(SecretName, name)) {
     res.status(404).send('key not found');
     return;
   }
@@ -132,7 +144,7 @@ app.get('/:name', async (req, res) => {
   const fileId = req.get('X-Actual-File-Id');
   const perBudgetFile = fileId != null;
 
-  if (!(name in SecretName)) {
+  if (!Object.hasOwn(SecretName, name)) {
     res.status(404).send('key not found');
     return;
   }
