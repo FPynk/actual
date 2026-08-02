@@ -67,8 +67,10 @@ The launcher uses only Node built-ins and direct argument arrays with
 1. Parse `--no-open` and reject unknown arguments.
 2. Resolve persistent paths and create missing directories without deleting or
    changing existing content.
-3. Validate required non-secret companion bindings and the presence, not the
-   value, of each required secret source.
+3. Validate required non-secret companion bindings, the presence, not the
+   value, of each required secret source, and the three artifacts created by
+   the documented one-time migration: `companion.sqlite`, Actual API
+   `owner.json`, and the integrity anchor.
 4. Probe ports 3001, 4100, and 5006. Fail before spawning children if any is
    already accepting connections.
 5. Run one-shot loot-core and Finance Companion builds without companion
@@ -113,8 +115,19 @@ child. The parser validates budget identity, currency, server URL, and
 secret-source exclusivity. The launcher additionally requires the companion
 server URL to be exactly `http://127.0.0.1:5006` and verifies that every
 configured secret file exists, is a regular file, and is readable before any
-child starts. It must not read, generate, store, print, or convert secret
-values.
+child starts. The same preflight requires the companion database, Actual API
+owner marker, and integrity anchor; if any is absent, it names the artifact and
+points to the one-time `db:migrate` setup rather than starting builds that must
+fail. It must not read, generate, store, print, or convert secret values.
+
+The protected `db:migrate` lifecycle owns Actual API root initialization. While
+holding the database maintenance lock, it creates `owner.json` exactly once
+from the returned companion instance ID, configured budget-binding hash, and a
+random 32-byte base64url directory nonce. The root must be an existing canonical
+non-symlink directory and otherwise empty when unowned; the canonical marker is
+written with exclusive-create semantics and restrictive mode. Later migrations
+verify the exact existing marker and never overwrite or silently rebind it. The
+launcher only verifies that this initialization exists.
 
 Only the validation process and already-built companion runtime receive
 `FINANCE_COMPANION_*` variables. The companion build, worker, plugin, frontend,
@@ -161,6 +174,9 @@ and browser-opening adapters. Focused tests cover:
 - startup order and no browser open before all readiness checks pass;
 - missing worker, child failure, occupied port, and readiness timeout;
 - missing configuration with secret names only and no secret values;
+- missing one-time migration artifacts before child creation;
+- exclusive Actual API owner creation plus valid-rerun, mismatch, non-empty,
+  and symlink failure cases;
 - secret delivery only to the validator and built companion runtime;
 - immediate readiness cancellation during shutdown;
 - shutdown during a pre-spawn stage with no late child creation;
