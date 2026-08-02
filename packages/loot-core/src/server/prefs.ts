@@ -2,6 +2,8 @@
 import { Timestamp } from '@actual-app/crdt';
 
 import * as fs from '#platform/server/fs';
+import { parseFinanceMetadata } from '#shared/finance-metadata';
+import type { FinanceMetadata } from '#types/finance';
 import type { MetadataPrefs } from '#types/prefs';
 
 import { sendMessages } from './sync';
@@ -84,6 +86,16 @@ export function unloadPrefs(): void {
 
 export function getPrefs(): MetadataPrefs {
   return prefs;
+}
+
+export function getFinanceMetadata(): FinanceMetadata {
+  return parseFinanceMetadata(prefs?.finance);
+}
+
+export async function saveFinanceMetadata(
+  finance: FinanceMetadata,
+): Promise<void> {
+  await savePrefs({ finance: parseFinanceMetadata(finance) });
 }
 
 export function getDefaultPrefs(id: string, budgetName: string) {

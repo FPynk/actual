@@ -1,3 +1,5 @@
+import type { FinanceMetadata } from './finance';
+
 export type FeatureFlag =
   | 'goalTemplatesEnabled'
   | 'goalTemplatesUIEnabled'
@@ -67,6 +69,7 @@ export type SyncedPrefs = Partial<
  * core database.
  */
 export type MetadataPrefs = Partial<{
+  finance: FinanceMetadata;
   budgetName: string;
   id: string;
   lastUploaded: string;
