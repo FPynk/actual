@@ -32,7 +32,7 @@ async function prepareDuplicatePair() {
     account: 'checking',
     amount: -1299,
     category: 'provider-category',
-    date: 20260710,
+    date: '2026-07-10',
     imported_id: 'bank-123',
     imported_payee: 'CORNER SHOP',
     notes: 'Provider note',
@@ -43,7 +43,7 @@ async function prepareDuplicatePair() {
     account: 'checking',
     amount: -1299,
     category: 'manual-category',
-    date: 20260710,
+    date: '2026-07-10',
     notes: 'User note',
     payee: 'manual-payee',
   });
