@@ -7,13 +7,11 @@ import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
 import { send } from '@actual-app/core/platform/client/connection';
 import { q } from '@actual-app/core/shared/query';
-import type { TransactionEntity } from '@actual-app/core/types/models';
+import type { RecurConfig, TransactionEntity } from '@actual-app/core/types/models';
 
 import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
 import { usePayeesById } from '#hooks/usePayees';
-import { pushModal } from '#modals/modalsSlice';
 import { aqlQuery } from '#queries/aqlQuery';
-import { useDispatch } from '#redux';
 
 import {
   detectRecurringPayments,
@@ -22,7 +20,6 @@ import {
 
 export function RecurringReview() {
   const { t } = useTranslation();
-  const dispatch = useDispatch();
   const { data: payees = {} } = usePayeesById();
   const [candidates, setCandidates] = useState<readonly RecurringPaymentCandidate[]>([]);
   const [transactions, setTransactions] = useState<readonly TransactionEntity[]>([]);
@@ -64,14 +61,44 @@ export function RecurringReview() {
     setHiddenCandidates(current => new Set([...current, candidate.payeeId]));
   }
 
-  function approve(candidate: RecurringPaymentCandidate) {
+  async function approve(candidate: RecurringPaymentCandidate) {
     if (candidate.cadence === 'ambiguous' || candidate.hasReconciledHistory) return;
-    const transaction = transactions.find(
-      item => item.account === candidate.accountId && item.payee === candidate.payeeId,
+
+    const { data: currentTransactions } = await aqlQuery(
+      q('transactions').select('*'),
     );
-    if (transaction) {
-      dispatch(pushModal({ modal: { name: 'schedule-edit', options: { transaction } } }));
+    const matchingTransactions = (currentTransactions as TransactionEntity[]).filter(
+      transaction =>
+        transaction.account === candidate.accountId &&
+        transaction.payee === candidate.payeeId &&
+        transaction.amount < 0 &&
+        !transaction.is_parent &&
+        !transaction.cleared,
+    );
+    if (matchingTransactions.length < candidate.occurrenceCount) return;
+
+    const { data: schedules } = await aqlQuery(q('schedules').select('*'));
+    const matchingSchedules = schedules.filter(
+      schedule =>
+        schedule._account === candidate.accountId &&
+        schedule._payee === candidate.payeeId &&
+        !schedule.completed,
+    );
+    if (matchingSchedules.length > 1) return;
+
+    if (matchingSchedules.length === 1) {
+      await send('schedule/update', {
+        conditions: matchingSchedules[0]._conditions,
+        schedule: { id: matchingSchedules[0].id, name: candidate.payeeName },
+      });
+    } else {
+      await send('schedule/create', {
+        conditions: createScheduleConditions(candidate, matchingTransactions[0]),
+        schedule: { name: candidate.payeeName },
+      });
     }
+    await recordDecision(candidate, 'deferred');
+    await scan();
   }
 
   return (
@@ -89,7 +116,7 @@ export function RecurringReview() {
                 <Text>{candidate.type} · {candidate.cadence} · {candidate.occurrenceCount} occurrences</Text>
                 <Text>{candidate.reasons.join(' · ')}</Text>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <Button isDisabled={candidate.cadence === 'ambiguous' || candidate.hasReconciledHistory} onPress={() => approve(candidate)}><Trans>Approve</Trans></Button>
+                  <Button isDisabled={candidate.cadence === 'ambiguous' || candidate.hasReconciledHistory} onPress={() => void approve(candidate)}><Trans>Approve</Trans></Button>
                   <Button onPress={() => void recordDecision(candidate, 'deferred')}><Trans>Defer</Trans></Button>
                   <Button onPress={() => void recordDecision(candidate, 'rejected')}><Trans>Reject</Trans></Button>
                 </View>
@@ -100,4 +127,33 @@ export function RecurringReview() {
       )}
     </Modal>
   );
+}
+
+function createScheduleConditions(
+  candidate: RecurringPaymentCandidate,
+  transaction: TransactionEntity,
+) {
+  const frequency =
+    candidate.cadence === 'annual'
+      ? 'yearly'
+      : candidate.cadence === 'quarterly'
+        ? 'monthly'
+        : candidate.cadence;
+  const date = {
+    endDate: transaction.date,
+    endMode: 'never',
+    endOccurrences: 1,
+    frequency,
+    interval: candidate.cadence === 'quarterly' ? 3 : 1,
+    patterns: [],
+    skipWeekend: false,
+    start: transaction.date,
+    weekendSolveMode: 'after',
+  } satisfies RecurConfig;
+  return [
+    { field: 'account', op: 'is', value: candidate.accountId },
+    { field: 'payee', op: 'is', value: candidate.payeeId },
+    { field: 'amount', op: 'isapprox', value: candidate.medianAmount * -1 },
+    { field: 'date', op: 'isapprox', value: date },
+  ];
 }
