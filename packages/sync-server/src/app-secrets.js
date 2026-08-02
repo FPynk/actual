@@ -87,7 +87,11 @@ app.post('/', async (req, res) => {
   }
 
   const secretFileId = perBudgetFile ? fileId : null;
-  secretsService.set(name, value, secretFileId);
+  secretsService.set(
+    name,
+    name === SecretName.openai_apiKey ? value.trim() : value,
+    secretFileId,
+  );
 
   res.status(200).send({ status: 'ok' });
 });

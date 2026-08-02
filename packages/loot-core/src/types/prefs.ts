@@ -1,6 +1,6 @@
-import {
+import type {
   financeCategorizationPreferenceId,
-  type FinanceMetadata,
+  FinanceMetadata,
 } from './finance';
 
 export type FeatureFlag =

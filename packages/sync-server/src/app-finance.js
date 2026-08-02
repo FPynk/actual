@@ -61,10 +61,12 @@ function getConfiguredOpenAiKey(fileId) {
   const environmentKey = process.env.OPENAI_API_KEY?.trim();
   if (environmentKey) return { key: environmentKey, source: 'environment' };
 
-  const budgetKey = secretsService.get(SecretName.openai_apiKey, fileId);
+  const budgetKey = secretsService
+    .get(SecretName.openai_apiKey, fileId)
+    ?.trim();
   if (budgetKey) return { key: budgetKey, source: 'budget' };
 
-  const globalKey = secretsService.get(SecretName.openai_apiKey);
+  const globalKey = secretsService.get(SecretName.openai_apiKey)?.trim();
   if (globalKey) return { key: globalKey, source: 'global' };
 
   return { key: null, source: 'none' };

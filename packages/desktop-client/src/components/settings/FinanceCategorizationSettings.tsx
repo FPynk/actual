@@ -163,7 +163,9 @@ export function FinanceCategorizationSettings() {
   const canSaveSettings =
     draftSettings.model.trim().length > 0 &&
     draftSettings.masterPrompt.trim().length > 0 &&
-    draftSettings.categoryIds.length > 0;
+    draftSettings.categoryIds.some(categoryId =>
+      categories.some(category => category.id === categoryId),
+    );
 
   if (serverStatus === 'no-server') return null;
 

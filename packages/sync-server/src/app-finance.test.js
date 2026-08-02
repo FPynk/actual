@@ -1,6 +1,7 @@
 import supertest from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { getAccountDb } from './account-db';
 import {
   extractResponseOutput,
   getConfiguredOpenAiKey,
@@ -25,6 +26,8 @@ const request = {
     },
   ],
 };
+const ownerFileId = 'finance-owner-file';
+const sharedFileId = 'finance-shared-file';
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 
 beforeEach(() => {
@@ -41,6 +44,14 @@ afterEach(() => {
   secretsService.reset(SecretName.openai_apiKey);
   secretsService.reset(SecretName.openai_apiKey, 'budget-file');
   secretsService.reset(SecretName.openai_apiKey, 'test-file-id');
+  getAccountDb().mutate('DELETE FROM user_access WHERE file_id IN (?, ?)', [
+    ownerFileId,
+    sharedFileId,
+  ]);
+  getAccountDb().mutate('DELETE FROM files WHERE id IN (?, ?)', [
+    ownerFileId,
+    sharedFileId,
+  ]);
 });
 
 describe('OpenAI finance categorization', () => {
@@ -74,6 +85,37 @@ describe('OpenAI finance categorization', () => {
       data: { configured: true, source: 'budget' },
     });
     expect(JSON.stringify(response.body)).not.toContain('budget-test-key');
+  });
+
+  it('allows an owner but rejects a user with shared access', async () => {
+    getAccountDb().mutate(
+      'INSERT OR REPLACE INTO files (id, deleted, owner) VALUES (?, FALSE, ?)',
+      [ownerFileId, 'genericUser'],
+    );
+    getAccountDb().mutate(
+      'INSERT OR REPLACE INTO files (id, deleted, owner) VALUES (?, FALSE, ?)',
+      [sharedFileId, 'genericAdmin'],
+    );
+    getAccountDb().mutate(
+      'INSERT OR IGNORE INTO user_access (file_id, user_id) VALUES (?, ?)',
+      [sharedFileId, 'genericUser'],
+    );
+
+    const ownerResponse = await supertest(handlers)
+      .get('/status')
+      .set('X-Actual-File-Id', ownerFileId)
+      .set('x-actual-token', 'valid-token-user');
+    const sharedUserResponse = await supertest(handlers)
+      .get('/status')
+      .set('X-Actual-File-Id', sharedFileId)
+      .set('x-actual-token', 'valid-token-user');
+
+    expect(ownerResponse.statusCode).toBe(200);
+    expect(sharedUserResponse.statusCode).toBe(403);
+    expect(sharedUserResponse.body).toEqual({
+      status: 'error',
+      reason: 'file-access-denied',
+    });
   });
 
   it('uses environment, budget, then global key precedence without returning a key', () => {
@@ -120,6 +162,12 @@ describe('OpenAI finance categorization', () => {
         candidates: [
           { ...request.candidates[0], notes: 'must not leave Actual' },
         ],
+      }),
+    ).toBeNull();
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [{ ...request.candidates[0], transaction_id: 'actual-id' }],
       }),
     ).toBeNull();
   });
@@ -289,5 +337,23 @@ describe('OpenAI finance categorization', () => {
     });
     expect(sleep).toHaveBeenCalledWith(2_000);
     expect(fetchFunction).toHaveBeenCalledTimes(2);
+  });
+
+  it('makes at most three attempts for transient provider failures', async () => {
+    const parsedRequest = validateCategorizationRequest(request);
+    if (!parsedRequest) throw new Error('Expected valid request');
+    const fetchFunction = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      requestOpenAiCategorization('not-a-real-key', parsedRequest, {
+        fetchFunction,
+        sleep,
+      }),
+    ).resolves.toEqual({ error: 'provider-unavailable' });
+    expect(fetchFunction).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
   });
 });
