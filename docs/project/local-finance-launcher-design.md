@@ -71,10 +71,10 @@ The launcher uses only Node built-ins and direct argument arrays with
    value, of each required secret source.
 4. Probe ports 3001, 4100, and 5006. Fail before spawning children if any is
    already accepting connections.
-5. Run a one-shot development loot-core worker build and require
-   `kcab.worker.dev.js` to exist.
+5. Run one-shot loot-core and Finance Companion builds without companion
+   secrets, and require `kcab.worker.dev.js` to exist.
 6. Start the loot-core build watcher, plugin-service watcher, frontend, Actual
-   server, and companion with prefixed output.
+   server, and the already-built companion runtime with prefixed output.
 7. Poll bounded readiness:
    - Actual server information endpoint on port 5006;
    - proxied frontend document and `/kcab/kcab.worker.dev.js` through port 5006;
@@ -83,8 +83,11 @@ The launcher uses only Node built-ins and direct argument arrays with
    `--no-open` was supplied.
 9. Remain attached until a child exits or the user requests shutdown.
 
-The launcher calls Corepack directly (`corepack.cmd` on Windows, `corepack` on
-other platforms) so it does not depend on a globally installed Yarn binary.
+The launcher starts the repository's committed Yarn release with
+`process.execPath` and a direct argument array. This avoids the Windows
+`corepack.cmd` plus `shell: false` incompatibility while retaining the exact
+Yarn version pinned by the checkout. It does not depend on a globally installed
+Yarn binary.
 
 ## Persistent paths
 
@@ -104,10 +107,23 @@ launcher reports path names but never secret values.
 ## Configuration boundary
 
 The launcher may default ports, loopback hosts, origins, and persistent paths.
-It must require the existing configuration parser to validate budget identity,
-currency, server URL, and secret-source exclusivity. It must not generate,
-store, print, convert, or forward secrets beyond the child environment already
-required by the companion.
+It must require the existing configuration parser to validate a cloned
+environment so direct secret variables remain available for the companion
+child. The parser validates budget identity, currency, server URL, and
+secret-source exclusivity. The launcher additionally requires the companion
+server URL to be exactly `http://127.0.0.1:5006` and verifies that every
+configured secret file exists, is a regular file, and is readable before any
+child starts. It must not read, generate, store, print, or convert secret
+values.
+
+Only the validation process and already-built companion runtime receive
+`FINANCE_COMPANION_*` variables. The companion build, worker, plugin, frontend,
+and Actual children receive separate minimum environments. Actual receives
+`ACTUAL_HOSTNAME=127.0.0.1`, its persistent data root, and
+`NODE_ENV=development`; Vite receives its explicit loopback bind and
+`BROWSER=none`. Vite must still install the `/kcab` middleware when its internal
+worker watcher is disabled, and the sync-server development proxy targets
+`http://127.0.0.1:3001` so IPv4-only binds work consistently.
 
 If first-time companion configuration is incomplete, startup fails before any
 child is launched and points to the user guide. An optional Actual-only mode is
@@ -118,7 +134,9 @@ startup paths.
 
 Every spawned child is recorded immediately. On `SIGINT`, `SIGTERM`, startup
 failure, or unexpected child exit, the launcher stops only those recorded
-children and waits for bounded exit.
+children and waits for bounded exit. Shutdown also cancels any active readiness
+poll immediately; it does not continue polling stopped services until the
+readiness deadline.
 
 - Windows uses `taskkill /PID <owned-pid> /T` and escalates to `/F` only after
   the grace period.
@@ -137,9 +155,12 @@ Use Node's built-in test runner with injected process, readiness, filesystem,
 and browser-opening adapters. Focused tests cover:
 
 - Windows executable selection and paths containing spaces;
+- a real child-process smoke of Node invoking the committed Yarn release;
 - startup order and no browser open before all readiness checks pass;
 - missing worker, child failure, occupied port, and readiness timeout;
 - missing configuration with secret names only and no secret values;
+- secret delivery only to the validator and built companion runtime;
+- immediate readiness cancellation during shutdown;
 - `--no-open` and unknown arguments;
 - graceful and forced cleanup of only recorded child IDs;
 - stable persistent directory reuse across two launches; and
