@@ -291,6 +291,37 @@ describe('secretsService', () => {
       });
     });
 
+    it('POST rejects an empty OpenAI API key', async () => {
+      const res = await request(app)
+        .post('/')
+        .set('X-Actual-File-Id', testFileId)
+        .set('x-actual-token', 'valid-token')
+        .send({ name: SecretName.openai_apiKey, value: '   ' });
+
+      expect(res.statusCode).toEqual(400);
+      expect(res.body).toEqual({
+        status: 'error',
+        reason: 'invalid-secret-value',
+        details: 'OpenAI API key must be a non-empty string',
+      });
+      expect(
+        secretsService.get(SecretName.openai_apiKey, testFileId),
+      ).toBeNull();
+    });
+
+    it('POST trims an OpenAI API key before storing it', async () => {
+      const res = await request(app)
+        .post('/')
+        .set('X-Actual-File-Id', testFileId)
+        .set('x-actual-token', 'valid-token')
+        .send({ name: SecretName.openai_apiKey, value: '  test-openai-key  ' });
+
+      expect(res.statusCode).toEqual(200);
+      expect(secretsService.get(SecretName.openai_apiKey, testFileId)).toBe(
+        'test-openai-key',
+      );
+    });
+
     describe('when OpenID is the active auth method', () => {
       beforeEach(() => {
         enableOpenIdAuth();

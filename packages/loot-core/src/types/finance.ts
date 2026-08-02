@@ -74,3 +74,74 @@ export type NativeReconciliationCandidate = Readonly<{
     NativeReconciliationTransaction,
   ];
 }>;
+
+export const financeCategorizationPreferenceId =
+  'finance.openai-categorization' as const;
+
+export const defaultOpenAiCategorizationModel = 'gpt-5.6-luna' as const;
+
+export const defaultFinanceCategorizationInstruction =
+  'Choose the single best category for each expense. Use no category when the available details are insufficient.';
+
+export type FinanceCategorizationSettings = {
+  categoryGuidance: Record<string, string>;
+  categoryIds: string[];
+  masterPrompt: string;
+  model: string;
+};
+
+export const defaultFinanceCategorizationSettings: FinanceCategorizationSettings =
+  {
+    categoryGuidance: {},
+    categoryIds: [],
+    masterPrompt: defaultFinanceCategorizationInstruction,
+    model: defaultOpenAiCategorizationModel,
+  };
+
+export type FinanceCategorizationConfidence = 'high' | 'medium' | 'low';
+
+export type FinanceCategorizationCategory = {
+  category_id: string;
+  guidance?: string;
+  name: string;
+};
+
+export type FinanceCategorizationCandidate = {
+  account?: string;
+  amount: string;
+  candidate_id: string;
+  currency: string;
+  date: string;
+  description?: string;
+  payee?: string;
+};
+
+export type FinanceCategorizationRequest = {
+  candidates: FinanceCategorizationCandidate[];
+  categories: FinanceCategorizationCategory[];
+  categorization_instruction: string;
+  model: string;
+};
+
+export type FinanceCategorizationProposal = {
+  candidate_id: string;
+  category_id: string | null;
+  confidence: FinanceCategorizationConfidence;
+  explanation: string;
+};
+
+export type FinanceCategorizationUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+};
+
+export type FinanceCategorizationResponse = {
+  proposals: FinanceCategorizationProposal[];
+  usage: FinanceCategorizationUsage | null;
+};
+
+export type FinanceCategorizationStatus = {
+  configured: boolean;
+  source: 'budget' | 'environment' | 'global' | 'none';
+};
