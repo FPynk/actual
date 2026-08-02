@@ -22,6 +22,7 @@ import {
   groupBankSyncAccounts,
 } from './bankSyncUtils';
 import { BuiltInProviders } from './BuiltInProviders';
+import { ScheduledBankSyncSettings } from './ScheduledBankSync';
 import { useBuiltInBankSyncProviders } from './useBuiltInBankSyncProviders';
 
 export function BankSync() {
@@ -99,6 +100,8 @@ export function BankSync() {
           syncServerStatus={syncServerStatus}
           permissionWarning={permissionWarning}
         />
+
+        <ScheduledBankSyncSettings />
 
         {openAccounts.length === 0 && (
           <Text style={{ fontSize: '1.1rem' }}>

@@ -97,7 +97,20 @@ export type LocalPrefs = Partial<{
   sidebarWidth: number;
   'mobile.showSpentColumn': boolean;
   'mobile.bankSyncProvidersCollapsed': boolean;
+  bankSyncSchedule: BankSyncSchedule;
 }>;
+
+export type BankSyncScheduleResult = {
+  completedAt: string;
+  outcome: 'completed' | 'failed';
+};
+
+export type BankSyncSchedule = {
+  enabled: boolean;
+  intervalMinutes: number;
+  accountIds: string[];
+  lastResult?: BankSyncScheduleResult;
+};
 
 export type Theme = 'light' | 'dark' | 'auto' | 'midnight' | string;
 export type DarkTheme = 'dark' | 'midnight';
