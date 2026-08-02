@@ -136,7 +136,9 @@ Every spawned child is recorded immediately. On `SIGINT`, `SIGTERM`, startup
 failure, or unexpected child exit, the launcher stops only those recorded
 children and waits for bounded exit. Shutdown also cancels any active readiness
 poll immediately; it does not continue polling stopped services until the
-readiness deadline.
+readiness deadline. Startup checks the shutdown state after every awaited stage
+and immediately before each spawn, so a child cannot be launched after shutdown
+has taken its ownership snapshot.
 
 - Windows uses `taskkill /PID <owned-pid> /T` and escalates to `/F` only after
   the grace period.
@@ -161,6 +163,7 @@ and browser-opening adapters. Focused tests cover:
 - missing configuration with secret names only and no secret values;
 - secret delivery only to the validator and built companion runtime;
 - immediate readiness cancellation during shutdown;
+- shutdown during a pre-spawn stage with no late child creation;
 - `--no-open` and unknown arguments;
 - graceful and forced cleanup of only recorded child IDs;
 - stable persistent directory reuse across two launches; and
