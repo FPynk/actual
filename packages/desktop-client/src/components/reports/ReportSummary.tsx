@@ -95,6 +95,42 @@ function ExpenditureMetricCard({
   );
 }
 
+function ExpenditureBreakdown({
+  title,
+  entries,
+  emptyLabel,
+}: {
+  title: ReactNode;
+  entries: ExpenditureMetrics['categoryBreakdown'];
+  emptyLabel: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const format = useFormat();
+
+  return (
+    <View style={{ flex: '1 1 180px', gap: 4 }}>
+      <Text style={{ ...styles.smallText, fontWeight: 600 }}>{title}</Text>
+      {entries.length === 0 ? (
+        <Text style={styles.smallText}>{emptyLabel}</Text>
+      ) : (
+        entries.map(entry => (
+          <View
+            key={entry.name ?? 'uncategorized'}
+            style={{ flexDirection: 'row', justifyContent: 'space-between' }}
+          >
+            <Text style={styles.smallText}>
+              {entry.name ?? t('Uncategorized')}
+            </Text>
+            <FinancialText style={styles.smallText}>
+              <PrivacyFilter>{format(entry.amount, 'financial')}</PrivacyFilter>
+            </FinancialText>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
 function ExpenditureMetricsSummary({
   expenditureMetrics,
 }: {
@@ -169,6 +205,11 @@ function ExpenditureMetricsSummary({
           value={format(expenditureMetrics.averagePerWeek ?? 0, 'financial')}
         />
         <ExpenditureMetricCard
+          label={<Trans>Average per month</Trans>}
+          value={format(expenditureMetrics.averagePerMonth ?? 0, 'financial')}
+          detail={<Trans>Monthly rate based on the selected days</Trans>}
+        />
+        <ExpenditureMetricCard
           label={<Trans>Median expense</Trans>}
           value={
             expenditureMetrics.medianExpense == null
@@ -180,6 +221,25 @@ function ExpenditureMetricsSummary({
           label={<Trans>Month over month</Trans>}
           value={monthOverMonthValue}
           detail={monthOverMonthDetail}
+        />
+      </View>
+      <View
+        style={{
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          gap: 16,
+          marginTop: 12,
+        }}
+      >
+        <ExpenditureBreakdown
+          title={<Trans>Spending by category</Trans>}
+          entries={expenditureMetrics.categoryBreakdown}
+          emptyLabel={<Trans>No category spending</Trans>}
+        />
+        <ExpenditureBreakdown
+          title={<Trans>Spending by merchant</Trans>}
+          entries={expenditureMetrics.merchantBreakdown}
+          emptyLabel={<Trans>No merchant spending</Trans>}
         />
       </View>
       <Text

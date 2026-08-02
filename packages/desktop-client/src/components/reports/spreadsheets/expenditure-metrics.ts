@@ -1,9 +1,13 @@
 import * as d from 'date-fns';
 
+const averageCalendarDaysPerMonth = 365.2425 / 12;
+
 export type ExpenditureMetricRow = {
   date: string;
   amount: number;
   currency: string;
+  categoryName: string | null;
+  merchantName: string | null;
   isParent: boolean;
   isTransfer: boolean;
   isOffBudget: boolean;
@@ -21,7 +25,10 @@ export type ExpenditureMetrics = {
   total: number | null;
   averagePerDay: number | null;
   averagePerWeek: number | null;
+  averagePerMonth: number | null;
   medianExpense: number | null;
+  categoryBreakdown: readonly ExpenditureBreakdownEntry[];
+  merchantBreakdown: readonly ExpenditureBreakdownEntry[];
   monthOverMonth: {
     state: 'ready' | 'unavailable' | 'zero-prior';
     current: number | null;
@@ -31,6 +38,11 @@ export type ExpenditureMetrics = {
   };
   rolling30Days: readonly { date: string; amount: number }[];
 };
+
+export type ExpenditureBreakdownEntry = Readonly<{
+  name: string | null;
+  amount: number;
+}>;
 
 function parseDate(date: string) {
   const parsedDate = d.parseISO(date);
@@ -136,6 +148,21 @@ function getRolling30Days({
   });
 }
 
+function getExpenditureBreakdown(
+  rows: readonly ExpenditureMetricRow[],
+  nameKey: 'categoryName' | 'merchantName',
+): readonly ExpenditureBreakdownEntry[] {
+  const totalsByName = new Map<string | null, number>();
+  for (const row of rows) {
+    const name = row[nameKey];
+    totalsByName.set(name, (totalsByName.get(name) ?? 0) + row.amount);
+  }
+
+  return [...totalsByName.entries()]
+    .map(([name, amount]) => ({ name, amount }))
+    .sort((first, second) => first.amount - second.amount);
+}
+
 export function calculateExpenditureMetrics({
   startDate,
   endDate,
@@ -167,7 +194,10 @@ export function calculateExpenditureMetrics({
       total: null,
       averagePerDay: null,
       averagePerWeek: null,
+      averagePerMonth: null,
       medianExpense: null,
+      categoryBreakdown: [],
+      merchantBreakdown: [],
       monthOverMonth: createUnavailableMonthOverMonth(),
       rolling30Days: [],
     };
@@ -193,7 +223,16 @@ export function calculateExpenditureMetrics({
     total,
     averagePerDay: Math.round(total / dayCount),
     averagePerWeek: Math.round((total * 7) / dayCount),
+    averagePerMonth: Math.round((total * averageCalendarDaysPerMonth) / dayCount),
     medianExpense,
+    categoryBreakdown: getExpenditureBreakdown(
+      includedRows,
+      'categoryName',
+    ),
+    merchantBreakdown: getExpenditureBreakdown(
+      includedRows,
+      'merchantName',
+    ),
     monthOverMonth: getMonthOverMonth({
       startDate,
       endDate,
