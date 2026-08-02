@@ -14,6 +14,12 @@ import {
 
 type ReconciliationDecision = 'merge' | 'keep-both' | 'deferred';
 
+export function isReconciliationDecision(
+  value: unknown,
+): value is ReconciliationDecision {
+  return value === 'merge' || value === 'keep-both' || value === 'deferred';
+}
+
 export type FinanceHandlers = {
   'finance/reconciliation-list': typeof listNativeReconciliationCandidates;
   'finance/reconciliation-decide': typeof decideNativeReconciliationCandidate;
@@ -28,14 +34,16 @@ async function decideNativeReconciliationCandidate({
   fingerprint: string;
   decision: ReconciliationDecision;
 }) {
+  if (!isReconciliationDecision(decision)) {
+    throw new Error('Invalid reconciliation decision.');
+  }
+
   const candidates = await listNativeReconciliationCandidates();
   const candidate = candidates.find(
     currentCandidate => currentCandidate.candidateKey === candidateKey,
   );
   if (!candidate || candidate.fingerprint !== fingerprint) {
-    throw new Error(
-      'This duplicate suggestion changed. Refresh and review it again.',
-    );
+    return { status: 'stale' as const };
   }
 
   const [left, right] = await Promise.all(
@@ -43,35 +51,47 @@ async function decideNativeReconciliationCandidate({
       db.getTransaction(transactionId),
     ),
   );
-  const payeeIds = [left?.payee, right?.payee].filter(
+  if (!left || !right) {
+    return { status: 'stale' as const };
+  }
+
+  const payeeIds = [left.payee, right.payee].filter(
     (payeeId): payeeId is string => Boolean(payeeId),
   );
   const payees = await Promise.all(
     payeeIds.map(payeeId => db.getPayee(payeeId)),
   );
-  const freshCandidate =
-    left && right
-      ? scoreNativeReconciliationPair(
-          left,
-          right,
-          new Map(
-            payees
-              .filter(payee => payee !== null && payee !== undefined)
-              .map(payee => [payee.id, payee.name]),
-          ),
-        )
-      : null;
+  const freshCandidate = scoreNativeReconciliationPair(
+    left,
+    right,
+    new Map(
+      payees
+        .filter(payee => payee !== null && payee !== undefined)
+        .map(payee => [payee.id, payee.name]),
+    ),
+  );
   if (
     !freshCandidate ||
     freshCandidate.candidateKey !== candidateKey ||
     freshCandidate.fingerprint !== fingerprint
   ) {
-    throw new Error('This duplicate suggestion is stale and was not changed.');
+    return { status: 'stale' as const };
   }
 
   if (decision === 'merge') {
+    const leftHasImportEvidence = Boolean(
+      left.imported_id || left.imported_payee,
+    );
+    const rightHasImportEvidence = Boolean(
+      right.imported_id || right.imported_payee,
+    );
+    let preferredFieldsTransactionId: string | undefined;
+    if (leftHasImportEvidence !== rightHasImportEvidence) {
+      preferredFieldsTransactionId = leftHasImportEvidence ? right.id : left.id;
+    }
     const keptTransactionId = await mergeTransactions(
       candidate.transactionIds.map(id => ({ id })),
+      { preferredFieldsTransactionId },
     );
     return { status: 'merged' as const, keptTransactionId };
   }

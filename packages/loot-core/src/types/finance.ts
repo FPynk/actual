@@ -38,14 +38,14 @@ export type FinanceMetadata = {
 };
 
 export type NativeReconciliationReason =
-  | 'same imported transaction ID'
-  | 'both transactions came from imports'
-  | 'same transaction date'
-  | 'transaction dates are close'
-  | 'same normalized merchant'
-  | 'merchant evidence is unavailable'
-  | 'merchant names differ'
-  | 'pending and posted states differ';
+  | 'same-imported-id'
+  | 'both-imported'
+  | 'same-date'
+  | 'nearby-date'
+  | 'same-payee'
+  | 'missing-payee'
+  | 'different-payee'
+  | 'cleared-state-differs';
 
 export type NativeReconciliationTransaction = Readonly<{
   id: string;
@@ -56,6 +56,7 @@ export type NativeReconciliationTransaction = Readonly<{
   importedId: string | null;
   categoryId: string | null;
   notes: string | null;
+  scheduleId: string | null;
   cleared: boolean;
 }>;
 

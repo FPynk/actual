@@ -11,13 +11,66 @@ import { send } from '@actual-app/core/platform/client/connection';
 import type { NativeReconciliationCandidate } from '@actual-app/core/types/finance';
 
 import { Modal, ModalCloseButton, ModalHeader } from '#components/common/Modal';
+import { FinancialText } from '#components/FinancialText';
+import { useAccounts } from '#hooks/useAccounts';
+import { useCategories } from '#hooks/useCategories';
 import { useFormat } from '#hooks/useFormat';
 
 type ReconciliationDecision = 'merge' | 'keep-both' | 'deferred';
 
+function Confidence({
+  confidence,
+}: {
+  confidence: NativeReconciliationCandidate['confidence'];
+}) {
+  switch (confidence) {
+    case 'high':
+      return <Trans>High confidence</Trans>;
+    case 'medium':
+      return <Trans>Medium confidence</Trans>;
+    case 'low':
+      return <Trans>Low confidence</Trans>;
+    default:
+      return unreachableLabel(confidence);
+  }
+}
+
+function Reason({
+  reason,
+}: {
+  reason: NativeReconciliationCandidate['reasons'][number];
+}) {
+  switch (reason) {
+    case 'same-imported-id':
+      return <Trans>Same imported transaction ID</Trans>;
+    case 'both-imported':
+      return <Trans>Both transactions came from imports</Trans>;
+    case 'same-date':
+      return <Trans>Same transaction date</Trans>;
+    case 'nearby-date':
+      return <Trans>Transaction dates are close</Trans>;
+    case 'same-payee':
+      return <Trans>Same normalized merchant</Trans>;
+    case 'missing-payee':
+      return <Trans>Merchant evidence is unavailable</Trans>;
+    case 'different-payee':
+      return <Trans>Merchant names differ</Trans>;
+    case 'cleared-state-differs':
+      return <Trans>Cleared states differ</Trans>;
+    default:
+      return unreachableLabel(reason);
+  }
+}
+
+function unreachableLabel(value: never): never {
+  throw new Error(`Unexpected reconciliation label: ${String(value)}`);
+}
+
 export function ReconciliationReviewModal() {
   const { t } = useTranslation();
   const format = useFormat();
+  const { data: accounts = [] } = useAccounts();
+  const { data: { list: categories } = { list: [] } } = useCategories();
   const [candidates, setCandidates] = useState<
     readonly NativeReconciliationCandidate[]
   >([]);
@@ -32,12 +85,8 @@ export function ReconciliationReviewModal() {
     setError(null);
     try {
       setCandidates(await send('finance/reconciliation-list'));
-    } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : t('Could not load duplicate suggestions.'),
-      );
+    } catch {
+      setError(t('Could not load duplicate suggestions.'));
     } finally {
       setLoading(false);
     }
@@ -54,18 +103,21 @@ export function ReconciliationReviewModal() {
     setWorkingCandidateKey(candidate.candidateKey);
     setError(null);
     try {
-      await send('finance/reconciliation-decide', {
+      const result = await send('finance/reconciliation-decide', {
         candidateKey: candidate.candidateKey,
         fingerprint: candidate.fingerprint,
         decision,
       });
+      if (result.status === 'stale') {
+        setCandidates(await send('finance/reconciliation-list'));
+        setError(
+          t('This duplicate suggestion changed. Refresh and review it again.'),
+        );
+        return;
+      }
       await loadCandidates();
-    } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : t('The duplicate decision could not be applied.'),
-      );
+    } catch {
+      setError(t('The duplicate decision could not be applied.'));
     } finally {
       setWorkingCandidateKey(null);
     }
@@ -90,17 +142,24 @@ export function ReconciliationReviewModal() {
             </Trans>
           </Paragraph>
 
-          {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
+          {error && (
+            <Text role="alert" style={{ color: theme.errorText }}>
+              {error}
+            </Text>
+          )}
           {loading ? (
-            <Text>
-              <Trans>Finding possible duplicates...</Trans>
+            <Text role="status" aria-live="polite">
+              <Trans>Finding possible duplicates…</Trans>
             </Text>
           ) : candidates.length === 0 ? (
             <Text>
               <Trans>No possible duplicates need review.</Trans>
             </Text>
           ) : (
-            <View style={{ gap: 12, overflowY: 'auto' }}>
+            <View
+              aria-busy={workingCandidateKey !== null}
+              style={{ gap: 12, overflowY: 'auto' }}
+            >
               {candidates.map(candidate => {
                 const isWorking =
                   workingCandidateKey === candidate.candidateKey;
@@ -115,31 +174,72 @@ export function ReconciliationReviewModal() {
                     }}
                   >
                     <SpaceBetween>
-                      <Text style={{ fontWeight: 600 }}>
+                      <FinancialText style={{ fontWeight: 600 }}>
                         {format(candidate.amount, 'financial')}
-                      </Text>
+                      </FinancialText>
                       <Text>
-                        {candidate.confidence} ({candidate.score})
+                        <Confidence confidence={candidate.confidence} />{' '}
+                        <Trans>Score: {{ score: candidate.score }}</Trans>
                       </Text>
                     </SpaceBetween>
+                    <Text>
+                      <Trans>
+                        Account:{' '}
+                        {{
+                          account:
+                            accounts.find(
+                              account => account.id === candidate.accountId,
+                            )?.name ?? candidate.accountId,
+                        }}
+                      </Trans>
+                    </Text>
                     {candidate.transactions.map(transaction => (
                       <View key={transaction.id} style={{ gap: 2 }}>
                         <Text style={{ fontWeight: 600 }}>
-                          {transaction.date} -{' '}
+                          {transaction.date} —{' '}
                           {transaction.payee ??
                             transaction.importedPayee ??
                             t('Unknown payee')}
                         </Text>
                         <Text>
-                          {transaction.cleared ? t('Cleared') : t('Pending')}
-                          {transaction.importedId
-                            ? ` - ${t('Import ID')}: ${transaction.importedId}`
-                            : ''}
+                          {transaction.cleared ? t('Cleared') : t('Uncleared')}
                         </Text>
+                        {transaction.importedId && (
+                          <Text>
+                            <Trans>
+                              Import ID: {{ id: transaction.importedId }}
+                            </Trans>
+                          </Text>
+                        )}
+                        {transaction.categoryId && (
+                          <Text>
+                            <Trans>
+                              Category:{' '}
+                              {{
+                                category:
+                                  categories.find(
+                                    category =>
+                                      category.id === transaction.categoryId,
+                                  )?.name ?? transaction.categoryId,
+                              }}
+                            </Trans>
+                          </Text>
+                        )}
+                        {transaction.scheduleId && (
+                          <Text>
+                            <Trans>Linked to a schedule</Trans>
+                          </Text>
+                        )}
                         {transaction.notes && <Text>{transaction.notes}</Text>}
                       </View>
                     ))}
-                    <Text>{candidate.reasons.join(' - ')}</Text>
+                    <View style={{ gap: 2 }}>
+                      {candidate.reasons.map(reason => (
+                        <Text key={reason}>
+                          <Reason reason={reason} />
+                        </Text>
+                      ))}
+                    </View>
                     <SpaceBetween style={{ justifyContent: 'flex-end' }}>
                       <Button
                         variant="bare"

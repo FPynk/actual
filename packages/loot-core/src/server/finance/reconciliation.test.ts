@@ -45,10 +45,10 @@ describe('native reconciliation candidates', () => {
     });
     expect(candidate?.reasons).toEqual(
       expect.arrayContaining([
-        'same imported transaction ID',
-        'same transaction date',
-        'same normalized merchant',
-        'pending and posted states differ',
+        'same-imported-id',
+        'same-date',
+        'same-payee',
+        'cleared-state-differs',
       ]),
     );
   });
@@ -78,6 +78,7 @@ describe('native reconciliation candidates', () => {
     { is_child: true },
     { parent_id: 'parent' },
     { transfer_id: 'transfer' },
+    { starting_balance_flag: true },
     { tombstone: true },
     { _deleted: true },
   ] satisfies Partial<TransactionEntity>[])(
@@ -92,6 +93,40 @@ describe('native reconciliation candidates', () => {
       ).toBeNull();
     },
   );
+
+  test('detects overlapping imports with different provider IDs', () => {
+    const candidate = scoreNativeReconciliationPair(
+      transaction('first-import', {
+        imported_id: 'provider-1',
+        imported_payee: 'CORNER SHOP',
+      }),
+      transaction('second-import', {
+        imported_id: 'provider-2',
+        imported_payee: 'Corner Shop',
+      }),
+      payees,
+    );
+
+    expect(candidate?.reasons).toEqual(
+      expect.arrayContaining(['both-imported', 'same-payee']),
+    );
+  });
+
+  test('detects a manual and imported duplicate without auto-merging it', () => {
+    const candidate = scoreNativeReconciliationPair(
+      transaction('manual'),
+      transaction('imported', {
+        imported_id: 'provider-1',
+        imported_payee: 'Corner Shop',
+      }),
+      payees,
+    );
+
+    expect(candidate).toMatchObject({
+      transactionIds: ['imported', 'manual'],
+      confidence: 'medium',
+    });
+  });
 
   test('honours a prior keep-both decision for a legitimate repeat', () => {
     const repeatedPurchases = [
@@ -134,5 +169,80 @@ describe('native reconciliation candidates', () => {
     );
 
     expect(initial?.fingerprint).not.toBe(changed?.fingerprint);
+  });
+
+  test('changes the fingerprint when both transactions move accounts', () => {
+    const initial = scoreNativeReconciliationPair(
+      transaction('one'),
+      transaction('two'),
+      payees,
+    );
+    const changed = scoreNativeReconciliationPair(
+      transaction('one', { account: 'savings' }),
+      transaction('two', { account: 'savings' }),
+      payees,
+    );
+
+    expect(initial?.fingerprint).not.toBe(changed?.fingerprint);
+  });
+
+  test('changes the fingerprint when protected source evidence changes', () => {
+    const initial = scoreNativeReconciliationPair(
+      transaction('one', { raw_synced_data: '{"pending":true}' }),
+      transaction('two'),
+      payees,
+    );
+    const changed = scoreNativeReconciliationPair(
+      transaction('one', { raw_synced_data: '{"pending":false}' }),
+      transaction('two'),
+      payees,
+    );
+
+    expect(initial?.fingerprint).not.toBe(changed?.fingerprint);
+  });
+
+  test('temporarily hides deferred candidates and restores expired ones', () => {
+    const repeatedPurchases = [transaction('first'), transaction('second')];
+    const candidate = buildNativeReconciliationCandidates(
+      repeatedPurchases,
+      payees,
+    )[0];
+    const currentDeferral: FinanceMetadata = {
+      version: 1,
+      reviewDecisions: [
+        {
+          candidateKey: candidate.candidateKey,
+          decision: 'deferred',
+          feature: 'reconciliation',
+          updatedAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ],
+    };
+    const expiredDeferral: FinanceMetadata = {
+      ...currentDeferral,
+      reviewDecisions: [
+        {
+          ...currentDeferral.reviewDecisions[0],
+          updatedAt: new Date(
+            Date.now() - 8 * 24 * 60 * 60 * 1000,
+          ).toISOString(),
+        },
+      ],
+    };
+
+    expect(
+      buildNativeReconciliationCandidates(
+        repeatedPurchases,
+        payees,
+        currentDeferral,
+      ),
+    ).toEqual([]);
+    expect(
+      buildNativeReconciliationCandidates(
+        repeatedPurchases,
+        payees,
+        expiredDeferral,
+      ),
+    ).toHaveLength(1);
   });
 });

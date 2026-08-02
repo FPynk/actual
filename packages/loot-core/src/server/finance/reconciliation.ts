@@ -12,6 +12,7 @@ import type { TransactionEntity } from '#types/models';
 
 const maximumCandidates = 250;
 const maximumDateDistanceDays = 7;
+const deferredCandidateLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1000;
 
 export async function listNativeReconciliationCandidates(): Promise<
   readonly NativeReconciliationCandidate[]
@@ -48,7 +49,7 @@ export function buildNativeReconciliationCandidates(
 
   const hiddenCandidateKeys = new Set(
     metadata?.reviewDecisions
-      .filter(decision => decision.feature === 'reconciliation')
+      .filter(isHiddenReconciliationDecision)
       .map(decision => decision.candidateKey) ?? [],
   );
   const candidates: NativeReconciliationCandidate[] = [];
@@ -100,6 +101,24 @@ export function buildNativeReconciliationCandidates(
     .slice(0, maximumCandidates);
 }
 
+function isHiddenReconciliationDecision(
+  decision: FinanceMetadata['reviewDecisions'][number],
+): boolean {
+  if (decision.feature !== 'reconciliation') {
+    return false;
+  }
+  if (decision.decision === 'keep-both') {
+    return true;
+  }
+  if (decision.decision !== 'deferred') {
+    return false;
+  }
+  return (
+    Date.parse(decision.updatedAt) >=
+    Date.now() - deferredCandidateLifetimeMilliseconds
+  );
+}
+
 export function scoreNativeReconciliationPair(
   left: TransactionEntity,
   right: TransactionEntity,
@@ -124,34 +143,34 @@ export function scoreNativeReconciliationPair(
 
   if (left.imported_id && left.imported_id === right.imported_id) {
     score += 20;
-    reasons.push('same imported transaction ID');
+    reasons.push('same-imported-id');
   } else if (left.imported_id && right.imported_id) {
-    reasons.push('both transactions came from imports');
+    reasons.push('both-imported');
   }
 
   if (dateDistance === 0) {
     score += 20;
-    reasons.push('same transaction date');
+    reasons.push('same-date');
   } else {
     score += dateDistance <= 3 ? 10 : 5;
-    reasons.push('transaction dates are close');
+    reasons.push('nearby-date');
   }
 
   const leftPayee = normalizedPayee(left, payeeNames);
   const rightPayee = normalizedPayee(right, payeeNames);
   if (!leftPayee || !rightPayee) {
-    reasons.push('merchant evidence is unavailable');
+    reasons.push('missing-payee');
   } else if (leftPayee === rightPayee) {
     score += 15;
-    reasons.push('same normalized merchant');
+    reasons.push('same-payee');
   } else {
     score -= 10;
-    reasons.push('merchant names differ');
+    reasons.push('different-payee');
   }
 
   if (Boolean(left.cleared) !== Boolean(right.cleared)) {
     score += 5;
-    reasons.push('pending and posted states differ');
+    reasons.push('cleared-state-differs');
   }
 
   if (score < 80) {
@@ -171,7 +190,16 @@ export function scoreNativeReconciliationPair(
 
   return {
     candidateKey,
-    fingerprint: JSON.stringify(transactionEvidence),
+    fingerprint: JSON.stringify({
+      accountId: left.account,
+      transactions: sortedTransactions.map((transaction, index) => ({
+        ...transactionEvidence[index],
+        payeeId: transaction.payee ?? null,
+        rawSyncedDataHash: hashSensitiveEvidence(
+          transaction.raw_synced_data ?? null,
+        ),
+      })),
+    }),
     transactionIds,
     accountId: left.account,
     amount: left.amount,
@@ -227,6 +255,7 @@ function toEvidence(
     importedId: transaction.imported_id ?? null,
     categoryId: transaction.category ?? null,
     notes: transaction.notes ?? null,
+    scheduleId: transaction.schedule ?? null,
     cleared: Boolean(transaction.cleared),
   };
 }
@@ -238,4 +267,15 @@ function dateDistanceInDays(left: string, right: string): number {
     return Number.POSITIVE_INFINITY;
   }
   return Math.abs(leftTimestamp - rightTimestamp) / 86_400_000;
+}
+
+function hashSensitiveEvidence(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index++) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 16_777_619);
+  }
+  return (hash >>> 0).toString(16);
 }
