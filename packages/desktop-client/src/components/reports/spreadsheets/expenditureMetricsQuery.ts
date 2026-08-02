@@ -7,6 +7,8 @@ import type { ExpenditureMetricRow } from './expenditure-metrics';
 type ExpenditureMetricQueryRow = {
   date: string;
   amount: number;
+  categoryName: string | null;
+  merchantName: string | null;
   isParent: boolean;
   transferAccount: string | null;
   accountOffBudget: boolean;
@@ -34,6 +36,8 @@ export function makeExpenditureMetricsQuery({
     .select([
       'date',
       'amount',
+      { categoryName: { $id: '$category.name' } },
+      { merchantName: { $id: '$payee.name' } },
       { isParent: { $id: '$is_parent' } },
       { transferAccount: { $id: '$payee.transfer_acct.id' } },
       { accountOffBudget: { $id: '$account.offbudget' } },
@@ -82,6 +86,8 @@ export async function fetchExpenditureMetricRows({
       date: row.date,
       amount: row.amount,
       currency,
+      categoryName: row.categoryName,
+      merchantName: row.merchantName,
       isParent: row.isParent,
       isTransfer: Boolean(row.transferAccount),
       isOffBudget: Boolean(row.accountOffBudget),

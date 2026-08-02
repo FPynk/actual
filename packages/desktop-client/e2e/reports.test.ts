@@ -191,8 +191,11 @@ test.describe('Reports', () => {
         'Total expenditure',
         'Average per day',
         'Average per week',
+        'Average per month',
         'Median expense',
         'Month over month',
+        'Spending by category',
+        'Spending by merchant',
       ]) {
         await expect(
           page.getByText(metricLabel, { exact: true }),

@@ -12,6 +12,8 @@ function row(
     date,
     amount,
     currency: 'USD',
+    categoryName: null,
+    merchantName: null,
     isParent: false,
     isTransfer: false,
     isOffBudget: false,
@@ -42,7 +44,10 @@ describe('calculateExpenditureMetrics', () => {
       total: -2500,
       averagePerDay: -500,
       averagePerWeek: -3500,
+      averagePerMonth: -15218,
       medianExpense: -700,
+      categoryBreakdown: [{ name: null, amount: -2500 }],
+      merchantBreakdown: [{ name: null, amount: -2500 }],
       monthOverMonth: {
         state: 'ready',
         current: -1000,
@@ -69,6 +74,7 @@ describe('calculateExpenditureMetrics', () => {
 
     expect(result.averagePerDay).toBe(-100);
     expect(result.averagePerWeek).toBe(-700);
+    expect(result.averagePerMonth).toBe(-3044);
     expect(result.monthOverMonth).toEqual({
       state: 'unavailable',
       current: null,
@@ -133,6 +139,7 @@ describe('calculateExpenditureMetrics', () => {
       total: 0,
       averagePerDay: 0,
       averagePerWeek: 0,
+      averagePerMonth: 0,
       medianExpense: null,
     });
     expect(result.rolling30Days).toEqual([
@@ -157,7 +164,10 @@ describe('calculateExpenditureMetrics', () => {
       total: null,
       averagePerDay: null,
       averagePerWeek: null,
+      averagePerMonth: null,
       medianExpense: null,
+      categoryBreakdown: [],
+      merchantBreakdown: [],
       monthOverMonth: {
         state: 'unavailable',
         current: null,
@@ -167,6 +177,37 @@ describe('calculateExpenditureMetrics', () => {
       },
       rolling30Days: [],
     });
+  });
+
+  it('groups category and merchant spending while refunds offset their totals', () => {
+    const result = calculateExpenditureMetrics({
+      startDate: '2026-01-01',
+      endDate: '2026-01-31',
+      rows: [
+        row('2026-01-03', -1000, {
+          categoryName: 'Groceries',
+          merchantName: 'Market',
+        }),
+        row('2026-01-06', 200, {
+          categoryName: 'Groceries',
+          merchantName: 'Market',
+        }),
+        row('2026-01-10', -500, {
+          categoryName: 'Dining',
+          merchantName: 'Cafe',
+        }),
+        row('2026-01-12', -600, { isTransfer: true }),
+      ],
+    });
+
+    expect(result.categoryBreakdown).toEqual([
+      { name: 'Groceries', amount: -800 },
+      { name: 'Dining', amount: -500 },
+    ]);
+    expect(result.merchantBreakdown).toEqual([
+      { name: 'Market', amount: -800 },
+      { name: 'Cafe', amount: -500 },
+    ]);
   });
 
   it('handles leap-day boundaries and counts identical expenses independently', () => {
