@@ -85,6 +85,7 @@ import { UnmigrateBudgetAutomationsModal } from './modals/UnmigrateBudgetAutomat
 import { CategoryLearning } from './payees/CategoryLearning';
 import { DiscoverSchedules } from './schedules/DiscoverSchedules';
 import { PostsOfflineNotification } from './schedules/PostsOfflineNotification';
+import { RecurringReview } from './schedules/RecurringReview';
 import { ScheduleEditModal } from './schedules/ScheduleEditModal';
 import { ScheduleLink } from './schedules/ScheduleLink';
 import { UpcomingLength } from './schedules/UpcomingLength';
@@ -269,6 +270,9 @@ export function Modals() {
 
         case 'reconciliation-review':
           return <ReconciliationReviewModal key={key} />;
+
+        case 'recurring-review':
+          return <RecurringReview key={key} />;
 
         case 'schedules-upcoming-length':
           return <UpcomingLength key={key} />;

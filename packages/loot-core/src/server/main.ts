@@ -131,6 +131,7 @@ handlers = installAPI(handlers) as Handlers;
 app.handlers = handlers;
 app.combine(
   authApp,
+  financeApp,
   schedulesApp,
   budgetApp,
   dashboardApp,

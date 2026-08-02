@@ -2,8 +2,16 @@ import * as db from '#server/db';
 import { runHandler, runMutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { clearUndo, undo } from '#server/undo';
+import { withFinanceReviewDecision } from '#shared/finance-metadata';
+import { detectRecurringPayments } from '#shared/finance/recurring-detector';
 
-import { app, isReconciliationDecision } from './app';
+import {
+  app,
+  isReconciliationDecision,
+  isRecurringReviewDecision,
+  reopenRecurringReviewDecision,
+  saveRecurringReviewDecision,
+} from './app';
 
 async function prepareDuplicatePair() {
   await db.insertCategoryGroup({
@@ -138,5 +146,150 @@ describe('native reconciliation ledger decisions', () => {
 
     expect(await currentTransactions()).toHaveLength(2);
     expect(await app.handlers['finance/reconciliation-list']()).toEqual([]);
+  });
+});
+
+describe('recurring finance review decisions', () => {
+  beforeEach(async () => {
+    await prefs.loadPrefs();
+  });
+
+  afterEach(() => {
+    prefs.unloadPrefs();
+  });
+
+  it('persists deferred, rejected, and applied decisions by full candidate key', async () => {
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-1","payee-1","monthly"]',
+      decision: 'deferred',
+    });
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-2","payee-1","monthly"]',
+      decision: 'rejected',
+    });
+    await saveRecurringReviewDecision({
+      candidateKey: '["account-3","payee-1","monthly"]',
+      decision: 'applied',
+    });
+
+    expect(
+      prefs.getFinanceMetadata().reviewDecisions.map(record => ({
+        candidateKey: record.candidateKey,
+        decision: record.decision,
+      })),
+    ).toEqual([
+      {
+        candidateKey: '["account-1","payee-1","monthly"]',
+        decision: 'deferred',
+      },
+      {
+        candidateKey: '["account-2","payee-1","monthly"]',
+        decision: 'rejected',
+      },
+      {
+        candidateKey: '["account-3","payee-1","monthly"]',
+        decision: 'applied',
+      },
+    ]);
+  });
+
+  it('reopens only the matching recurring decision', async () => {
+    await prefs.saveFinanceMetadata(
+      withFinanceReviewDecision(prefs.getFinanceMetadata(), {
+        candidateKey: 'amazon-order-1',
+        decision: 'applied',
+        feature: 'amazon',
+        updatedAt: '2026-08-02T12:00:00.000Z',
+      }),
+    );
+    await saveRecurringReviewDecision({
+      candidateKey: '["account","payee","monthly"]',
+      decision: 'deferred',
+    });
+
+    await reopenRecurringReviewDecision({
+      candidateKey: '["account","payee","monthly"]',
+    });
+
+    expect(prefs.getFinanceMetadata().reviewDecisions).toEqual([
+      {
+        candidateKey: 'amazon-order-1',
+        decision: 'applied',
+        feature: 'amazon',
+        updatedAt: '2026-08-02T12:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('rejects decisions that belong to other finance workflows', () => {
+    expect(isRecurringReviewDecision('deferred')).toBe(true);
+    expect(isRecurringReviewDecision('keep-both')).toBe(false);
+  });
+});
+
+describe('native recurring schedule apply', () => {
+  const recurringTransactions = [
+    { date: '2026-05-05', id: 'subscription-may' },
+    { date: '2026-06-05', id: 'subscription-june' },
+    { date: '2026-07-05', id: 'subscription-july' },
+  ] as const;
+
+  beforeEach(async () => {
+    await global.emptyDatabase()();
+    prefs.unloadPrefs();
+    await prefs.loadPrefs();
+    clearUndo();
+    await db.insertAccount({ id: 'recurring-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'streaming-payee', name: 'Example Streaming' });
+    for (const transaction of recurringTransactions) {
+      await db.insertTransaction({
+        ...transaction,
+        account: 'recurring-checking',
+        amount: -1299,
+        payee: 'streaming-payee',
+      });
+    }
+  });
+
+  afterEach(async () => {
+    prefs.unloadPrefs();
+    clearUndo();
+    await global.emptyDatabase()();
+  });
+
+  it('creates one native schedule and removes it with one undo', async () => {
+    const [candidate] = detectRecurringPayments(
+      recurringTransactions.map(transaction => ({
+        accountId: 'recurring-checking',
+        amount: -1299,
+        date: transaction.date,
+        id: transaction.id,
+        isReconciled: false,
+        isSplitParent: false,
+        isStartingBalance: false,
+        isTombstone: false,
+        isTransfer: false,
+        payeeId: 'streaming-payee',
+        payeeName: 'Example Streaming',
+      })),
+    );
+
+    const result = await runHandler(app.handlers['finance/recurring/apply'], {
+      candidateKey: candidate.candidateKey,
+      evidenceFingerprint: candidate.evidenceFingerprint,
+    });
+
+    expect(result).toMatchObject({ status: 'created' });
+    expect(
+      await db.all<{ id: string }>(
+        'SELECT id FROM schedules WHERE tombstone = 0',
+      ),
+    ).toEqual([{ id: result.scheduleId }]);
+
+    await runMutator(() => undo());
+
+    expect(
+      await db.all('SELECT id FROM schedules WHERE tombstone = 0'),
+    ).toEqual([]);
   });
 });
