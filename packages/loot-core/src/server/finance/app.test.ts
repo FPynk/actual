@@ -280,6 +280,9 @@ describe('native recurring schedule apply', () => {
     });
 
     expect(result).toMatchObject({ status: 'created' });
+    if (result.status !== 'created') {
+      throw new Error('Expected the recurring review to create a schedule.');
+    }
     expect(
       await db.all<{ id: string }>(
         'SELECT id FROM schedules WHERE tombstone = 0',

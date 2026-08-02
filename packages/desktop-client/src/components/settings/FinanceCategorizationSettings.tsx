@@ -41,9 +41,16 @@ function parseSettings(
         (entry): entry is [string, string] => typeof entry[1] === 'string',
       ),
     );
-    const categoryIds = Array.isArray(parsed.categoryIds)
-      ? [...new Set(parsed.categoryIds.filter(id => typeof id === 'string'))]
+    const parsedCategoryIds: unknown[] = Array.isArray(parsed.categoryIds)
+      ? parsed.categoryIds
       : [];
+    const categoryIds = [
+      ...new Set(
+        parsedCategoryIds.filter(
+          (id: unknown): id is string => typeof id === 'string',
+        ),
+      ),
+    ];
     return {
       categoryGuidance,
       categoryIds,
