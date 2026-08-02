@@ -160,31 +160,33 @@ async function stagePublicData(): Promise<void> {
 const lootCoreBackend = (): Plugin => ({
   name: 'loot-core-backend',
   configureServer(server) {
-    const child: ChildProcess = spawn(
-      'yarn',
-      [
-        'vite',
-        'build',
-        '--config',
-        lootCoreConfig,
-        '--mode',
-        'development',
-        '--watch',
-      ],
-      { cwd: lootCoreRoot, stdio: 'inherit' },
-    );
-    child.on('error', err => {
-      server.config.logger.error(
-        `loot-core backend failed to spawn: ${err.message}`,
+    if (process.env.ACTUAL_EXTERNAL_LOOT_CORE_WATCHER !== '1') {
+      const child: ChildProcess = spawn(
+        'yarn',
+        [
+          'vite',
+          'build',
+          '--config',
+          lootCoreConfig,
+          '--mode',
+          'development',
+          '--watch',
+        ],
+        { cwd: lootCoreRoot, stdio: 'inherit' },
       );
-    });
-    const cleanup = () => {
-      if (!child.killed) child.kill('SIGTERM');
-    };
-    server.httpServer?.once('close', cleanup);
-    process.once('SIGINT', cleanup);
-    process.once('SIGTERM', cleanup);
-    process.once('exit', cleanup);
+      child.on('error', err => {
+        server.config.logger.error(
+          `loot-core backend failed to spawn: ${err.message}`,
+        );
+      });
+      const cleanup = () => {
+        if (!child.killed) child.kill('SIGTERM');
+      };
+      server.httpServer?.once('close', cleanup);
+      process.once('SIGINT', cleanup);
+      process.once('SIGTERM', cleanup);
+      process.once('exit', cleanup);
+    }
 
     server.middlewares.use('/kcab', (req, res, next) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -276,7 +278,11 @@ export default defineConfig(async ({ mode, command }) => {
     }
   }
 
-  const browserOpen = env.BROWSER_OPEN ? `//${env.BROWSER_OPEN}` : true;
+  const browserOpen = env.BROWSER_OPEN
+    ? `//${env.BROWSER_OPEN}`
+    : env.BROWSER === 'none'
+      ? false
+      : true;
 
   return {
     base: '/',
