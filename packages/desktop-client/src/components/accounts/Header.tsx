@@ -49,6 +49,8 @@ import { useLocalPref } from '#hooks/useLocalPref';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 import type { TableRef } from './Account';
 import { Balances } from './Balance';
@@ -190,6 +192,7 @@ export function AccountHeader({
   onMergeTransactions,
 }: AccountHeaderProps) {
   const { t } = useTranslation();
+  const dispatch = useDispatch();
 
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -374,6 +377,14 @@ export function AccountHeader({
               <Trans>Add New</Trans>
             </Button>
           )}
+          <Button
+            variant="bare"
+            onPress={() =>
+              dispatch(pushModal({ modal: { name: 'reconciliation-review' } }))
+            }
+          >
+            <Trans>Review duplicates</Trans>
+          </Button>
           <View style={{ flexShrink: 0 }}>
             {/* @ts-expect-error fix me */}
             <FilterButton onApply={onApplyFilter} />
