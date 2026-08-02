@@ -77,7 +77,7 @@ same-amount purchases are plausible.
 ### Bank sync and scheduled sync
 
 To connect a provider, use **+ Add account** or an existing account's menu and
-choose **Link bank account**. Actual supports its configured providers,
+choose **Link account**. Actual supports its configured providers,
 including SimpleFIN. For SimpleFIN, create a one-time setup token in
 SimpleFIN Bridge, then enter it in Actual and map each discovered bank account
 to an existing or new Actual account. The token/access credentials stay on the
@@ -94,7 +94,7 @@ next scheduled attempt.
 
 ### Review and automation tools
 
-Open **Settings > Integrations > OpenAI categorization** to configure a model,
+Open **Settings > AI transaction categorization** to configure a model,
 instructions, categories the AI may use, and optional category guidance. Enter
 an API key there only for a local server you control, or have the server
 operator provide `OPENAI_API_KEY` in the launch environment. The key is held
@@ -134,11 +134,12 @@ does not yet write transaction notes, categories, or splits.
 
 ### Expenditure reports
 
-Open **Reports > Custom Report**, set a payment/expenditure view, and choose
-either a live range (for example, this month or last 30 days) or a fixed
-**Static Date** start and end. The Summary includes total expenditure, average
-per day/week/month, median expense, month-over-month change, category and
-merchant breakdowns, and rolling 30-day expenditure for the selected range.
+Open **Reports**, then choose **New custom report**. Set the **Payment** view
+and choose either a live range (for example, this month or last 30 days) or a
+fixed **Static Date** start and end. The Summary includes total expenditure,
+average per day/week/month, median expense, month-over-month change, and
+category and merchant breakdowns, plus rolling 30-day expenditure for the
+selected range.
 Use filters and category exclusions to make the question precise; transfers,
 refunds, and splits are handled as report data rather than separate finance
 records.
