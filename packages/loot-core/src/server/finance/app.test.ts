@@ -3,6 +3,7 @@ import { runHandler, runMutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { clearUndo, undo } from '#server/undo';
 import { withFinanceReviewDecision } from '#shared/finance-metadata';
+import { detectRecurringPayments } from '#shared/finance/recurring-detector';
 
 import {
   app,
@@ -223,5 +224,72 @@ describe('recurring finance review decisions', () => {
   it('rejects decisions that belong to other finance workflows', () => {
     expect(isRecurringReviewDecision('deferred')).toBe(true);
     expect(isRecurringReviewDecision('keep-both')).toBe(false);
+  });
+});
+
+describe('native recurring schedule apply', () => {
+  const recurringTransactions = [
+    { date: '2026-05-05', id: 'subscription-may' },
+    { date: '2026-06-05', id: 'subscription-june' },
+    { date: '2026-07-05', id: 'subscription-july' },
+  ] as const;
+
+  beforeEach(async () => {
+    await global.emptyDatabase()();
+    prefs.unloadPrefs();
+    await prefs.loadPrefs();
+    clearUndo();
+    await db.insertAccount({ id: 'recurring-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'streaming-payee', name: 'Example Streaming' });
+    for (const transaction of recurringTransactions) {
+      await db.insertTransaction({
+        ...transaction,
+        account: 'recurring-checking',
+        amount: -1299,
+        payee: 'streaming-payee',
+      });
+    }
+  });
+
+  afterEach(async () => {
+    prefs.unloadPrefs();
+    clearUndo();
+    await global.emptyDatabase()();
+  });
+
+  it('creates one native schedule and removes it with one undo', async () => {
+    const [candidate] = detectRecurringPayments(
+      recurringTransactions.map(transaction => ({
+        accountId: 'recurring-checking',
+        amount: -1299,
+        date: transaction.date,
+        id: transaction.id,
+        isReconciled: false,
+        isSplitParent: false,
+        isStartingBalance: false,
+        isTombstone: false,
+        isTransfer: false,
+        payeeId: 'streaming-payee',
+        payeeName: 'Example Streaming',
+      })),
+    );
+
+    const result = await runHandler(app.handlers['finance/recurring/apply'], {
+      candidateKey: candidate.candidateKey,
+      evidenceFingerprint: candidate.evidenceFingerprint,
+    });
+
+    expect(result).toMatchObject({ status: 'created' });
+    expect(
+      await db.all<{ id: string }>(
+        'SELECT id FROM schedules WHERE tombstone = 0',
+      ),
+    ).toEqual([{ id: result.scheduleId }]);
+
+    await runMutator(() => undo());
+
+    expect(
+      await db.all('SELECT id FROM schedules WHERE tombstone = 0'),
+    ).toEqual([]);
   });
 });
