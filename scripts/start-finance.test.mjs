@@ -2,16 +2,17 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
+// eslint-disable-next-line actual/no-extraneous-dependencies -- node:test is built into Node.
 import test from 'node:test';
 
 import {
-  FinanceLauncher,
-  LauncherStoppedError,
   createServiceCommands,
+  FinanceLauncher,
   launcherEnvironment,
+  LauncherStoppedError,
   parseArguments,
-  preflightCompanionConfiguration,
   persistentPaths,
+  preflightCompanionConfiguration,
   yarnExecutable,
   yarnReleasePath,
 } from './start-finance.mjs';
@@ -31,15 +32,15 @@ function child(pid) {
   process_.exitCode = null;
   process_.killed = false;
   process_.stdout = new EventEmitter();
-  process_.stdout.setEncoding = () => {};
+  process_.stdout.setEncoding = () => undefined;
   process_.stderr = new EventEmitter();
-  process_.stderr.setEncoding = () => {};
+  process_.stderr.setEncoding = () => undefined;
   return process_;
 }
 
 function testLauncher({
   workerExists = true,
-  portAvailable = async () => {},
+  portAvailable = async () => undefined,
   fetchImplementation,
   failingService,
   now,
@@ -63,10 +64,12 @@ function testLauncher({
     ) {
       queueMicrotask(() => result.emit('exit', 0, null));
     }
-    if (executable === 'taskkill')
+    if (executable === 'taskkill') {
       queueMicrotask(() => result.emit('exit', 0, null));
-    if (failingService && arguments_.includes(failingService))
+    }
+    if (failingService && arguments_.includes(failingService)) {
       queueMicrotask(() => result.emit('exit', 9, null));
+    }
     return result;
   };
   const output = writable();
@@ -91,13 +94,13 @@ function testLauncher({
       openBrowser: async url => opened.push(url),
       output,
       errorOutput,
-      ensurePaths: () => {},
-      preflight: () => {},
+      ensurePaths: () => undefined,
+      preflight: () => undefined,
       platform: 'win32',
       portAvailable,
       now,
       readinessTimeout,
-      sleep: async () => {},
+      sleep: async () => undefined,
       spawnProcess,
       workerExists: () => workerExists,
     }),

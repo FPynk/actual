@@ -237,7 +237,7 @@ export class FinanceLauncher {
     errorOutput = process.stderr,
     ensurePaths = ensurePersistentPaths,
     preflight = preflightCompanionConfiguration,
-    onFailure = () => {},
+    onFailure = () => undefined,
     workerExists = existsSync,
     portAvailable = assertPortAvailable,
     readinessTimeout = readinessTimeoutMilliseconds,
@@ -293,10 +293,11 @@ export class FinanceLauncher {
         'browser',
         'kcab.worker.dev.js',
       );
-      if (!this.workerExists(workerPath))
+      if (!this.workerExists(workerPath)) {
         throw new Error(
           'The loot-core worker build did not produce kcab.worker.dev.js.',
         );
+      }
 
       for (const [name, command] of [
         ['worker', this.commands.watchWorker],
@@ -365,8 +366,9 @@ export class FinanceLauncher {
   }
 
   childEnvironment(name) {
-    if (name === 'configuration' || name === 'companion')
+    if (name === 'configuration' || name === 'companion') {
       return { ...this.environment };
+    }
     if (name === 'actual') {
       return {
         ...this.nonCompanionEnvironment,
@@ -392,9 +394,11 @@ export class FinanceLauncher {
     const result = await new Promise((resolve, reject) => {
       record.child.once('error', reject);
       record.child.once('exit', (code, signal) => {
-        if (code === 0) resolve();
-        else
+        if (code === 0) {
+          resolve();
+        } else {
           reject(new Error(`${name} failed (${code ?? signal ?? 'unknown'}).`));
+        }
       });
     });
     this.children = this.children.filter(child => child !== record);
