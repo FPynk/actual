@@ -1,7 +1,7 @@
-import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -17,7 +17,12 @@ import {
 } from './start-finance.mjs';
 
 function writable() {
-  return { text: '', write(value) { this.text += value; } };
+  return {
+    text: '',
+    write(value) {
+      this.text += value;
+    },
+  };
 }
 
 function child(pid) {
@@ -32,7 +37,14 @@ function child(pid) {
   return process_;
 }
 
-function testLauncher({ workerExists = true, portAvailable = async () => {}, fetchImplementation, failingService, now, readinessTimeout } = {}) {
+function testLauncher({
+  workerExists = true,
+  portAvailable = async () => {},
+  fetchImplementation,
+  failingService,
+  now,
+  readinessTimeout,
+} = {}) {
   const spawned = [];
   const opened = [];
   let nextPid = 100;
@@ -40,7 +52,9 @@ function testLauncher({ workerExists = true, portAvailable = async () => {}, fet
     const result = child(nextPid++);
     spawned.push({ arguments_, executable, options, result });
     if (
-      arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ||
+      arguments_.some(argument =>
+        argument.includes('validate-finance-companion-config.ts'),
+      ) ||
       (arguments_.includes('vite') &&
         arguments_.includes('build') &&
         !arguments_.includes('--watch')) ||
@@ -49,8 +63,10 @@ function testLauncher({ workerExists = true, portAvailable = async () => {}, fet
     ) {
       queueMicrotask(() => result.emit('exit', 0, null));
     }
-    if (executable === 'taskkill') queueMicrotask(() => result.emit('exit', 0, null));
-    if (failingService && arguments_.includes(failingService)) queueMicrotask(() => result.emit('exit', 9, null));
+    if (executable === 'taskkill')
+      queueMicrotask(() => result.emit('exit', 0, null));
+    if (failingService && arguments_.includes(failingService))
+      queueMicrotask(() => result.emit('exit', 9, null));
     return result;
   };
   const output = writable();
@@ -70,7 +86,8 @@ function testLauncher({ workerExists = true, portAvailable = async () => {}, fet
         FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL: 'synthetic-direct-secret',
         LOCALAPPDATA: 'C:\\Finance State',
       },
-      fetchImplementation: fetchImplementation ?? (async () => ({ ok: true, status: 200 })),
+      fetchImplementation:
+        fetchImplementation ?? (async () => ({ ok: true, status: 200 })),
       openBrowser: async url => opened.push(url),
       output,
       errorOutput,
@@ -97,19 +114,35 @@ test('uses Node plus the committed Yarn release on Windows paths and stable disj
   const first = persistentPaths(environment, 'win32');
   const second = persistentPaths(environment, 'win32');
   assert.equal(yarnExecutable(), process.execPath);
-  assert.match(yarnReleasePath(), /\.yarn[\\/]releases[\\/]yarn-4\.17\.1\.cjs$/);
+  assert.match(
+    yarnReleasePath(),
+    /\.yarn[\\/]releases[\\/]yarn-4\.17\.1\.cjs$/,
+  );
   assert.deepEqual(first, second);
   assert.match(first.actualDataDirectory, /ActualBudgetServer$/);
-  assert.match(first.companionDataDirectory, /ActualFinanceCompanion[\\/]data$/);
-  assert.match(first.actualApiDirectory, /ActualFinanceCompanion[\\/]actual-api$/);
-  assert.match(first.integrityAnchorPath, /ActualFinanceCompanion[\\/]anchor[\\/]integrity-anchor\.json$/);
+  assert.match(
+    first.companionDataDirectory,
+    /ActualFinanceCompanion[\\/]data$/,
+  );
+  assert.match(
+    first.actualApiDirectory,
+    /ActualFinanceCompanion[\\/]actual-api$/,
+  );
+  assert.match(
+    first.integrityAnchorPath,
+    /ActualFinanceCompanion[\\/]anchor[\\/]integrity-anchor\.json$/,
+  );
   const commands = createServiceCommands('win32');
   assert.equal(commands.frontend[0], process.execPath);
   assert.equal(commands.frontend[1][0], yarnReleasePath());
   assert.equal(commands.frontend[1].includes('sh'), false);
-  const yarnVersion = spawnSync(yarnExecutable(), [yarnReleasePath(), '--version'], {
-    encoding: 'utf8',
-  });
+  const yarnVersion = spawnSync(
+    yarnExecutable(),
+    [yarnReleasePath(), '--version'],
+    {
+      encoding: 'utf8',
+    },
+  );
   assert.equal(yarnVersion.status, 0, yarnVersion.stderr);
   assert.match(yarnVersion.stdout, /^4\.17\.1/);
 });
@@ -167,7 +200,10 @@ test('starts in required order, waits for all readiness URLs, then opens proxied
 
 test('does not open a browser when requested and fails if the worker is absent', async () => {
   const missingWorker = testLauncher({ workerExists: false });
-  await assert.rejects(missingWorker.launcher.start({ noOpen: true }), /did not produce/);
+  await assert.rejects(
+    missingWorker.launcher.start({ noOpen: true }),
+    /did not produce/,
+  );
   assert.deepEqual(missingWorker.opened, []);
   const noOpen = testLauncher();
   await noOpen.launcher.start({ noOpen: true });
@@ -188,10 +224,11 @@ test('fails before spawning when a required port is occupied and never includes 
 
 test('rejects an absent secret file before any child starts without reading its contents', () => {
   assert.throws(
-    () => preflightCompanionConfiguration({
-      FINANCE_COMPANION_ACTUAL_SERVER_URL: 'http://127.0.0.1:5006',
-      FINANCE_COMPANION_ACTUAL_PASSWORD_FILE: 'C:\\missing\\password',
-    }),
+    () =>
+      preflightCompanionConfiguration({
+        FINANCE_COMPANION_ACTUAL_SERVER_URL: 'http://127.0.0.1:5006',
+        FINANCE_COMPANION_ACTUAL_PASSWORD_FILE: 'C:\\missing\\password',
+      }),
     /FINANCE_COMPANION_ACTUAL_PASSWORD_FILE/,
   );
 });
@@ -200,14 +237,35 @@ test('passes companion configuration only to its validator and companion runtime
   const { launcher, spawned } = testLauncher();
   await launcher.start({ noOpen: true });
   const directSecret = 'synthetic-direct-secret';
-  const configurationAndCompanion = spawned.filter(item =>
-    item.arguments_.some(argument => argument.includes('validate-finance-companion-config.ts')) ||
-    item.arguments_.includes('./dist/service/cli.js'),
+  const configurationAndCompanion = spawned.filter(
+    item =>
+      item.arguments_.some(argument =>
+        argument.includes('validate-finance-companion-config.ts'),
+      ) || item.arguments_.includes('./dist/service/cli.js'),
   );
-  assert.equal(configurationAndCompanion.every(item => item.options.env.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL === directSecret), true);
-  const unrelated = spawned.filter(item => !configurationAndCompanion.includes(item));
-  assert.equal(unrelated.every(item => !Object.keys(item.options.env).some(name => name.startsWith('FINANCE_COMPANION_'))), true);
-  const actual = spawned.find(item => item.arguments_.includes('@actual-app/sync-server'));
+  assert.equal(
+    configurationAndCompanion.every(
+      item =>
+        item.options.env.FINANCE_COMPANION_OWNER_BOOTSTRAP_CREDENTIAL ===
+        directSecret,
+    ),
+    true,
+  );
+  const unrelated = spawned.filter(
+    item => !configurationAndCompanion.includes(item),
+  );
+  assert.equal(
+    unrelated.every(
+      item =>
+        !Object.keys(item.options.env).some(name =>
+          name.startsWith('FINANCE_COMPANION_'),
+        ),
+    ),
+    true,
+  );
+  const actual = spawned.find(item =>
+    item.arguments_.includes('@actual-app/sync-server'),
+  );
   const companionBuild = spawned.find(
     item =>
       item.arguments_.includes('@actual-app/finance-companion') &&
@@ -216,7 +274,9 @@ test('passes companion configuration only to its validator and companion runtime
   const companionRuntime = spawned.find(item =>
     item.arguments_.includes('./dist/service/cli.js'),
   );
-  const frontend = spawned.find(item => item.arguments_.includes('@actual-app/web'));
+  const frontend = spawned.find(item =>
+    item.arguments_.includes('@actual-app/web'),
+  );
   assert.equal(
     Object.keys(companionBuild.options.env).some(name =>
       name.startsWith('FINANCE_COMPANION_'),
@@ -234,7 +294,9 @@ test('passes companion configuration only to its validator and companion runtime
 });
 
 test('stops startup on an unexpected child failure before opening a browser', async () => {
-  const { launcher, opened } = testLauncher({ failingService: 'plugins-service' });
+  const { launcher, opened } = testLauncher({
+    failingService: 'plugins-service',
+  });
   await assert.rejects(launcher.start(), /plugins exited unexpectedly/);
   assert.deepEqual(opened, []);
 });
@@ -246,10 +308,16 @@ test('cleans up every owned child when readiness fails', async () => {
     now: () => currentTime++,
     readinessTimeout: 2,
   });
-  await assert.rejects(launcher.start({ noOpen: true }), /Actual server was not ready/);
+  await assert.rejects(
+    launcher.start({ noOpen: true }),
+    /Actual server was not ready/,
+  );
   const taskkill = spawned.filter(item => item.executable === 'taskkill');
   assert.equal(taskkill.length >= 5, true);
-  assert.equal(taskkill.every(item => item.arguments_.includes('/T')), true);
+  assert.equal(
+    taskkill.every(item => item.arguments_.includes('/T')),
+    true,
+  );
 });
 
 test('shutdown aborts readiness immediately without writing a duplicate error', async () => {
@@ -301,7 +369,10 @@ test('selects only recorded Windows child PIDs for graceful and forced cleanup',
   await launcher.shutdown();
   const taskkill = spawned.filter(item => item.executable === 'taskkill');
   assert.deepEqual(taskkill[0].arguments_, ['/PID', '321', '/T']);
-  assert.equal(taskkill.every(item => item.arguments_.includes('321')), true);
+  assert.equal(
+    taskkill.every(item => item.arguments_.includes('321')),
+    true,
+  );
 });
 
 test('launcher defaults preserve explicit paths while applying loopback service settings', () => {
@@ -325,7 +396,10 @@ test('the development frontend keeps worker middleware and does not auto-open a 
     new URL('../packages/sync-server/src/app.ts', import.meta.url),
     'utf8',
   );
-  assert.match(frontendConfiguration, /ACTUAL_EXTERNAL_LOOT_CORE_WATCHER !== '1'/);
+  assert.match(
+    frontendConfiguration,
+    /ACTUAL_EXTERNAL_LOOT_CORE_WATCHER !== '1'/,
+  );
   assert.match(frontendConfiguration, /server\.middlewares\.use\('\/kcab'/);
   assert.match(frontendConfiguration, /env\.BROWSER === 'none'/);
   assert.match(syncServer, /target: 'http:\/\/127\.0\.0\.1:3001'/);

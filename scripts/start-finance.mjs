@@ -1,5 +1,11 @@
 import { spawn } from 'node:child_process';
-import { accessSync, constants, existsSync, mkdirSync, statSync } from 'node:fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  statSync,
+} from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,22 +42,38 @@ export function yarnReleasePath() {
   return path.join(repositoryRoot, '.yarn', 'releases', 'yarn-4.17.1.cjs');
 }
 
-export function persistentPaths(environment = process.env, platform = process.platform, homeDirectory = os.homedir()) {
-  const dataHome = platform === 'win32'
-    ? environment.LOCALAPPDATA
-    : environment.XDG_DATA_HOME || path.join(homeDirectory, '.local', 'share');
+export function persistentPaths(
+  environment = process.env,
+  platform = process.platform,
+  homeDirectory = os.homedir(),
+) {
+  const dataHome =
+    platform === 'win32'
+      ? environment.LOCALAPPDATA
+      : environment.XDG_DATA_HOME ||
+        path.join(homeDirectory, '.local', 'share');
   if (!dataHome) throw new Error('LOCALAPPDATA is required on Windows.');
-  const actualDataDirectory = environment.ACTUAL_DATA_DIR || path.join(dataHome, 'ActualBudgetServer');
+  const actualDataDirectory =
+    environment.ACTUAL_DATA_DIR || path.join(dataHome, 'ActualBudgetServer');
   const companionRoot = path.join(dataHome, 'ActualFinanceCompanion');
   return {
     actualDataDirectory,
-    companionDataDirectory: environment.FINANCE_COMPANION_DATA_DIR || path.join(companionRoot, 'data'),
-    actualApiDirectory: environment.FINANCE_COMPANION_ACTUAL_API_DIR || path.join(companionRoot, 'actual-api'),
-    integrityAnchorPath: environment.FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH || path.join(companionRoot, 'anchor', 'integrity-anchor.json'),
+    companionDataDirectory:
+      environment.FINANCE_COMPANION_DATA_DIR ||
+      path.join(companionRoot, 'data'),
+    actualApiDirectory:
+      environment.FINANCE_COMPANION_ACTUAL_API_DIR ||
+      path.join(companionRoot, 'actual-api'),
+    integrityAnchorPath:
+      environment.FINANCE_COMPANION_INTEGRITY_ANCHOR_PATH ||
+      path.join(companionRoot, 'anchor', 'integrity-anchor.json'),
   };
 }
 
-export function launcherEnvironment(environment = process.env, paths = persistentPaths(environment)) {
+export function launcherEnvironment(
+  environment = process.env,
+  paths = persistentPaths(environment),
+) {
   return {
     ...environment,
     ACTUAL_DATA_DIR: paths.actualDataDirectory,
@@ -72,27 +94,92 @@ export function launcherEnvironment(environment = process.env, paths = persisten
 
 function withoutCompanionConfiguration(environment) {
   return Object.fromEntries(
-    Object.entries(environment).filter(([name]) => !name.startsWith('FINANCE_COMPANION_')),
+    Object.entries(environment).filter(
+      ([name]) => !name.startsWith('FINANCE_COMPANION_'),
+    ),
   );
 }
 
 export function createServiceCommands() {
   const yarn = [yarnReleasePath()];
   return {
-    validateCompanion: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/finance-companion', 'exec', 'node', '--experimental-strip-types', '../../scripts/validate-finance-companion-config.ts']],
-    buildWorker: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/core', 'exec', 'vite', 'build', '--mode', 'development']],
-    watchWorker: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/core', 'exec', 'vite', 'build', '--mode', 'development', '--watch']],
-    watchPlugins: [yarnExecutable(), [...yarn, 'workspace', 'plugins-service', 'watch']],
-    frontend: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/web', 'exec', 'vite', '--host', '127.0.0.1', '--port', '3001', '--strictPort', '--mode', 'browser']],
-    actual: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/sync-server', 'start']],
-    buildCompanion: [yarnExecutable(), [...yarn, 'workspace', '@actual-app/finance-companion', 'build']],
+    validateCompanion: [
+      yarnExecutable(),
+      [
+        ...yarn,
+        'workspace',
+        '@actual-app/finance-companion',
+        'exec',
+        'node',
+        '--experimental-strip-types',
+        '../../scripts/validate-finance-companion-config.ts',
+      ],
+    ],
+    buildWorker: [
+      yarnExecutable(),
+      [
+        ...yarn,
+        'workspace',
+        '@actual-app/core',
+        'exec',
+        'vite',
+        'build',
+        '--mode',
+        'development',
+      ],
+    ],
+    watchWorker: [
+      yarnExecutable(),
+      [
+        ...yarn,
+        'workspace',
+        '@actual-app/core',
+        'exec',
+        'vite',
+        'build',
+        '--mode',
+        'development',
+        '--watch',
+      ],
+    ],
+    watchPlugins: [
+      yarnExecutable(),
+      [...yarn, 'workspace', 'plugins-service', 'watch'],
+    ],
+    frontend: [
+      yarnExecutable(),
+      [
+        ...yarn,
+        'workspace',
+        '@actual-app/web',
+        'exec',
+        'vite',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '3001',
+        '--strictPort',
+        '--mode',
+        'browser',
+      ],
+    ],
+    actual: [
+      yarnExecutable(),
+      [...yarn, 'workspace', '@actual-app/sync-server', 'start'],
+    ],
+    buildCompanion: [
+      yarnExecutable(),
+      [...yarn, 'workspace', '@actual-app/finance-companion', 'build'],
+    ],
     companion: [process.execPath, ['./dist/service/cli.js', 'start']],
   };
 }
 
 export function preflightCompanionConfiguration(environment) {
   if (environment.FINANCE_COMPANION_ACTUAL_SERVER_URL !== actualUrl) {
-    throw new Error(`FINANCE_COMPANION_ACTUAL_SERVER_URL must be ${actualUrl}.`);
+    throw new Error(
+      `FINANCE_COMPANION_ACTUAL_SERVER_URL must be ${actualUrl}.`,
+    );
   }
   for (const name of [
     'FINANCE_COMPANION_INTEGRITY_MAC_KEY_FILE',
@@ -107,7 +194,9 @@ export function preflightCompanionConfiguration(environment) {
       accessSync(filePath, constants.R_OK);
       if (!statSync(filePath).isFile()) throw new Error('not a file');
     } catch {
-      throw new Error(`Required secret file is missing or unreadable: ${name}.`);
+      throw new Error(
+        `Required secret file is missing or unreadable: ${name}.`,
+      );
     }
   }
 }
@@ -152,7 +241,8 @@ export class FinanceLauncher {
     workerExists = existsSync,
     portAvailable = assertPortAvailable,
     readinessTimeout = readinessTimeoutMilliseconds,
-    sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+    sleep = milliseconds =>
+      new Promise(resolve => setTimeout(resolve, milliseconds)),
     now = () => Date.now(),
   } = {}) {
     this.platform = platform;
@@ -171,7 +261,9 @@ export class FinanceLauncher {
     this.now = now;
     this.paths = persistentPaths(environment, platform);
     this.environment = launcherEnvironment(environment, this.paths);
-    this.nonCompanionEnvironment = withoutCompanionConfiguration(this.environment);
+    this.nonCompanionEnvironment = withoutCompanionConfiguration(
+      this.environment,
+    );
     this.commands = createServiceCommands(platform);
     this.children = [];
     this.shuttingDown = false;
@@ -193,8 +285,18 @@ export class FinanceLauncher {
       this.throwIfStopping();
       await this.runOnce('companion-build', ...this.commands.buildCompanion);
       this.throwIfStopping();
-      const workerPath = path.join(repositoryRoot, 'packages', 'loot-core', 'lib-dist', 'browser', 'kcab.worker.dev.js');
-      if (!this.workerExists(workerPath)) throw new Error('The loot-core worker build did not produce kcab.worker.dev.js.');
+      const workerPath = path.join(
+        repositoryRoot,
+        'packages',
+        'loot-core',
+        'lib-dist',
+        'browser',
+        'kcab.worker.dev.js',
+      );
+      if (!this.workerExists(workerPath))
+        throw new Error(
+          'The loot-core worker build did not produce kcab.worker.dev.js.',
+        );
 
       for (const [name, command] of [
         ['worker', this.commands.watchWorker],
@@ -219,14 +321,22 @@ export class FinanceLauncher {
         await this.openBrowser(actualUrl);
         await this.openBrowser(companionUrl);
       }
-      this.output.write(`Finance services are ready at ${actualUrl} and ${companionUrl}. Press Ctrl+C to stop.\n`);
+      this.output.write(
+        `Finance services are ready at ${actualUrl} and ${companionUrl}. Press Ctrl+C to stop.\n`,
+      );
     } catch (error) {
       await this.shutdown();
       throw error;
     }
   }
 
-  startChild(name, executable, arguments_, allowExit = false, cwd = repositoryRoot) {
+  startChild(
+    name,
+    executable,
+    arguments_,
+    allowExit = false,
+    cwd = repositoryRoot,
+  ) {
     this.throwIfStopping();
     const child = this.spawnProcess(executable, arguments_, {
       cwd,
@@ -239,10 +349,15 @@ export class FinanceLauncher {
     this.children.push(record);
     prefixedOutput(name, child.stdout, this.output);
     prefixedOutput(name, child.stderr, this.errorOutput);
-    child.once('error', error => void this.fail(`${name} could not start: ${error.message}`));
+    child.once(
+      'error',
+      error => void this.fail(`${name} could not start: ${error.message}`),
+    );
     child.once('exit', (code, signal) => {
       if (!allowExit && !this.shuttingDown) {
-        this.failure ??= new Error(`${name} exited unexpectedly (${code ?? signal ?? 'unknown'}).`);
+        this.failure ??= new Error(
+          `${name} exited unexpectedly (${code ?? signal ?? 'unknown'}).`,
+        );
         void this.fail(this.failure.message);
       }
     });
@@ -250,7 +365,8 @@ export class FinanceLauncher {
   }
 
   childEnvironment(name) {
-    if (name === 'configuration' || name === 'companion') return { ...this.environment };
+    if (name === 'configuration' || name === 'companion')
+      return { ...this.environment };
     if (name === 'actual') {
       return {
         ...this.nonCompanionEnvironment,
@@ -277,7 +393,8 @@ export class FinanceLauncher {
       record.child.once('error', reject);
       record.child.once('exit', (code, signal) => {
         if (code === 0) resolve();
-        else reject(new Error(`${name} failed (${code ?? signal ?? 'unknown'}).`));
+        else
+          reject(new Error(`${name} failed (${code ?? signal ?? 'unknown'}).`));
       });
     });
     this.children = this.children.filter(child => child !== record);
@@ -291,7 +408,10 @@ export class FinanceLauncher {
   async waitForReadiness() {
     await this.waitForUrl(`${actualUrl}/info`, 'Actual server');
     await this.waitForUrl(`${actualUrl}/`, 'Actual frontend');
-    await this.waitForUrl(`${actualUrl}/kcab/kcab.worker.dev.js`, 'Actual worker');
+    await this.waitForUrl(
+      `${actualUrl}/kcab/kcab.worker.dev.js`,
+      'Actual worker',
+    );
     await this.waitForUrl(`${companionUrl}/health`, 'Finance Companion');
   }
 
@@ -317,7 +437,9 @@ export class FinanceLauncher {
       }
       await this.sleep(250);
     }
-    throw new Error(`${name} was not ready within ${this.readinessTimeout / 1000} seconds (${lastError}).`);
+    throw new Error(
+      `${name} was not ready within ${this.readinessTimeout / 1000} seconds (${lastError}).`,
+    );
   }
 
   async fail(message) {
@@ -335,7 +457,11 @@ export class FinanceLauncher {
     const records = [...this.children];
     await Promise.all(records.map(record => this.stopChild(record, false)));
     await this.sleep(shutdownGraceMilliseconds);
-    await Promise.all(records.filter(({ child }) => child.exitCode === null && !child.killed).map(record => this.stopChild(record, true)));
+    await Promise.all(
+      records
+        .filter(({ child }) => child.exitCode === null && !child.killed)
+        .map(record => this.stopChild(record, true)),
+    );
     this.children = [];
   }
 
@@ -350,7 +476,10 @@ export class FinanceLauncher {
     if (this.platform === 'win32') {
       const arguments_ = ['/PID', String(child.pid), '/T'];
       if (force) arguments_.push('/F');
-      const taskkill = this.spawnProcess('taskkill', arguments_, { shell: false, stdio: 'ignore' });
+      const taskkill = this.spawnProcess('taskkill', arguments_, {
+        shell: false,
+        stdio: 'ignore',
+      });
       await new Promise(resolve => taskkill.once('exit', resolve));
       return;
     }
@@ -365,16 +494,32 @@ export class FinanceLauncher {
 export function assertPortAvailable(port) {
   return new Promise((resolve, reject) => {
     const probe = net.createServer();
-    probe.once('error', error => reject(new Error(`Port ${port} is already in use or unavailable (${error.code ?? error.message}).`)));
+    probe.once('error', error =>
+      reject(
+        new Error(
+          `Port ${port} is already in use or unavailable (${error.code ?? error.message}).`,
+        ),
+      ),
+    );
     probe.listen({ host: '127.0.0.1', port }, () => probe.close(resolve));
   });
 }
 
 function defaultBrowserOpen(url) {
-  const command = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const arguments_ = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  const command =
+    process.platform === 'win32'
+      ? 'cmd'
+      : process.platform === 'darwin'
+        ? 'open'
+        : 'xdg-open';
+  const arguments_ =
+    process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   return new Promise((resolve, reject) => {
-    const child = spawn(command, arguments_, { detached: true, shell: false, stdio: 'ignore' });
+    const child = spawn(command, arguments_, {
+      detached: true,
+      shell: false,
+      stdio: 'ignore',
+    });
     child.once('error', reject);
     child.once('spawn', () => {
       child.unref();
@@ -386,7 +531,11 @@ function defaultBrowserOpen(url) {
 async function main() {
   let launcher;
   try {
-    launcher = new FinanceLauncher({ onFailure: () => { process.exitCode = 1; } });
+    launcher = new FinanceLauncher({
+      onFailure: () => {
+        process.exitCode = 1;
+      },
+    });
     const stop = () => void launcher.requestShutdown();
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
@@ -395,12 +544,17 @@ async function main() {
     await launcher?.shutdown();
     if (error instanceof LauncherStoppedError) return;
     if (!launcher?.reportedFailure) {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
     }
     process.exitCode = 1;
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   await main();
 }
