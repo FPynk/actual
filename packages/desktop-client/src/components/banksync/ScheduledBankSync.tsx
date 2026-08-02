@@ -51,7 +51,7 @@ export function normalizeBankSyncSchedule(
 
   return {
     enabled: schedule?.enabled ?? defaultBankSyncSchedule.enabled,
-    intervalMinutes: supportsInterval
+    intervalMinutes: supportsInterval && intervalMinutes !== undefined
       ? intervalMinutes
       : defaultBankSyncSchedule.intervalMinutes,
     accountIds: schedule?.accountIds ?? defaultBankSyncSchedule.accountIds,
