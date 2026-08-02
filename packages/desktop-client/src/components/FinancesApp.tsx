@@ -23,6 +23,7 @@ import { useDispatch, useSelector } from '#redux';
 
 import { UserAccessPage } from './admin/UserAccess/UserAccessPage';
 import { UserDirectoryPage } from './admin/UserDirectory/UserDirectoryPage';
+import { ScheduledBankSyncRunner } from './banksync/ScheduledBankSync';
 import { BankSyncStatus } from './BankSyncStatus';
 import { CommandBar } from './CommandBar';
 import { ContextMenu } from './ContextMenu';
@@ -197,6 +198,7 @@ export function FinancesApp() {
   return (
     <View style={{ height: '100%' }}>
       <RouterBehaviors />
+      <ScheduledBankSyncRunner />
       <GlobalKeys />
       <CommandBar />
       <ContextMenu />
