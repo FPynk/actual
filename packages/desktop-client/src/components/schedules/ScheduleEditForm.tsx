@@ -129,7 +129,7 @@ export function ScheduleEditForm({
             <InitialFocus>
               <Input
                 id="name-field"
-                value={fields.name}
+                value={fields.name ?? ''}
                 placeholder={t('nothing')}
                 onChangeValue={e => {
                   dispatch({ type: 'set-field', field: 'name', value: e });
