@@ -59,7 +59,10 @@ the migration is complete, and the native end-to-end suite passes. Until then it
 is unsupported/hidden rather than extended; no new Companion feature work is
 allowed.
 
-## Target architecture
+## Original target architecture (roadmap history)
+
+This section preserves the initial architecture proposal. Where it differs from
+the implemented behavior below, the implementation status is authoritative.
 
 ```mermaid
 flowchart LR
@@ -95,20 +98,27 @@ transaction/category/schedule identifiers and returns a typed outcome; it never
 accepts raw SQL, AQL, arbitrary patches, or a client-selected account outside
 the current budget.
 
-The existing sync server owns two integrations that cannot safely run in the
-browser:
+The existing sync server owns the OpenAI integration that cannot safely run in
+the browser:
 
 1. OpenAI requests, with the API key held in the existing server data directory
    or supplied by `OPENAI_API_KEY`, and a small authenticated endpoint that
-   validates an allow-listed, redacted request; and
-2. optional scheduled invocation of the existing bank-sync command with its
-   existing account/provider credentials and exclusive access behavior.
+   validates an allow-listed, redacted request.
+
+The original roadmap also proposed a server-side scheduled invocation of the
+bank-sync command. That is not the implemented scheduler and is retained here
+only as history.
 
 The server endpoint returns validated structured suggestions only. The client
 performs the normal Actual mutation after review. No OpenAI key is stored in
 the budget, sent to the browser, included in logs, or synchronized.
 
-### Storage
+## Implemented KISS behavior (FIN-78)
+
+The following storage and workflow details describe the implemented behavior,
+not the historical server-side scheduler proposal above.
+
+### Storage and local preferences
 
 Prefer Actual's existing budget data and preferences:
 
@@ -117,20 +127,18 @@ Prefer Actual's existing budget data and preferences:
 - Per-budget prompt, category guidance, model name, and non-secret finance
   preferences use the established synced-preference mechanism.
 - The OpenAI key is a server-local secret file with environment-variable
-  override; it is never stored in the budget or returned to the browser. Bank
-  scheduler configuration remains server-local.
+  override; it is never stored in the budget or returned to the browser.
+- Bank-scheduler configuration is a device-local `bankSyncSchedule` preference,
+  not server-local state. It runs and resumes only while the Actual browser tab
+  is open; there is no headless server job.
 - Candidate state is derived from current transactions whenever possible.
-- The only durable enrichment state that cannot be derived (Amazon order/item
-  links, user deferrals, and applied-operation fingerprints) is stored in a
-  small Actual-owned, budget-scoped metadata store owned by the sync server.
-  It stores normalized identifiers and compact evidence, never raw email files
-  or API keys. It is accessed only from the existing Actual URL and deleted with
-  the server's budget data.
+- Amazon review keeps only compact, normalized review metadata and decisions so
+  a review can be reopened; it discards the original JSON or email after
+  parsing. The metadata never stores raw uploads or API keys.
 
-This is existing Actual-server storage, not a Companion database or service.
-If cross-device review state proves necessary, add a narrowly syncable Actual
-metadata model in a later ticket; do not block the first native release on a
-new CRDT table.
+This is Actual-owned metadata, not a Companion database or service. The
+original roadmap's server-owned metadata store is not the current scheduler or
+review-state design.
 
 ## Data flows and mutation rules
 
@@ -145,8 +153,8 @@ transaction and undo history. Reconciled transactions are read-only evidence.
 | OpenAI categorization | User chooses scope and allowed categories, optionally includes already categorized rows, and reviews the explicit disclosure. Server sends only selected description/payee, amount, date, account label, allowed categories and editable guidance. The cheap configured model must return JSON `{transactionId, categoryId|null, confidence, reason}`. IDs and categories are validated locally; invalid/low-confidence answers are proposals only. | User applies selected proposals; one core batch sets category only. It creates no rule and does not overwrite an existing category unless the explicit checkbox was selected. |
 | Merchant normalization | Candidate logic groups imported-payee aliases against confirmed Actual payees; UI shows evidence and a suggested existing payee. | Approval creates a normal imported-payee rule using Actual's rule mutation. Rejection/suppression is metadata only. |
 | Recurring payments | Detector examines ledger history, cadence, amount variance, gaps and normalized payee. It reuses existing schedules as evidence and shows cadence/reason/confidence. | Approval creates/updates one Actual schedule through its existing schedule mutation. No past transaction changes. |
-| Amazon | User uploads an Amazon data export or `.eml`; parse, normalize, match charges, and show item/tax/shipping/refund evidence. Raw input is discarded after parse. Matches and allocations remain review-only until approved. | Approval writes a concise provenance note and/or balanced split/category allocation through normal Actual mutations. It never auto-applies a fuzzy match and never changes reconciled rows. |
-| Bank sync | Manual sync remains Actual's action. The scheduler invokes the existing one-shot server/CLI bank-sync path for configured accounts, serially, with bounded retry and redacted outcome. | Existing provider sync only; downstream reconciliation rules still apply. |
+| Amazon | User uploads an Amazon data export or `.eml`; parse, normalize, match charges, and show item/tax/shipping/refund evidence. Raw input is discarded after parse; normalized review metadata is persisted so the review can reopen. Matching and reopening never change the ledger. | No ledger write occurs until the user explicitly authorizes an apply action. Any approved note/split/category mutation must use normal Actual mutations, never auto-apply a fuzzy match, and never change reconciled rows. |
+| Bank sync | Manual sync remains Actual's action. The device-local scheduler runs only while the Actual browser tab is open (and resumes when it is open again), then invokes the existing per-account sync mutation for each selected account. It has no server-side schedule, CLI invocation, or headless job. | Existing provider sync only; downstream reconciliation rules still apply. |
 | Reporting | Query current Actual transactions using the selected report range/filter; pure integer-money calculations provide total, average day/week/month, median, category and merchant breakdowns, month-over-month change, and rolling 30-day spending while honoring transfers, refunds and split children. | None. |
 
 ## OpenAI contract
@@ -209,10 +217,12 @@ Other read-only workstreams may proceed immediately in parallel.
   minimum data, batch limits, structured output validation, no automatic apply,
   redacted logs and configurable model.
 - **Sync/server availability:** all ledger mutations still use Actual's normal
-  client/core mechanism; lack of server disables only OpenAI/scheduled-sync and
-  shows actionable setup state.
+  client/core mechanism; lack of server disables OpenAI and bank sync,
+  including the tab-bound scheduled-sync control, and shows actionable setup
+  state.
 - **Amazon schema variance:** versioned parsers and fixtures, user-controlled
-  uploads, raw file deletion after parse, review-only matching.
+  uploads, raw file deletion after parse, normalized persisted review metadata,
+  and review-only matching until an explicit apply.
 - **Migration loss:** no automatic deletion, preview/confirmation, exportable
   old metadata and restart/migration E2E coverage.
 
