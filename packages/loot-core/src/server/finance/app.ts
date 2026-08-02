@@ -38,6 +38,7 @@ import type {
   TransactionEntity,
 } from '#types/models';
 
+import { applyFinanceCategorization } from './categorization';
 import {
   listNativeReconciliationCandidates,
   scoreNativeReconciliationPair,
@@ -61,6 +62,7 @@ export type FinanceHandlers = {
   'finance-categorization-status': typeof getCategorizationStatus;
   'finance-categorize': typeof categorizeTransactions;
   'finance-categorization-api-key-set': typeof setCategorizationApiKey;
+  'finance-categorization-apply': typeof applyFinanceCategorization;
 };
 
 type FinanceRequestError = { error: string };
@@ -484,3 +486,7 @@ app.method(
 app.method('finance-categorization-status', getCategorizationStatus);
 app.method('finance-categorize', categorizeTransactions);
 app.method('finance-categorization-api-key-set', setCategorizationApiKey);
+app.method(
+  'finance-categorization-apply',
+  mutator(undoable(applyFinanceCategorization)),
+);

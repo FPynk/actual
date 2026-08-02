@@ -103,6 +103,9 @@ type AccountHeaderProps = {
   onMenuSelect: AccountMenuProps['onMenuSelect'];
   onReconcile: ComponentProps<typeof ReconcileMenu>['onReconcile'];
   onBatchEdit: ComponentProps<typeof SelectedTransactionsButton>['onEdit'];
+  onAutoCategorize: ComponentProps<
+    typeof SelectedTransactionsButton
+  >['onAutoCategorize'];
   onRunRules: ComponentProps<typeof SelectedTransactionsButton>['onRunRules'];
   onBatchDelete: ComponentProps<typeof SelectedTransactionsButton>['onDelete'];
   onBatchDuplicate: ComponentProps<
@@ -175,6 +178,7 @@ export function AccountHeader({
   onBatchDelete,
   onBatchDuplicate,
   onBatchEdit,
+  onAutoCategorize,
   onBatchLinkSchedule,
   onBatchUnlinkSchedule,
   onCreateRule,
@@ -389,6 +393,9 @@ export function AccountHeader({
             {/* @ts-expect-error fix me */}
             <FilterButton onApply={onApplyFilter} />
           </View>
+          <Button variant="bare" onPress={() => onAutoCategorize([])}>
+            <Trans>Auto-categorize</Trans>
+          </Button>
           <View style={{ flex: 1 }} />
 
           <Search
@@ -412,6 +419,7 @@ export function AccountHeader({
               onLinkSchedule={onBatchLinkSchedule}
               onUnlinkSchedule={onBatchUnlinkSchedule}
               onCreateRule={onCreateRule}
+              onAutoCategorize={onAutoCategorize}
               onSetTransfer={onSetTransfer}
               onScheduleAction={onScheduleAction}
               showMakeTransfer={showMakeTransfer}

@@ -2,8 +2,10 @@ import * as db from '#server/db';
 import { runHandler, runMutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { clearUndo, undo } from '#server/undo';
+import { categorizationFingerprint } from '#shared/finance-categorization';
 import { withFinanceReviewDecision } from '#shared/finance-metadata';
 import { detectRecurringPayments } from '#shared/finance/recurring-detector';
+import { financeCategorizationPreferenceId } from '#types/finance';
 
 import {
   app,
@@ -294,5 +296,86 @@ describe('native recurring schedule apply', () => {
     expect(
       await db.all('SELECT id FROM schedules WHERE tombstone = 0'),
     ).toEqual([]);
+  });
+});
+
+describe('native categorization apply', () => {
+  beforeEach(async () => {
+    await global.emptyDatabase()();
+    prefs.unloadPrefs();
+    await prefs.loadPrefs();
+    clearUndo();
+    await db.insertCategoryGroup({
+      id: 'categorization-expenses',
+      name: 'Expenses',
+      is_income: 0,
+    });
+    await db.insertCategory({
+      id: 'categorization-groceries',
+      name: 'Groceries',
+      cat_group: 'categorization-expenses',
+      is_income: 0,
+    });
+    await db.insertAccount({ id: 'categorization-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'categorization-market', name: 'Market' });
+    await db.insertTransaction({
+      id: 'categorization-transaction',
+      account: 'categorization-checking',
+      amount: -2499,
+      category: null,
+      date: '2026-08-02',
+      imported_payee: 'MARKET 123',
+      payee: 'categorization-market',
+    });
+    db.runQuery('INSERT INTO preferences (id, value) VALUES (?, ?)', [
+      financeCategorizationPreferenceId,
+      JSON.stringify({ categoryIds: ['categorization-groceries'] }),
+    ]);
+  });
+
+  afterEach(async () => {
+    prefs.unloadPrefs();
+    clearUndo();
+    await global.emptyDatabase()();
+  });
+
+  it('applies one category batch and restores it with one undo', async () => {
+    const result = await runHandler(
+      app.handlers['finance-categorization-apply'],
+      {
+        includeCategorized: false,
+        proposals: [
+          {
+            categoryId: 'categorization-groceries',
+            fingerprint: categorizationFingerprint({
+              accountId: 'categorization-checking',
+              accountName: 'Checking',
+              amount: -2499,
+              categoryId: null,
+              date: '2026-08-02',
+              importedPayee: 'MARKET 123',
+              payeeId: 'categorization-market',
+              payeeName: 'Market',
+              transactionId: 'categorization-transaction',
+            }),
+            transactionId: 'categorization-transaction',
+          },
+        ],
+      },
+    );
+
+    expect(result).toEqual({
+      appliedTransactionIds: ['categorization-transaction'],
+      skipped: [],
+    });
+    expect(
+      (await db.getTransaction('categorization-transaction'))?.category,
+    ).toBe('categorization-groceries');
+
+    await runMutator(() => undo());
+
+    expect(
+      (await db.getTransaction('categorization-transaction'))?.category,
+    ).toBeNull();
   });
 });

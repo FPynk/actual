@@ -1262,7 +1262,7 @@ class AccountInternal extends PureComponent<
     });
   };
 
-  onCreateRule = async (ids: string[]) => {
+  onCreateRule = async (ids: string[], normalizeImportedPayee = false) => {
     const { data } = await aqlQuery(
       q('transactions')
         .filter({ id: { $oneof: ids } })
@@ -1295,12 +1295,32 @@ class AccountInternal extends PureComponent<
       value: ruleTransaction.amount,
       type: 'number',
     } satisfies RuleConditionEntity;
+    const shouldNormalizeImportedPayee = Boolean(
+      normalizeImportedPayee &&
+      ruleTransaction.imported_payee &&
+      ruleTransaction.payee,
+    );
 
     const rule = {
       stage: null,
       conditionsOp: 'and',
-      conditions: [payeeCondition, amountCondition],
+      conditions: shouldNormalizeImportedPayee
+        ? [payeeCondition]
+        : [payeeCondition, amountCondition],
       actions: [
+        ...(shouldNormalizeImportedPayee
+          ? [
+              {
+                op: 'set',
+                field: 'payee',
+                value: ruleTransaction.payee,
+                type: 'id',
+                options: {
+                  splitIndex: 0,
+                },
+              } satisfies RuleActionEntity,
+            ]
+          : []),
         ...(childTransactions.length === 0
           ? [
               {
@@ -1338,6 +1358,26 @@ class AccountInternal extends PureComponent<
 
     this.props.dispatch(
       pushModal({ modal: { name: 'edit-rule', options: { rule } } }),
+    );
+  };
+
+  onAutoCategorize = (selectedTransactionIds: string[]) => {
+    this.props.dispatch(
+      pushModal({
+        modal: {
+          name: 'auto-categorize',
+          options: {
+            currentQuery: (
+              this.paged?.query ?? this.currentQuery
+            ).serializeAsString(),
+            initialScope:
+              selectedTransactionIds.length > 0 ? 'selected' : 'current-filter',
+            selectedTransactionIds,
+            onApplied: this.refetchTransactions,
+            onCreateRule: this.onCreateRule,
+          },
+        },
+      }),
     );
   };
 
@@ -1826,6 +1866,7 @@ class AccountInternal extends PureComponent<
                 onBatchLinkSchedule={this.onBatchLinkSchedule}
                 onBatchUnlinkSchedule={this.onBatchUnlinkSchedule}
                 onCreateRule={this.onCreateRule}
+                onAutoCategorize={this.onAutoCategorize}
                 onUpdateFilter={this.onUpdateFilter}
                 onClearFilters={this.onClearFilters}
                 onReloadSavedFilter={this.onReloadSavedFilter}

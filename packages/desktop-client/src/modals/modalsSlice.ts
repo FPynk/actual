@@ -41,6 +41,19 @@ export type ConfirmTransactionEditReason =
 
 export type Modal =
   | {
+      name: 'auto-categorize';
+      options: {
+        currentQuery: string;
+        initialScope: 'current-filter' | 'selected';
+        selectedTransactionIds: string[];
+        onApplied: () => Promise<void>;
+        onCreateRule: (
+          transactionIds: string[],
+          normalizeImportedPayee?: boolean,
+        ) => void;
+      };
+    }
+  | {
       name: 'import-transactions';
       options: {
         accountId: string;
