@@ -36,6 +36,7 @@ describe('native finance metadata', () => {
         'recurring:streaming:monthly',
       ),
     ).toMatchObject({ decision: 'applied' });
+    expect(applied.amazonOrders).toEqual([]);
   });
 
   test('reopens only the requested feature and candidate', () => {
@@ -86,6 +87,7 @@ describe('native finance metadata', () => {
         version: 1,
       }),
     ).toEqual({
+      amazonOrders: [],
       reviewDecisions: [
         {
           candidateKey: 'amazon:order-2',
@@ -104,10 +106,66 @@ describe('native finance metadata', () => {
     });
   });
 
+  test('keeps only bounded normalized Amazon review data', () => {
+    const metadata = parseFinanceMetadata({
+      amazonOrders: [
+        {
+          currency: 'USD',
+          date: '2026-08-01',
+          discountTotal: 0,
+          giftCardTotal: 0,
+          itemSubtotal: 1299,
+          items: [
+            {
+              discountAmount: 0,
+              id: 'item-1',
+              quantity: 1,
+              refundAmount: 0,
+              shipmentId: null,
+              shippingAmount: 0,
+              taxAmount: 0,
+              title: 'Synthetic item',
+              unitAmount: 1299,
+              uploadedEmailBody: 'must not survive',
+            },
+          ],
+          marketplace: 'amazon.com',
+          orderId: '111-2222222-3333333',
+          orderTotal: 1299,
+          rawUploadedBytes: 'must not survive',
+          refundTotal: 0,
+          refunds: [],
+          shipments: [],
+          shippingTotal: 0,
+          taxTotal: 0,
+        },
+      ],
+      reviewDecisions: [],
+      version: 1,
+    });
+
+    expect(metadata.amazonOrders).toEqual([
+      expect.objectContaining({
+        orderId: '111-2222222-3333333',
+        items: [
+          expect.not.objectContaining({ uploadedEmailBody: expect.anything() }),
+        ],
+      }),
+    ]);
+    expect(JSON.stringify(metadata).includes('must not survive')).toBe(false);
+  });
+
   test('rejects malformed metadata instead of silently changing a decision', () => {
     expect(() =>
       parseFinanceMetadata({ reviewDecisions: [], version: 2 }),
     ).toThrow('unsupported version');
+    expect(() =>
+      parseFinanceMetadata({
+        amazonOrders: null,
+        reviewDecisions: [],
+        version: 1,
+      }),
+    ).toThrow('review orders are invalid');
     expect(() =>
       parseFinanceMetadata({
         reviewDecisions: [

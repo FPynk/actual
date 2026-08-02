@@ -13,6 +13,7 @@ describe('native finance metadata preferences', () => {
   test('keeps reviewed-finance metadata in Actual budget preferences', async () => {
     await loadPrefs();
     await saveFinanceMetadata({
+      amazonOrders: [],
       reviewDecisions: [
         {
           candidateKey: 'reconciliation:duplicate-1',
@@ -25,6 +26,7 @@ describe('native finance metadata preferences', () => {
     });
 
     expect(getFinanceMetadata()).toEqual({
+      amazonOrders: [],
       reviewDecisions: [
         {
           candidateKey: 'reconciliation:duplicate-1',

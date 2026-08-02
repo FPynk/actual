@@ -1,3 +1,4 @@
+import { normalizeAmazonReviewOrders } from '#shared/finance/amazon';
 import {
   financeMetadataVersion,
   financeReviewDecisions,
@@ -11,7 +12,11 @@ import type {
 const maximumFinanceReviewCandidateKeyLength = 256;
 
 export function createFinanceMetadata(): FinanceMetadata {
-  return { reviewDecisions: [], version: financeMetadataVersion };
+  return {
+    amazonOrders: [],
+    reviewDecisions: [],
+    version: financeMetadataVersion,
+  };
 }
 
 export function parseFinanceMetadata(value: unknown): FinanceMetadata {
@@ -25,7 +30,16 @@ export function parseFinanceMetadata(value: unknown): FinanceMetadata {
     throw new Error('Native finance metadata review decisions are invalid.');
   }
 
+  const amazonOrders = normalizeAmazonReviewOrders(
+    value.amazonOrders === undefined ? [] : value.amazonOrders,
+  );
   return {
+    amazonOrders: amazonOrders.map(order => ({
+      ...order,
+      items: order.items.map(item => ({ ...item })),
+      refunds: order.refunds.map(refund => ({ ...refund })),
+      shipments: order.shipments.map(shipment => ({ ...shipment })),
+    })),
     reviewDecisions: value.reviewDecisions
       .map(parseFinanceReviewDecisionRecord)
       .sort(compareFinanceReviewDecisionRecords),
@@ -41,6 +55,7 @@ export function withFinanceReviewDecision(
   const normalizedDecision = parseFinanceReviewDecisionRecord(decision);
 
   return {
+    amazonOrders: currentMetadata.amazonOrders,
     reviewDecisions: [
       ...currentMetadata.reviewDecisions.filter(
         currentDecision =>
@@ -72,6 +87,7 @@ export function withoutFinanceReviewDecision(
   const currentMetadata = parseFinanceMetadata(metadata);
 
   return {
+    amazonOrders: currentMetadata.amazonOrders,
     reviewDecisions: currentMetadata.reviewDecisions.filter(
       decision =>
         decision.feature !== feature || decision.candidateKey !== candidateKey,

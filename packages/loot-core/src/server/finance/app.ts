@@ -13,6 +13,8 @@ import {
   withFinanceReviewDecision,
   withoutFinanceReviewDecision,
 } from '#shared/finance-metadata';
+import { normalizeAmazonReviewOrders } from '#shared/finance/amazon';
+import type { AmazonOrder } from '#shared/finance/amazon';
 import {
   detectRecurringPayments,
   validateRecurringPaymentCandidateForApply,
@@ -29,6 +31,7 @@ import type {
   FinanceCategorizationStatus,
   FinanceReviewDecision,
   FinanceReviewDecisionRecord,
+  AmazonReviewOrder,
 } from '#types/finance';
 import type {
   PayeeEntity,
@@ -59,6 +62,11 @@ export type FinanceHandlers = {
   'finance/recurring/save-decision': typeof saveRecurringReviewDecision;
   'finance/recurring/reopen-decision': typeof reopenRecurringReviewDecision;
   'finance/recurring/apply': typeof applyRecurringPaymentCandidate;
+  'finance/amazon/get-orders': typeof getAmazonReviewOrders;
+  'finance/amazon/save-orders': typeof saveAmazonReviewOrders;
+  'finance/amazon/get-decisions': typeof getAmazonReviewDecisions;
+  'finance/amazon/save-decision': typeof saveAmazonReviewDecision;
+  'finance/amazon/reopen-decision': typeof reopenAmazonReviewDecision;
   'finance-categorization-status': typeof getCategorizationStatus;
   'finance-categorize': typeof categorizeTransactions;
   'finance-categorization-api-key-set': typeof setCategorizationApiKey;
@@ -251,6 +259,174 @@ const maximumCandidateKeyLength = 256;
 const maximumEvidenceFingerprintLength = 65_536;
 
 type RecurringReviewDecision = (typeof recurringReviewDecisions)[number];
+
+const amazonReviewDecisions = ['deferred', 'rejected'] as const;
+type AmazonReviewDecision = (typeof amazonReviewDecisions)[number];
+type AmazonReviewDecisionRecord = FinanceReviewDecisionRecord &
+  Readonly<{ decision: AmazonReviewDecision; feature: 'amazon' }>;
+
+type SaveAmazonReviewOrdersResult =
+  | Readonly<{
+      conflictingOrderIds: readonly string[];
+      status: 'conflict';
+    }>
+  | Readonly<{
+      orders: readonly AmazonOrder[];
+      status: 'saved';
+    }>;
+
+export async function getAmazonReviewOrders(): Promise<readonly AmazonOrder[]> {
+  return prefs.getFinanceMetadata().amazonOrders;
+}
+
+export async function saveAmazonReviewOrders({
+  orders,
+  replaceExistingOrderIds,
+}: {
+  orders: unknown;
+  replaceExistingOrderIds?: unknown;
+}): Promise<SaveAmazonReviewOrdersResult> {
+  const normalizedOrders = toStoredAmazonReviewOrders(
+    normalizeAmazonReviewOrders(orders),
+  );
+  const ordersById = new Map(
+    normalizedOrders.map(order => [order.orderId, order] as const),
+  );
+  const replacementOrderIds = parseReplacementOrderIds(
+    replaceExistingOrderIds,
+    ordersById,
+  );
+  const existingOrders = prefs.getFinanceMetadata().amazonOrders;
+  const conflictingOrderIds = normalizedOrders
+    .filter(order => {
+      const existing = existingOrders.find(
+        value => value.orderId === order.orderId,
+      );
+      return (
+        existing !== undefined &&
+        JSON.stringify(existing) !== JSON.stringify(order)
+      );
+    })
+    .map(order => order.orderId);
+  if (conflictingOrderIds.some(orderId => !replacementOrderIds.has(orderId))) {
+    return { conflictingOrderIds, status: 'conflict' };
+  }
+  const combinedOrders = existingOrders.map(order =>
+    replacementOrderIds.has(order.orderId)
+      ? (ordersById.get(order.orderId) ?? order)
+      : order,
+  );
+  for (const order of normalizedOrders) {
+    if (!existingOrders.some(value => value.orderId === order.orderId)) {
+      combinedOrders.push(order);
+    }
+  }
+  const finance = prefs.getFinanceMetadata();
+  await prefs.saveFinanceMetadata({
+    ...finance,
+    amazonOrders: combinedOrders,
+  });
+  return { orders: prefs.getFinanceMetadata().amazonOrders, status: 'saved' };
+}
+
+export async function getAmazonReviewDecisions(): Promise<
+  readonly AmazonReviewDecisionRecord[]
+> {
+  return prefs
+    .getFinanceMetadata()
+    .reviewDecisions.filter(
+      (decision): decision is AmazonReviewDecisionRecord =>
+        decision.feature === 'amazon' &&
+        isAmazonReviewDecision(decision.decision),
+    );
+}
+
+export async function saveAmazonReviewDecision({
+  candidateKey,
+  decision,
+}: {
+  candidateKey: string;
+  decision: AmazonReviewDecision;
+}): Promise<AmazonReviewDecisionRecord> {
+  assertAmazonReviewCandidateKey(candidateKey);
+  if (!isAmazonReviewDecision(decision)) {
+    throw new Error('Invalid Amazon review decision.');
+  }
+  const record = {
+    candidateKey,
+    decision,
+    feature: 'amazon',
+    updatedAt: new Date().toISOString(),
+  } satisfies AmazonReviewDecisionRecord;
+  await prefs.saveFinanceMetadata(
+    withFinanceReviewDecision(prefs.getFinanceMetadata(), record),
+  );
+  return record;
+}
+
+export async function reopenAmazonReviewDecision({
+  candidateKey,
+}: {
+  candidateKey: string;
+}): Promise<void> {
+  assertAmazonReviewCandidateKey(candidateKey);
+  await prefs.saveFinanceMetadata(
+    withoutFinanceReviewDecision(
+      prefs.getFinanceMetadata(),
+      'amazon',
+      candidateKey,
+    ),
+  );
+}
+
+function isAmazonReviewDecision(
+  decision: string,
+): decision is AmazonReviewDecision {
+  return amazonReviewDecisions.some(value => value === decision);
+}
+
+function toStoredAmazonReviewOrders(
+  orders: readonly AmazonOrder[],
+): AmazonReviewOrder[] {
+  return orders.map(order => ({
+    ...order,
+    items: order.items.map(item => ({ ...item })),
+    refunds: order.refunds.map(refund => ({ ...refund })),
+    shipments: order.shipments.map(shipment => ({ ...shipment })),
+  }));
+}
+
+function parseReplacementOrderIds(
+  value: unknown,
+  ordersById: ReadonlyMap<string, AmazonReviewOrder>,
+): ReadonlySet<string> {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value) || value.length > ordersById.size) {
+    throw new Error('Invalid Amazon replacement order identifiers.');
+  }
+  const identifiers = new Set<string>();
+  for (const orderId of value) {
+    if (
+      typeof orderId !== 'string' ||
+      !ordersById.has(orderId) ||
+      identifiers.has(orderId)
+    ) {
+      throw new Error('Invalid Amazon replacement order identifiers.');
+    }
+    identifiers.add(orderId);
+  }
+  return identifiers;
+}
+
+function assertAmazonReviewCandidateKey(candidateKey: string): void {
+  assertCandidateKey(candidateKey);
+  if (
+    !candidateKey.startsWith('amazon:') ||
+    /[\u0000-\u001F\u007F]/.test(candidateKey)
+  ) {
+    throw new Error('Invalid Amazon review candidate key.');
+  }
+}
 
 export type RecurringReviewDecisionRecord = FinanceReviewDecisionRecord &
   Readonly<{
@@ -482,6 +658,14 @@ app.method(
 app.method(
   'finance/recurring/apply',
   mutator(undoable(applyRecurringPaymentCandidate)),
+);
+app.method('finance/amazon/get-orders', getAmazonReviewOrders);
+app.method('finance/amazon/save-orders', mutator(saveAmazonReviewOrders));
+app.method('finance/amazon/get-decisions', getAmazonReviewDecisions);
+app.method('finance/amazon/save-decision', mutator(saveAmazonReviewDecision));
+app.method(
+  'finance/amazon/reopen-decision',
+  mutator(reopenAmazonReviewDecision),
 );
 app.method('finance-categorization-status', getCategorizationStatus);
 app.method('finance-categorize', categorizeTransactions);

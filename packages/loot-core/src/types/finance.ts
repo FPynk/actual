@@ -28,11 +28,59 @@ export type FinanceReviewDecisionRecord = {
   updatedAt: string;
 };
 
+export type AmazonReviewItem = {
+  discountAmount: number;
+  id: string;
+  quantity: number;
+  refundAmount: number;
+  shipmentId: string | null;
+  shippingAmount: number;
+  taxAmount: number;
+  title: string;
+  unitAmount: number;
+};
+
+export type AmazonReviewShipment = {
+  date: string | null;
+  id: string;
+  total: number | null;
+};
+
+export type AmazonReviewRefund = {
+  amount: number;
+  date: string;
+  id: string;
+  itemId: string | null;
+  reason: string | null;
+};
+
+/**
+ * Normalized, budget-local review data. This intentionally cannot contain an
+ * uploaded file, email body, attachment, mailbox identity, or credentials.
+ */
+export type AmazonReviewOrder = {
+  currency: string;
+  date: string;
+  discountTotal: number;
+  giftCardTotal: number;
+  itemSubtotal: number;
+  items: AmazonReviewItem[];
+  marketplace: string;
+  orderId: string;
+  orderTotal: number;
+  refundTotal: number;
+  refunds: AmazonReviewRefund[];
+  shipments: AmazonReviewShipment[];
+  shippingTotal: number;
+  taxTotal: number;
+};
+
 /**
  * Budget-local, non-secret native Finance metadata. API keys and raw imports
  * are intentionally not representable by this type.
  */
 export type FinanceMetadata = {
+  amazonOrders: AmazonReviewOrder[];
   reviewDecisions: FinanceReviewDecisionRecord[];
   version: typeof financeMetadataVersion;
 };
