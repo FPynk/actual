@@ -21,12 +21,33 @@ const NOT_IMPLEMENTED_COMMANDS = [
 ] as const;
 type FeatureNotImplementedCommand = (typeof NOT_IMPLEMENTED_COMMANDS)[number];
 
+const financeLauncherShutdownMessage = 'finance-launcher-shutdown';
+
+type CloseableServer = Readonly<{ close: (callback: () => void) => void }>;
+type CloseableDatabase = Readonly<{ close: () => void }>;
+
 export type FeatureNotImplementedCommandResult = Readonly<{
   ok: false;
   code: 'feature_not_implemented';
   message: 'This command is not implemented yet.';
   command: FeatureNotImplementedCommand;
 }>;
+
+export function createGracefulCompanionShutdown(
+  server: CloseableServer,
+  reviewDatabase: CloseableDatabase | undefined,
+  exitProcess: (code: number) => void = code => process.exit(code),
+) {
+  let closing = false;
+  return () => {
+    if (closing) return;
+    closing = true;
+    void new Promise<void>(resolve => server.close(resolve)).then(() => {
+      reviewDatabase?.close();
+      exitProcess(0);
+    });
+  };
+}
 
 export async function runFinanceCompanionCommand(
   command: string | undefined,
@@ -216,15 +237,12 @@ export async function runFinanceCompanionCommand(
           ),
         },
   );
-  const closeServer = () =>
-    void new Promise<void>(resolve => server.close(() => resolve())).then(
-      () => {
-        reviewDatabase?.close();
-        process.exit(0);
-      },
-    );
+  const closeServer = createGracefulCompanionShutdown(server, reviewDatabase);
   process.once('SIGINT', closeServer);
   process.once('SIGTERM', closeServer);
+  process.on('message', message => {
+    if (message === financeLauncherShutdownMessage) closeServer();
+  });
   writeStandardOutput('');
   return 0;
 }

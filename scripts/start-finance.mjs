@@ -17,6 +17,7 @@ const actualUrl = 'http://127.0.0.1:5006';
 const companionUrl = 'http://127.0.0.1:4100';
 const readinessTimeoutMilliseconds = 60_000;
 const shutdownGraceMilliseconds = 10_000;
+const companionShutdownMessage = 'finance-launcher-shutdown';
 
 export class LauncherStoppedError extends Error {
   constructor() {
@@ -367,7 +368,10 @@ export class FinanceLauncher {
       detached: this.platform !== 'win32',
       env: this.childEnvironment(name),
       shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio:
+        name === 'companion'
+          ? ['ignore', 'pipe', 'pipe', 'ipc']
+          : ['ignore', 'pipe', 'pipe'],
     });
     const record = { child, name };
     this.children.push(record);
@@ -501,6 +505,17 @@ export class FinanceLauncher {
     const { child } = record;
     if (!child.pid || child.exitCode !== null) return;
     if (this.platform === 'win32') {
+      if (
+        !force &&
+        record.name === 'companion' &&
+        child.connected &&
+        typeof child.send === 'function'
+      ) {
+        await new Promise(resolve =>
+          child.send(companionShutdownMessage, () => resolve()),
+        );
+        return;
+      }
       const arguments_ = ['/PID', String(child.pid), '/T'];
       if (force) arguments_.push('/F');
       const taskkill = this.spawnProcess('taskkill', arguments_, {

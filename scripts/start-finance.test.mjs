@@ -34,6 +34,13 @@ function child(pid) {
   process_.pid = pid;
   process_.exitCode = null;
   process_.killed = false;
+  process_.connected = true;
+  process_.messages = [];
+  process_.send = (message, callback) => {
+    process_.messages.push(message);
+    callback?.();
+    return true;
+  };
   process_.stdout = new EventEmitter();
   process_.stdout.setEncoding = () => undefined;
   process_.stderr = new EventEmitter();
@@ -346,6 +353,12 @@ test('passes companion configuration only to its validator and companion runtime
   const companionRuntime = spawned.find(item =>
     item.arguments_.includes('./dist/service/cli.js'),
   );
+  assert.deepEqual(companionRuntime.options.stdio, [
+    'ignore',
+    'pipe',
+    'pipe',
+    'ipc',
+  ]);
   const frontend = spawned.find(item =>
     item.arguments_.includes('@actual-app/web'),
   );
@@ -443,6 +456,24 @@ test('selects only recorded Windows child PIDs for graceful and forced cleanup',
   assert.deepEqual(taskkill[0].arguments_, ['/PID', '321', '/T']);
   assert.equal(
     taskkill.every(item => item.arguments_.includes('321')),
+    true,
+  );
+});
+
+test('asks the companion to close its database before using Windows taskkill fallback', async () => {
+  const { launcher, spawned } = testLauncher();
+  const companion = child(321);
+  const worker = child(654);
+  launcher.children = [
+    { name: 'companion', child: companion },
+    { name: 'worker', child: worker },
+  ];
+  await launcher.shutdown();
+  assert.deepEqual(companion.messages, ['finance-launcher-shutdown']);
+  const taskkill = spawned.filter(item => item.executable === 'taskkill');
+  assert.deepEqual(taskkill[0].arguments_, ['/PID', '654', '/T']);
+  assert.equal(
+    taskkill.some(item => item.arguments_.includes('321')),
     true,
   );
 });
