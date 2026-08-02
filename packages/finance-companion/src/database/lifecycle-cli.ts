@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -33,6 +33,7 @@ type LifecycleCommand =
 
 export type DatabaseLifecycleTestHooks = Readonly<{
   afterBackupBeforeMigration?: () => void | Promise<void>;
+  afterFreshMigrationBeforeOwner?: () => void | Promise<void>;
 }>;
 
 export async function runDatabaseLifecycleCommand(
@@ -83,11 +84,31 @@ export async function runDatabaseLifecycleCommand(
                   ),
               });
             if (!actualApiOwner.ownerExists) {
-              await createActualApiOwner(
-                actualApiOwner.actualApiDirectory,
-                migration.instanceId,
-                configuration.budgetKeyHash,
-              );
+              const freshArtifacts = databaseExists
+                ? []
+                : await captureFreshArtifacts([
+                    lockedDatabasePath,
+                    configuration.integrityAnchorPath,
+                    `${lockedDatabasePath}-wal`,
+                    `${lockedDatabasePath}-shm`,
+                    `${lockedDatabasePath}-journal`,
+                  ]);
+              try {
+                if (!databaseExists) {
+                  await testHooks.afterFreshMigrationBeforeOwner?.();
+                }
+                await createActualApiOwner(
+                  actualApiOwner.actualApiDirectory,
+                  migration.instanceId,
+                  configuration.budgetKeyHash,
+                  actualApiOwner.directoryIdentity,
+                );
+              } catch (error) {
+                if (!databaseExists) {
+                  await removeFreshArtifacts(freshArtifacts);
+                }
+                throw error;
+              }
             }
             return { ok: true, ...migration };
           };
@@ -153,6 +174,53 @@ export async function runDatabaseLifecycleCommand(
     }
   } finally {
     anchorMacKey.fill(0);
+  }
+}
+
+type FreshArtifact = Readonly<{ path: string; identity: string }>;
+
+async function captureFreshArtifacts(
+  paths: readonly string[],
+): Promise<readonly FreshArtifact[]> {
+  const artifacts = await Promise.all(
+    paths.map(async artifactPath => {
+      try {
+        const status = await lstat(artifactPath, { bigint: true });
+        if (!status.isFile() || status.isSymbolicLink()) {
+          throw new Error('Fresh companion state contains an unsafe artifact.');
+        }
+        return {
+          path: artifactPath,
+          identity: `${status.dev}:${status.ino}`,
+        };
+      } catch (error) {
+        if (isMissingPathError(error)) return undefined;
+        throw error;
+      }
+    }),
+  );
+  return artifacts.filter(
+    (artifact): artifact is FreshArtifact => artifact !== undefined,
+  );
+}
+
+async function removeFreshArtifacts(
+  artifacts: readonly FreshArtifact[],
+): Promise<void> {
+  for (const artifact of artifacts) {
+    try {
+      const status = await lstat(artifact.path, { bigint: true });
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        `${status.dev}:${status.ino}` !== artifact.identity
+      ) {
+        continue;
+      }
+      await unlink(artifact.path);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
   }
 }
 
@@ -246,4 +314,13 @@ function required<T>(value: T | undefined): T {
     throw new Error('The Actual API directory is required.');
   }
   return value;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
 }

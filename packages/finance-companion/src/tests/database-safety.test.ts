@@ -386,6 +386,49 @@ describe('FIN-11 database safety gates', () => {
     });
   });
 
+  it('rolls back fresh state when a competing owner marker appears', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: () =>
+          writeFile(path.join(actualApiDirectory, 'owner.json'), 'competitor'),
+      }),
+    ).rejects.toThrow('not empty');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(
+      await readFile(path.join(actualApiDirectory, 'owner.json'), 'utf8'),
+    ).toBe('competitor');
+  });
+
+  it('rolls back fresh state when an unexpected API directory entry appears', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: () =>
+          writeFile(path.join(actualApiDirectory, 'unexpected'), 'synthetic'),
+      }),
+    ).rejects.toThrow('not empty');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(existsSync(path.join(actualApiDirectory, 'owner.json'))).toBe(false);
+  });
+
+  it('rolls back fresh state when the API directory is replaced', async () => {
+    const actualApiDirectory = await createFreshActualApiDirectory();
+    await expect(
+      runFreshLifecycleMigration(actualApiDirectory, {
+        afterFreshMigrationBeforeOwner: async () => {
+          await rm(actualApiDirectory, { recursive: true });
+          await mkdir(actualApiDirectory);
+        },
+      }),
+    ).rejects.toThrow('changed during companion initialization');
+    expect(existsSync(initialization.databasePath)).toBe(false);
+    expect(existsSync(initialization.anchorPath)).toBe(false);
+    expect(existsSync(path.join(actualApiDirectory, 'owner.json'))).toBe(false);
+  });
+
   it('refuses an owner marker before fresh migration without creating state', async () => {
     const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
     await mkdir(actualApiDirectory);
@@ -571,6 +614,38 @@ describe('FIN-11 database safety gates', () => {
       database.close();
     }
   });
+
+  async function createFreshActualApiDirectory(): Promise<string> {
+    const actualApiDirectory = path.join(temporaryDirectory, 'actual-api');
+    await mkdir(actualApiDirectory);
+    return actualApiDirectory;
+  }
+
+  function runFreshLifecycleMigration(
+    actualApiDirectory: string,
+    testHooks: Parameters<typeof runDatabaseLifecycleCommand>[3],
+  ) {
+    return runDatabaseLifecycleCommand(
+      'db:migrate',
+      {
+        bindAddress: '127.0.0.1',
+        port: 4100,
+        origin: 'http://127.0.0.1:4100',
+        dataDirectory: temporaryDirectory,
+        actualApiDirectory,
+        databasePath: initialization.databasePath,
+        integrityAnchorPath: initialization.anchorPath,
+        integrityMacKeyFile: undefined,
+        integrityMacKey: initialization.anchorMacKey.toString('base64url'),
+        budgetKeyHash: initialization.budgetKeyHash,
+        budgetCurrencyCode: initialization.budgetCurrencyCode,
+        ownerBootstrapCredential: randomBytes(32).toString('base64url'),
+        ownerBootstrapCredentialFile: undefined,
+      },
+      [],
+      testHooks,
+    );
+  }
 
   async function createBackupRequest(): Promise<CompanionBackupRequest> {
     const initialized =

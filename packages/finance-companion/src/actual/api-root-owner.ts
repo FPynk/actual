@@ -1,5 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { lstat, open, readdir, readFile, realpath } from 'node:fs/promises';
+import {
+  lstat,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  unlink,
+} from 'node:fs/promises';
 import path from 'node:path';
 
 import { canonicalJson } from '#actual/canonical-json';
@@ -12,23 +19,38 @@ type ActualApiOwner = Readonly<{
   directoryNonce: string;
 }>;
 
+type CanonicalActualApiDirectory = Readonly<{
+  path: string;
+  identity: string;
+}>;
+
+export type ActualApiOwnerTestHooks = Readonly<{
+  afterOwnerWriteBeforeVerification?: () => void | Promise<void>;
+}>;
+
 export async function prepareActualApiOwnerDirectory(
   actualApiDirectory: string,
   databaseExists: boolean,
   companionInstanceId: string | undefined,
   budgetBindingHash: string,
-): Promise<Readonly<{ actualApiDirectory: string; ownerExists: boolean }>> {
+): Promise<
+  Readonly<{
+    actualApiDirectory: string;
+    directoryIdentity: string;
+    ownerExists: boolean;
+  }>
+> {
   const canonicalDirectory =
     await canonicalExistingDirectory(actualApiDirectory);
-  const ownerPath = path.join(canonicalDirectory, 'owner.json');
+  const ownerPath = path.join(canonicalDirectory.path, 'owner.json');
   const owner = await readActualApiOwner(ownerPath);
   if (owner === undefined) {
-    if ((await readdir(canonicalDirectory)).length !== 0) {
-      throw new Error(
-        'Actual API directory is not empty without an owner marker.',
-      );
-    }
-    return { actualApiDirectory: canonicalDirectory, ownerExists: false };
+    await assertEmptyActualApiDirectory(canonicalDirectory.path);
+    return {
+      actualApiDirectory: canonicalDirectory.path,
+      directoryIdentity: canonicalDirectory.identity,
+      ownerExists: false,
+    };
   }
   if (!databaseExists || companionInstanceId === undefined) {
     throw new Error(
@@ -41,13 +63,19 @@ export async function prepareActualApiOwnerDirectory(
   ) {
     throw new Error('Actual API owner marker does not match the companion.');
   }
-  return { actualApiDirectory: canonicalDirectory, ownerExists: true };
+  return {
+    actualApiDirectory: canonicalDirectory.path,
+    directoryIdentity: canonicalDirectory.identity,
+    ownerExists: true,
+  };
 }
 
 export async function createActualApiOwner(
   actualApiDirectory: string,
   companionInstanceId: string,
   budgetBindingHash: string,
+  expectedDirectoryIdentity?: string,
+  testHooks: ActualApiOwnerTestHooks = {},
 ): Promise<void> {
   const nonceBytes = randomBytes(32);
   try {
@@ -57,22 +85,60 @@ export async function createActualApiOwner(
       budgetBindingHash,
       directoryNonce: nonceBytes.toString('base64url'),
     };
-    const ownerPath = path.join(actualApiDirectory, 'owner.json');
+    const canonicalDirectory = await assertExpectedActualApiDirectory(
+      actualApiDirectory,
+      expectedDirectoryIdentity,
+    );
+    await assertActualApiDirectoryCanCreateOwner(
+      canonicalDirectory.path,
+      expectedDirectoryIdentity !== undefined,
+    );
+    const ownerPath = path.join(canonicalDirectory.path, 'owner.json');
     const file = await open(ownerPath, 'wx', 0o600);
+    let ownerIdentity: string | undefined;
+    let failed = false;
     try {
+      ownerIdentity = fileIdentity(await file.stat({ bigint: true }));
+      await assertExpectedActualApiDirectory(
+        actualApiDirectory,
+        expectedDirectoryIdentity,
+      );
+      await assertDirectoryContainsOnlyOwner(canonicalDirectory.path);
       await file.writeFile(canonicalJson(owner), 'utf8');
       await file.sync();
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
       await file.close();
+      if (failed && ownerIdentity !== undefined) {
+        await removeFileWithIdentity(ownerPath, ownerIdentity);
+      }
+    }
+    try {
+      await testHooks.afterOwnerWriteBeforeVerification?.();
+      await assertExpectedActualApiDirectory(
+        actualApiDirectory,
+        expectedDirectoryIdentity,
+      );
+      await assertDirectoryContainsOnlyOwner(canonicalDirectory.path);
+      await readActualApiOwner(ownerPath);
+    } catch (error) {
+      if (ownerIdentity !== undefined) {
+        await removeFileWithIdentity(ownerPath, ownerIdentity);
+      }
+      throw error;
     }
   } finally {
     nonceBytes.fill(0);
   }
 }
 
-async function canonicalExistingDirectory(directory: string): Promise<string> {
+async function canonicalExistingDirectory(
+  directory: string,
+): Promise<CanonicalActualApiDirectory> {
   const absoluteDirectory = path.resolve(directory);
-  const status = await lstat(absoluteDirectory);
+  const status = await lstat(absoluteDirectory, { bigint: true });
   if (!status.isDirectory() || status.isSymbolicLink()) {
     throw new Error('Actual API directory is not a regular directory.');
   }
@@ -80,7 +146,82 @@ async function canonicalExistingDirectory(directory: string): Promise<string> {
   if (!samePath(absoluteDirectory, canonicalDirectory)) {
     throw new Error('Actual API directory traverses a symbolic link.');
   }
+  return { path: canonicalDirectory, identity: fileIdentity(status) };
+}
+
+async function assertExpectedActualApiDirectory(
+  directory: string,
+  expectedDirectoryIdentity: string | undefined,
+): Promise<CanonicalActualApiDirectory> {
+  const canonicalDirectory = await canonicalExistingDirectory(directory);
+  if (
+    expectedDirectoryIdentity !== undefined &&
+    canonicalDirectory.identity !== expectedDirectoryIdentity
+  ) {
+    throw new Error(
+      'Actual API directory changed during companion initialization.',
+    );
+  }
   return canonicalDirectory;
+}
+
+async function assertEmptyActualApiDirectory(directory: string): Promise<void> {
+  if ((await readdir(directory)).length !== 0) {
+    throw new Error(
+      'Actual API directory is not empty without an owner marker.',
+    );
+  }
+}
+
+async function assertActualApiDirectoryCanCreateOwner(
+  directory: string,
+  requiresEmptyDirectory: boolean,
+): Promise<void> {
+  const entries = await readdir(directory);
+  if (
+    entries.length !== 0 &&
+    (requiresEmptyDirectory ||
+      entries.length !== 1 ||
+      entries[0] !== 'owner.json')
+  ) {
+    throw new Error(
+      'Actual API directory is not empty without an owner marker.',
+    );
+  }
+}
+
+async function assertDirectoryContainsOnlyOwner(
+  directory: string,
+): Promise<void> {
+  const entries = await readdir(directory);
+  if (entries.length !== 1 || entries[0] !== 'owner.json') {
+    throw new Error(
+      'Actual API directory changed during owner initialization.',
+    );
+  }
+}
+
+async function removeFileWithIdentity(
+  filePath: string,
+  expectedIdentity: string,
+): Promise<void> {
+  try {
+    const status = await lstat(filePath, { bigint: true });
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      fileIdentity(status) !== expectedIdentity
+    ) {
+      return;
+    }
+    await unlink(filePath);
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+}
+
+function fileIdentity(status: Readonly<{ dev: bigint; ino: bigint }>): string {
+  return `${status.dev}:${status.ino}`;
 }
 
 async function readActualApiOwner(

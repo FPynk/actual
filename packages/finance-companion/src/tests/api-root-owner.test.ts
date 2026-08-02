@@ -153,4 +153,28 @@ describe('Actual API ownership marker', () => {
       ),
     ).rejects.toThrow('not a regular directory');
   });
+
+  it('removes its owner marker when a post-write directory race is detected', async () => {
+    const prepared = await prepareActualApiOwnerDirectory(
+      actualApiDirectory,
+      false,
+      undefined,
+      budgetBindingHash,
+    );
+    await expect(
+      createActualApiOwner(
+        prepared.actualApiDirectory,
+        instanceId,
+        budgetBindingHash,
+        prepared.directoryIdentity,
+        {
+          afterOwnerWriteBeforeVerification: () =>
+            writeFile(path.join(actualApiDirectory, 'unexpected'), 'synthetic'),
+        },
+      ),
+    ).rejects.toThrow('changed during owner initialization');
+    await expect(
+      readFile(path.join(actualApiDirectory, 'owner.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
