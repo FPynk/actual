@@ -2,37 +2,79 @@
   <img src="/demo.png" alt="Actualbudget" />
 </p>
 
-## Finance Companion project branch
+## Finance features in Actual
 
-This fork's `integration/finance-app` branch keeps Actual's existing budgeting,
-imports, rules, schedules, splits, and reports, and adds expenditure metrics
-plus a local Finance Companion for bank sync and read-only reconciliation,
-classification, recurring-payment, and Amazon review workflows.
+The `integration/finance-app` branch is one modified Actual app. Expenditure
+reports, transaction review, bank sync, recurring-payment review, Amazon
+enrichment, and automated categorization live in Actual's normal interface and
+use its existing login, budgets, rules, transactions, sync, and persistence.
+There is no second finance app, login, database, browser tab, or service.
 
-The companion is loopback-only, and its review decisions do not change Actual.
-Automated transaction, rule, split, category, and schedule edits remain
-disabled. The explicit mutating exception is an authorized one-shot account
-bank sync, which can import transactions into the configured Actual budget and
-uses fail-stop handling for unknown outcomes. Remote exposure, write-era
-recovery, and real-data restore remain disabled. Use Actual's UI for all other
-ledger changes.
+### Run locally on Windows
 
-Clone the explicit integration branch and install its locked dependencies:
+Use PowerShell to clone the integration branch, install its locked
+dependencies, and start the complete app:
 
 ```powershell
 git clone --branch integration/finance-app https://github.com/FPynk/actual.git actual-finance-app
 Set-Location -LiteralPath '.\actual-finance-app'
 corepack yarn install --immutable
+corepack yarn start:actual
 ```
 
-Continue with the [English Finance Companion user guide](docs/project/finance-companion-user-guide.md).
-For a private synthetic Ubuntu preparation path, see the
-[Ubuntu homelab guide](docs/project/finance-companion-ubuntu-homelab.md).
-Technical context is in the [architecture](docs/project/architecture.md),
-[frozen companion contract](docs/project/finance-companion-v1-contract.md),
-and [original upstream capability inventory](docs/project/current-capabilities.md).
-Release evidence and safe limitations are in the
-[final project handoff](docs/project/agent-handoffs/FIN-54.md).
+The launcher builds and watches the browser workers, starts the frontend and
+Actual sync server, waits for the full app to respond, and opens
+`http://127.0.0.1:5006`. Pass `--no-open` when a browser should not open:
+
+```powershell
+corepack yarn start:actual --no-open
+```
+
+Port `5006` is the supported Actual URL. Port `3001` is the loopback-only Vite
+development server behind it. Press Ctrl+C in the launcher terminal to stop
+all child processes.
+
+### Data and API-key setup
+
+Actual server state persists in `%LOCALAPPDATA%\ActualBudgetServer` by default.
+Set `ACTUAL_DATA_DIR` before launch to use another directory. On Linux, the
+default is `$XDG_DATA_HOME/ActualBudgetServer` or
+`$HOME/.local/share/ActualBudgetServer`. Protect and back up this directory as
+you would any other Actual server installation.
+
+Configure automated categorization at **Settings > Integrations > OpenAI
+categorization**. The recommended settings screen stores the key only in the
+local Actual server data directory; an operator can instead supply
+`OPENAI_API_KEY` in the launch environment. The key is not returned to the
+browser, stored in a budget, or synchronized. Each run shows a privacy notice
+before sending only the selected transactions' descriptions, payees, dates,
+amounts, currency, account names, allowed category names and guidance, and the
+custom instruction to OpenAI. Review suggestions before applying them.
+
+The launcher never reads, migrates, or deletes an old
+`%LOCALAPPDATA%\ActualFinanceCompanion` directory. If one exists, it can be
+copied to an archive without changing the original:
+
+```powershell
+Copy-Item -LiteralPath "$env:LOCALAPPDATA\ActualFinanceCompanion" -Destination "$env:LOCALAPPDATA\ActualFinanceCompanion.archive" -Recurse
+```
+
+### Troubleshooting local startup
+
+- If port `3001` or `5006` is occupied, stop the process using it and run
+  `corepack yarn start:actual` again.
+- If a worker build fails, confirm the repository-root install completed with
+  `corepack yarn install --immutable`, then retry. Service output is prefixed
+  with the component that produced it.
+- If the page does not open automatically, visit `http://127.0.0.1:5006` or use
+  `--no-open` intentionally.
+- If automated categorization is unavailable, configure a valid OpenAI key in
+  Actual settings or in `OPENAI_API_KEY`, then restart the launcher after an
+  environment change.
+
+Technical decisions and implementation boundaries are in the
+[native integration design](docs/project/native-finance-actual-integration.md)
+and [native ticket migration](docs/project/native-finance-ticket-migration.md).
 
 ## Getting Started
 

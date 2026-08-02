@@ -19,9 +19,8 @@
   },
   "scripts": {
     "start": "yarn start:browser",
-    "start:finance": "node ./scripts/start-finance.mjs",
-    "start:actual": "node ./scripts/start-finance.mjs --actual-only",
-    "test:finance-launcher": "node --test ./scripts/start-finance.test.mjs",
+    "start:actual": "node ./scripts/start-actual.mjs",
+    "test:actual-launcher": "node --test ./scripts/start-actual.test.mjs",
     "start:server": "yarn workspace @actual-app/sync-server start",
     "start:server-monitor": "yarn workspace @actual-app/sync-server start-monitor",
     "start:server-dev": "NODE_ENV=development BROWSER_OPEN=localhost:5006 yarn npm-run-all --parallel 'start:server-monitor' 'start'",

@@ -36,7 +36,6 @@ packages/desktop-electron/dist
 packages/desktop-electron/loot-core
 packages/desktop-client/service-worker
 packages/plugins-service/dist
-packages/finance-companion/dist
 packages/component-library/dist
 packages/loot-core/lib-dist
 **/.tsbuildinfo
