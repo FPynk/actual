@@ -341,6 +341,9 @@ export type Modal =
       name: 'reconciliation-review';
     }
   | {
+      name: 'recurring-review';
+    }
+  | {
       name: 'schedule-posts-offline-notification';
     }
   | {
