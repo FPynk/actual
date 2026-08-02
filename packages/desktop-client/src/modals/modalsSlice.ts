@@ -54,6 +54,12 @@ export type Modal =
       };
     }
   | {
+      name: 'amazon-import-review';
+      options: {
+        transactions: TransactionEntity[];
+      };
+    }
+  | {
       name: 'import-transactions';
       options: {
         accountId: string;

@@ -647,6 +647,17 @@ class AccountInternal extends PureComponent<
     }
   };
 
+  onAmazonImport = () => {
+    this.props.dispatch(
+      pushModal({
+        modal: {
+          name: 'amazon-import-review',
+          options: { transactions: this.state.transactions },
+        },
+      }),
+    );
+  };
+
   onExport = async (accountName: string) => {
     const exportedTransactions = await send('transactions-export-query', {
       query: this.currentQuery.serialize(),
@@ -1859,6 +1870,7 @@ class AccountInternal extends PureComponent<
                 }
                 onSync={this.onSync}
                 onImport={this.onImport}
+                onAmazonImport={this.onAmazonImport}
                 onBatchDelete={this.onBatchDelete}
                 onBatchDuplicate={this.onBatchDuplicate}
                 onRunRules={this.onRunRules}

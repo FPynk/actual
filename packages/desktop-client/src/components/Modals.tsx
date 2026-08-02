@@ -15,6 +15,7 @@ import { EditSyncAccount } from './banksync/EditSyncAccount';
 import { AccountAutocompleteModal } from './modals/AccountAutocompleteModal';
 import { AccountMenuModal } from './modals/AccountMenuModal';
 import { AccountReconcileModal } from './modals/AccountReconcileModal';
+import { AmazonImportReviewModal } from './modals/AmazonImportReviewModal';
 import { AkahuInitialiseModal } from './modals/AkahuInitialiseModal';
 import { AutoCategorizeModal } from './modals/AutoCategorizeModal';
 import { BudgetAutomationsModal } from './modals/BudgetAutomationsModal';
@@ -113,6 +114,9 @@ export function Modals() {
       const { name } = modal;
       const key = `${name}-${idx}`;
       switch (name) {
+        case 'amazon-import-review':
+          return <AmazonImportReviewModal key={key} {...modal.options} />;
+
         case 'goal-templates':
           return budgetId ? <GoalTemplateModal key={key} /> : null;
 
