@@ -4,73 +4,179 @@
 
 ## Finance features in Actual
 
-The `integration/finance-app` branch is one modified Actual app. Expenditure
-reports, transaction review, bank sync, recurring-payment review, Amazon
-enrichment, and automated categorization live in Actual's normal interface and
-use its existing login, budgets, rules, transactions, sync, and persistence.
-There is no second finance app, login, database, browser tab, or service.
+This branch is one Actual application: its finance tools use the normal Actual
+login, budget, accounts, transactions, rules, schedules, reports, sync, and
+persistence. There is no separate Finance Companion, database, or port.
 
-### Run locally on Windows
+### Windows quick start
 
-Use PowerShell to clone the integration branch, install its locked
-dependencies, and start the complete app:
+Use PowerShell. You need Git, Node.js 22.18.0 or later, and Corepack (included
+with supported Node releases). Clone the branch, then install the locked
+dependencies from the repository root:
 
 ```powershell
 git clone --branch integration/finance-app https://github.com/FPynk/actual.git actual-finance-app
 Set-Location -LiteralPath '.\actual-finance-app'
 corepack yarn install --immutable
+```
+
+Start the complete local app with this exact command:
+
+```powershell
 corepack yarn start:actual
 ```
 
-The launcher builds and watches the browser workers, starts the frontend and
-Actual sync server, waits for the full app to respond, and opens
-`http://127.0.0.1:5006`. Pass `--no-open` when a browser should not open:
+On the first visit, complete Actual's on-screen server and budget setup. The
+launcher builds the required browser workers, starts the local frontend and
+Actual server, and opens `http://127.0.0.1:5006` when ready. That is the URL to
+bookmark. Port `3001` is only the loopback Vite development server behind it.
+To keep the launcher from opening a browser, use:
 
 ```powershell
 corepack yarn start:actual --no-open
 ```
 
-Port `5006` is the supported Actual URL. Port `3001` is the loopback-only Vite
-development server behind it. Press Ctrl+C in the launcher terminal to stop
-all child processes.
+For normal daily use, run `corepack yarn start:actual`, wait for the ready
+message, and open `http://127.0.0.1:5006` if necessary. Leave the PowerShell
+window open while using the app. Press Ctrl+C in that window to stop all
+launcher processes; do not close it by killing individual child processes.
 
-### Data and API-key setup
+### Data, backups, and first accounts
 
-Actual server state persists in `%LOCALAPPDATA%\ActualBudgetServer` by default.
-Set `ACTUAL_DATA_DIR` before launch to use another directory. On Linux, the
-default is `$XDG_DATA_HOME/ActualBudgetServer` or
-`$HOME/.local/share/ActualBudgetServer`. Protect and back up this directory as
-you would any other Actual server installation.
-
-Configure automated categorization at **Settings > Integrations > OpenAI
-categorization**. The recommended settings screen stores the key only in the
-local Actual server data directory; an operator can instead supply
-`OPENAI_API_KEY` in the launch environment. The key is not returned to the
-browser, stored in a budget, or synchronized. Each run shows a privacy notice
-before sending only the selected transactions' descriptions, payees, dates,
-amounts, currency, account names, allowed category names and guidance, and the
-custom instruction to OpenAI. Review suggestions before applying them.
-
-The launcher never reads, migrates, or deletes an old
-`%LOCALAPPDATA%\ActualFinanceCompanion` directory. If one exists, it can be
-copied to an archive without changing the original:
+The local server keeps its state in `%LOCALAPPDATA%\ActualBudgetServer` by
+default. To use a different location for the current PowerShell session, set it
+before starting Actual:
 
 ```powershell
-Copy-Item -LiteralPath "$env:LOCALAPPDATA\ActualFinanceCompanion" -Destination "$env:LOCALAPPDATA\ActualFinanceCompanion.archive" -Recurse
+$env:ACTUAL_DATA_DIR = 'D:\ActualBudgetServer'
+corepack yarn start:actual
 ```
 
-### Troubleshooting local startup
+Treat that directory as private financial data: it also holds server-managed
+credentials. Make regular in-app backups with **Settings > Export Data** for
+each budget, and keep the exported files somewhere protected. For a
+machine-level backup, stop Actual first and copy the whole data directory to a
+protected destination. Do not edit its databases directly. To restore an
+export, use **Switch file > Import file > Actual**, then verify the imported
+copy before removing anything.
 
-- If port `3001` or `5006` is occupied, stop the process using it and run
-  `corepack yarn start:actual` again.
-- If a worker build fails, confirm the repository-root install completed with
-  `corepack yarn install --immutable`, then retry. Service output is prefixed
-  with the component that produced it.
-- If the page does not open automatically, visit `http://127.0.0.1:5006` or use
-  `--no-open` intentionally.
-- If automated categorization is unavailable, configure a valid OpenAI key in
-  Actual settings or in `OPENAI_API_KEY`, then restart the launcher after an
-  environment change.
+Create a manual account with **+ Add account** in the sidebar. To add
+transactions, open the account and use **Add New**. To import a statement, use
+that account's **Import** button. CSV, OFX, QFX, and QIF are supported; OFX/QFX
+is usually the best choice because a bank-provided transaction ID improves
+matching. For CSV, map the date, payee, and amount (or debit/credit) columns in
+the preview, check the interpreted date and signs, then import.
+
+Actual tries to avoid duplicate imports by matching supplied IDs first and then
+matching nearby date, amount, and payee evidence. After an import, use
+**Review duplicates** in the account header. Read the evidence and explicitly
+choose merge, keep both, or defer; no candidate is merged until you choose an
+action. A merge can be undone in Actual. Review carefully when repeated
+same-amount purchases are plausible.
+
+### Bank sync and scheduled sync
+
+To connect a provider, use **+ Add account** or an existing account's menu and
+choose **Link bank account**. Actual supports its configured providers,
+including SimpleFIN. For SimpleFIN, create a one-time setup token in
+SimpleFIN Bridge, then enter it in Actual and map each discovered bank account
+to an existing or new Actual account. The token/access credentials stay on the
+server; do not put them in a budget, document, or source file. You can run a
+manual sync from an account's **Bank Sync** button or from **All Accounts >
+Bank Sync**.
+
+The **Bank Sync** page also has a scheduled-sync setting, account selection,
+and hourly, four-hour, twelve-hour, or daily interval. **Current limitation:**
+this is a browser-side scheduler. It runs only while that copy of Actual is
+open in a browser tab; it does not create a background server job. Use the
+manual **Sync now** control after a failure and keep the app tab open for the
+next scheduled attempt.
+
+### Review and automation tools
+
+Open **Settings > Integrations > OpenAI categorization** to configure a model,
+instructions, categories the AI may use, and optional category guidance. Enter
+an API key there only for a local server you control, or have the server
+operator provide `OPENAI_API_KEY` in the launch environment. The key is held
+server-side, never returned to the browser, synchronized with the budget, or
+included in the request. An environment key takes precedence over a key saved
+through the settings UI.
+
+Before each categorization preview, Actual tells you what it will send to
+OpenAI: selected transaction descriptions, payees, dates, amounts, currency,
+account names, the selected category names/guidance, and your instruction. It
+does not send the API key, transaction IDs, notes, attachments, balances,
+budget name, or unselected transactions, and requests disable provider-side
+response storage. Suggestions are reviewed before applying; check them and use
+Actual undo if needed.
+
+After applying a suggestion, the review can offer **Create merchant rule**.
+Use it to open Actual's normal Rule Editor and normalize an imported merchant
+or reuse its category. A rule is created only after you review and save it.
+You can later inspect or change rules from the Rules/Payees areas.
+
+Open **Schedules > Review recurring payments** to scan ledger history for
+recurring candidates. The review shows cadence, amount/date variance,
+confidence, and whether a candidate is an optional subscription, household
+bill, or financial bill. Approve only after reviewing the evidence; approval
+creates or updates a normal Actual schedule. You can defer, reject, or reopen a
+candidate without changing past transactions.
+
+For an Amazon purchase, open its account and select **Amazon review**. Choose
+one supported Amazon JSON export or a downloaded order, shipment, or refund
+`.eml` message (10 MB or smaller). Actual discards the raw upload after
+parsing and does not connect to your mailbox. It persists only normalized review
+metadata so you can reopen the review; it does not retain the original JSON or
+email. It displays possible charge matches and item/tax/shipping/refund
+allocations, but never changes the ledger until you explicitly authorize an
+apply action. **Current limitation:** this snapshot is read-only; Amazon review
+does not yet write transaction notes, categories, or splits.
+
+### Expenditure reports
+
+Open **Reports > Custom Report**, set a payment/expenditure view, and choose
+either a live range (for example, this month or last 30 days) or a fixed
+**Static Date** start and end. The Summary includes total expenditure, average
+per day/week/month, median expense, month-over-month change, category and
+merchant breakdowns, and rolling 30-day expenditure for the selected range.
+Use filters and category exclusions to make the question precise; transfers,
+refunds, and splits are handled as report data rather than separate finance
+records.
+
+### Troubleshooting and validation
+
+- If startup says port `3001` or `5006` is in use, close the process using that
+  port and run `corepack yarn start:actual` again.
+- If a worker build fails, rerun `corepack yarn install --immutable` from the
+  repository root and retry. Launcher output is prefixed with the component
+  that produced it.
+- If a browser does not open, visit `http://127.0.0.1:5006`; `--no-open` is
+  intentional and does not disable the server.
+- If OpenAI categorization is unavailable, check that Actual shows the server
+  as online and that a valid key is configured. Restart the launcher after
+  changing `OPENAI_API_KEY`.
+- If an import does not look right, cancel from the preview when possible; if
+  it was already applied, use Actual undo or restore a verified export rather
+  than editing the data directory.
+
+Developers can validate this checkout from its root with:
+
+```powershell
+corepack yarn test:actual-launcher
+corepack yarn lint
+corepack yarn typecheck
+```
+
+### Ubuntu homelab preparation (no deployment)
+
+This guide does not deploy to Ubuntu. Before planning a homelab deployment,
+choose an Ubuntu host, a dedicated non-root service account, a protected data
+directory and backup destination, and an authentication/TLS/reverse-proxy
+approach. Confirm that the host can run Node.js 22 with Corepack and Git, and
+decide who may read the server data because bank and OpenAI credentials are
+server-managed. Keep port exposure closed until the server authentication and
+TLS plan are ready. When automation is later needed, use Actual's supported
+CLI/API bank-sync path rather than provider routes or direct SQLite changes.
 
 Technical decisions and implementation boundaries are in the
 [native integration design](docs/project/native-finance-actual-integration.md)
