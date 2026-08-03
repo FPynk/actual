@@ -309,10 +309,12 @@ describe('AutoCategorizeModal selected scope', () => {
 
   it('discloses selected, eligible, and skipped counts and sends no unchecked fields', async () => {
     const user = userEvent.setup();
+    const categorizationInstructions =
+      '\nPrefer the category guidance.\n\nKeep uncertain rows for review.\n';
     mocks.serializedSettings = JSON.stringify({
       categoryGuidance: {},
       categoryIds: ['groceries', 'income'],
-      masterPrompt: 'Choose a category.',
+      masterPrompt: categorizationInstructions,
       model: 'gpt-4.1-mini',
     });
     render(
@@ -352,6 +354,7 @@ describe('AutoCategorizeModal selected scope', () => {
       expect(mocks.send).toHaveBeenCalledWith(
         'finance-categorize',
         expect.objectContaining({
+          categorization_instruction: categorizationInstructions,
           model: 'gpt-4.1-mini',
           candidates: [
             expect.objectContaining({

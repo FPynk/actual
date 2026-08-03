@@ -25,6 +25,12 @@ import { useDispatch } from '#redux';
 import { OpenAIModelPicker } from './OpenAIModelPicker';
 import { Setting } from './UI';
 
+const masterPromptEditorKey = 'master-prompt';
+
+type ExpandedGuidanceEditor =
+  | { type: 'master' }
+  | { type: 'category'; categoryId: string };
+
 function parseSettings(
   value: string | undefined,
 ): FinanceCategorizationSettings {
@@ -91,9 +97,8 @@ export function FinanceCategorizationSettings() {
   const [settingsSaveStatus, setSettingsSaveStatus] = useState<
     'idle' | 'pending' | 'saved' | 'failed'
   >('idle');
-  const [expandedCategoryId, setExpandedCategoryId] = useState<string | null>(
-    null,
-  );
+  const [expandedGuidanceEditor, setExpandedGuidanceEditor] =
+    useState<ExpandedGuidanceEditor | null>(null);
   const [modelListRevision, setModelListRevision] = useState(0);
   const [isSelectedModelCompatible, setIsSelectedModelCompatible] = useState<
     boolean | null
@@ -166,7 +171,7 @@ export function FinanceCategorizationSettings() {
       ...draftSettings,
       categoryGuidance,
       categoryIds,
-      masterPrompt: draftSettings.masterPrompt.trim(),
+      masterPrompt: draftSettings.masterPrompt,
       model: draftSettings.model.trim(),
     });
     isSettingsSaveInFlight.current = true;
@@ -247,22 +252,28 @@ export function FinanceCategorizationSettings() {
   const areAllEligibleCategoriesSelected =
     categories.length > 0 &&
     categories.every(category => selectedCategoryIds.has(category.id));
-  const expandedCategory = categories.find(
-    category => category.id === expandedCategoryId,
-  );
+  const expandedCategory =
+    expandedGuidanceEditor?.type === 'category'
+      ? categories.find(
+          category => category.id === expandedGuidanceEditor.categoryId,
+        )
+      : undefined;
+  const isMasterPromptExpanded = expandedGuidanceEditor?.type === 'master';
   const closeExpandedGuidance = () => {
-    guidanceFocusToRestore.current = expandedCategoryId;
-    setExpandedCategoryId(null);
+    guidanceFocusToRestore.current = isMasterPromptExpanded
+      ? masterPromptEditorKey
+      : expandedCategory?.id || null;
+    setExpandedGuidanceEditor(null);
   };
 
   useEffect(() => {
-    if (!expandedCategoryId && guidanceFocusToRestore.current) {
+    if (!expandedGuidanceEditor && guidanceFocusToRestore.current) {
       guidanceExpandButtonRefs.current
         .get(guidanceFocusToRestore.current)
         ?.focus();
       guidanceFocusToRestore.current = null;
     }
-  }, [expandedCategoryId]);
+  }, [expandedGuidanceEditor]);
 
   const isEnvironmentManaged = keyStatus?.source === 'environment';
   const isServerOffline = serverStatus === 'offline';
@@ -365,9 +376,15 @@ export function FinanceCategorizationSettings() {
                 <Trans>Choose a compatible OpenAI model before saving.</Trans>
               </Text>
             )}
-            <FormField style={{ width: '100%' }}>
-              <FormLabel title={t('Categorization instructions')} />
-              <Input
+            <FormField
+              style={{ alignItems: 'flex-start', gap: 4, width: '100%' }}
+            >
+              <FormLabel
+                htmlFor="finance-categorization-instructions"
+                title={t('Categorization instructions')}
+              />
+              <textarea
+                id="finance-categorization-instructions"
                 value={draftSettings.masterPrompt}
                 onChange={event =>
                   updateDraftSettings({
@@ -376,7 +393,38 @@ export function FinanceCategorizationSettings() {
                   })
                 }
                 placeholder={t('Explain how to categorize your transactions')}
+                style={{
+                  backgroundColor: theme.tableBackground,
+                  border: `1px solid ${theme.formInputBorder}`,
+                  borderRadius: 4,
+                  color: theme.tableText,
+                  maxHeight: 160,
+                  minHeight: 80,
+                  overflowY: 'auto',
+                  padding: 7,
+                  resize: 'vertical',
+                  width: '100%',
+                }}
               />
+              <Button
+                ref={element => {
+                  if (element) {
+                    guidanceExpandButtonRefs.current.set(
+                      masterPromptEditorKey,
+                      element,
+                    );
+                  } else {
+                    guidanceExpandButtonRefs.current.delete(
+                      masterPromptEditorKey,
+                    );
+                  }
+                }}
+                variant="bare"
+                aria-label={t('Expand categorization instructions')}
+                onPress={() => setExpandedGuidanceEditor({ type: 'master' })}
+              >
+                <Trans>Expand</Trans>
+              </Button>
             </FormField>
 
             <Text style={{ fontWeight: 600 }}>
@@ -395,6 +443,12 @@ export function FinanceCategorizationSettings() {
             >
               <Trans>Select all</Trans>
             </Button>
+            <Text style={{ color: theme.warningText }}>
+              <Trans>
+                Keep guidance short and specific. Longer guidance increases API
+                cost and may reduce classification consistency.
+              </Trans>
+            </Text>
             {categoryGroups.map(group => (
               <View key={group.id} style={{ gap: 8, width: '100%' }}>
                 <Text style={{ fontWeight: 600 }}>{group.name}</Text>
@@ -413,7 +467,11 @@ export function FinanceCategorizationSettings() {
                                   id => id !== category.id,
                                 );
                             if (!event.currentTarget.checked) {
-                              if (expandedCategoryId === category.id) {
+                              if (
+                                expandedGuidanceEditor?.type === 'category' &&
+                                expandedGuidanceEditor.categoryId ===
+                                  category.id
+                              ) {
                                 closeExpandedGuidance();
                               }
                             }
@@ -461,13 +519,6 @@ export function FinanceCategorizationSettings() {
                               width: '100%',
                             }}
                           />
-                          <Text style={{ color: theme.warningText }}>
-                            <Trans>
-                              Keep guidance short and specific. Longer guidance
-                              increases API cost and may reduce classification
-                              consistency.
-                            </Trans>
-                          </Text>
                           <Button
                             ref={element => {
                               if (element) {
@@ -486,7 +537,12 @@ export function FinanceCategorizationSettings() {
                               'Expand guidance for {{categoryName}}',
                               { categoryName: category.name },
                             )}
-                            onPress={() => setExpandedCategoryId(category.id)}
+                            onPress={() =>
+                              setExpandedGuidanceEditor({
+                                type: 'category',
+                                categoryId: category.id,
+                              })
+                            }
                           >
                             <Trans>Expand</Trans>
                           </Button>
@@ -544,7 +600,7 @@ export function FinanceCategorizationSettings() {
           </Link>
         </Text>
       </Setting>
-      {expandedCategory && (
+      {(isMasterPromptExpanded || expandedCategory) && (
         <ModalOverlay
           isOpen
           onOpenChange={isOpen => {
@@ -562,9 +618,13 @@ export function FinanceCategorizationSettings() {
         >
           <Modal isDismissable>
             <Dialog
-              aria-label={t('Guidance for {{categoryName}}', {
-                categoryName: expandedCategory.name,
-              })}
+              aria-label={
+                isMasterPromptExpanded
+                  ? t('Categorization instructions')
+                  : t('Guidance for {{categoryName}}', {
+                      categoryName: expandedCategory?.name || '',
+                    })
+              }
               style={{
                 backgroundColor: theme.modalBackground,
                 borderRadius: 6,
@@ -577,27 +637,51 @@ export function FinanceCategorizationSettings() {
             >
               <View style={{ alignItems: 'stretch', gap: 12 }}>
                 <h2 style={{ fontSize: 20, margin: 0 }}>
-                  <Trans>
-                    Guidance for {{ categoryName: expandedCategory.name }}
-                  </Trans>
+                  {isMasterPromptExpanded ? (
+                    <Trans>Categorization instructions</Trans>
+                  ) : (
+                    <Trans>
+                      Guidance for {{ categoryName: expandedCategory?.name }}
+                    </Trans>
+                  )}
                 </h2>
                 <textarea
-                  aria-label={t('Guidance for {{categoryName}}', {
-                    categoryName: expandedCategory.name,
-                  })}
+                  aria-label={
+                    isMasterPromptExpanded
+                      ? t('Categorization instructions')
+                      : t('Guidance for {{categoryName}}', {
+                          categoryName: expandedCategory?.name || '',
+                        })
+                  }
                   value={
-                    draftSettings.categoryGuidance[expandedCategory.id] || ''
+                    isMasterPromptExpanded
+                      ? draftSettings.masterPrompt
+                      : expandedCategory
+                        ? draftSettings.categoryGuidance[expandedCategory.id] ||
+                          ''
+                        : ''
                   }
-                  onChange={event =>
-                    updateDraftSettings({
-                      ...draftSettings,
-                      categoryGuidance: {
-                        ...draftSettings.categoryGuidance,
-                        [expandedCategory.id]: event.currentTarget.value,
-                      },
-                    })
+                  onChange={event => {
+                    if (isMasterPromptExpanded) {
+                      updateDraftSettings({
+                        ...draftSettings,
+                        masterPrompt: event.currentTarget.value,
+                      });
+                    } else if (expandedCategory) {
+                      updateDraftSettings({
+                        ...draftSettings,
+                        categoryGuidance: {
+                          ...draftSettings.categoryGuidance,
+                          [expandedCategory.id]: event.currentTarget.value,
+                        },
+                      });
+                    }
+                  }}
+                  placeholder={
+                    isMasterPromptExpanded
+                      ? t('Explain how to categorize your transactions')
+                      : t('Optional guidance for this category')
                   }
-                  placeholder={t('Optional guidance for this category')}
                   style={{
                     backgroundColor: theme.tableBackground,
                     border: `1px solid ${theme.formInputBorder}`,
@@ -610,12 +694,6 @@ export function FinanceCategorizationSettings() {
                     width: '100%',
                   }}
                 />
-                <Text style={{ color: theme.warningText }}>
-                  <Trans>
-                    Keep guidance short and specific. Longer guidance increases
-                    API cost and may reduce classification consistency.
-                  </Trans>
-                </Text>
                 <Button onPress={closeExpandedGuidance}>
                   <Trans>Close</Trans>
                 </Button>

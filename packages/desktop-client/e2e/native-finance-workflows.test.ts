@@ -26,6 +26,83 @@ async function expectSeparatedModalActions(
   expect(horizontallySeparated || verticallySeparated).toBe(true);
 }
 
+async function expectModelPickerLayout(page: Page) {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error('expected a model-picker viewport');
+
+  const search = page.getByRole('combobox', { name: 'Search OpenAI models' });
+  const refresh = page.getByRole('button', { name: 'Refresh models' });
+  const listbox = page.getByRole('listbox', {
+    name: 'Available OpenAI models',
+  });
+  const layoutItems = listbox.locator('h3, [role="option"]');
+  const [searchBox, refreshBox, listboxBox] = await Promise.all([
+    search.boundingBox(),
+    refresh.boundingBox(),
+    listbox.boundingBox(),
+  ]);
+  if (!searchBox || !refreshBox || !listboxBox) {
+    throw new Error('expected a visible model picker');
+  }
+
+  expect(boxesDoNotOverlap(searchBox, refreshBox)).toBe(true);
+  for (const box of [searchBox, refreshBox, listboxBox]) {
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+  }
+
+  const layoutItemBoxes = await Promise.all(
+    Array.from({ length: await layoutItems.count() }, (_, index) =>
+      layoutItems.nth(index).boundingBox(),
+    ),
+  );
+  if (layoutItemBoxes.some(box => box === null)) {
+    throw new Error('expected visible model headings and options');
+  }
+  const visibleLayoutItemBoxes = layoutItemBoxes as NonNullable<
+    Awaited<ReturnType<Locator['boundingBox']>>
+  >[];
+  for (let index = 1; index < visibleLayoutItemBoxes.length; index++) {
+    expect(
+      boxesDoNotOverlap(
+        visibleLayoutItemBoxes[index - 1],
+        visibleLayoutItemBoxes[index],
+      ),
+    ).toBe(true);
+  }
+
+  const longIncompatibleOption = listbox.getByRole('option', {
+    name: /gpt-incompatible-model-with-a-very-long-provider-generated-identifier/i,
+  });
+  const reason = longIncompatibleOption.getByText(
+    'This model cannot accept the text categorization request shape required by this feature and should remain readable on multiple lines.',
+  );
+  const [optionBox, optionButtonBox, reasonBox] = await Promise.all([
+    longIncompatibleOption.boundingBox(),
+    longIncompatibleOption.getByRole('button').boundingBox(),
+    reason.boundingBox(),
+  ]);
+  if (!optionBox || !optionButtonBox || !reasonBox) {
+    throw new Error('expected a readable long model compatibility warning');
+  }
+  expect(optionButtonBox.x).toBeCloseTo(optionBox.x, 0);
+  expect(optionButtonBox.width).toBeCloseTo(optionBox.width, 0);
+  expect(reasonBox.y).toBeGreaterThanOrEqual(optionBox.y);
+  expect(reasonBox.y + reasonBox.height).toBeLessThanOrEqual(
+    optionBox.y + optionBox.height + 1,
+  );
+
+  const listDimensions = await listbox.evaluate(element => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(listDimensions.scrollHeight).toBeGreaterThan(
+    listDimensions.clientHeight,
+  );
+  await longIncompatibleOption.scrollIntoViewIfNeeded();
+  await expect(longIncompatibleOption).toBeVisible();
+}
+
 function boxesDoNotOverlap(
   first: { x: number; y: number; width: number; height: number },
   second: { x: number; y: number; width: number; height: number },
@@ -332,6 +409,95 @@ test.describe('Native finance workflows', () => {
     expect(reviewBox.x + reviewBox.width).toBeLessThanOrEqual(
       dialogBox.x + dialogBox.width + 1,
     );
+  });
+
+  test('keeps long model-picker rows readable at narrow widths and browser zoom', async () => {
+    await page.route('**/validate', async route => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            displayName: 'E2E user',
+            loginMethod: 'password',
+            permission: 'ADMIN',
+            prefs: {},
+            userId: 'e2e-user',
+            userName: 'e2e-user',
+          },
+          status: 'ok',
+        }),
+      });
+    });
+    await page.route('**/finance/status', async route => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: { configured: true, source: 'budget' },
+          status: 'ok',
+        }),
+      });
+    });
+    await page.route('**/finance/models*', async route => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            models: [
+              {
+                compatibility: 'compatible',
+                id: 'gpt-5.6-terra',
+                isRecommended: true,
+                reason: null,
+              },
+              {
+                compatibility: 'compatible',
+                id: 'gpt-compatible-model-with-a-very-long-provider-generated-identifier',
+                isRecommended: false,
+                reason: null,
+              },
+              {
+                compatibility: 'incompatible',
+                id: 'gpt-incompatible-model-with-a-very-long-provider-generated-identifier',
+                isRecommended: false,
+                reason:
+                  'This model cannot accept the text categorization request shape required by this feature and should remain readable on multiple lines.',
+              },
+            ],
+          },
+          status: 'ok',
+        }),
+      });
+    });
+    await page.evaluate(async serverUrl => {
+      await window.$send('set-server-url', { url: serverUrl, validate: false });
+      await window.$send('subscribe-set-token', { token: 'e2e-token' });
+      await window.$send('save-prefs', { cloudFileId: 'e2e-file-id' });
+    }, new URL('/', page.url()).origin);
+    await page.reload();
+    await page.waitForFunction(() => typeof window.__navigate === 'function');
+
+    await page.setViewportSize({ width: 350, height: 800 });
+    await page.evaluate(() => window.__navigate?.('/settings'));
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    const search = page.getByRole('combobox', {
+      name: 'Search OpenAI models',
+    });
+    await search.scrollIntoViewIfNeeded();
+    await search.click();
+    await expect(
+      page.getByRole('option', {
+        name: /gpt-incompatible-model-with-a-very-long-provider-generated-identifier/i,
+      }),
+    ).toBeVisible();
+
+    await expectModelPickerLayout(page);
+    await page.setViewportSize({ width: 320, height: 800 });
+    await expectModelPickerLayout(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate(() => {
+      document.body.style.zoom = '1.25';
+    });
+    await expectModelPickerLayout(page);
   });
 
   test('keeps review controls separate and labeled at desktop and narrow widths', async () => {

@@ -147,6 +147,11 @@ describe('FinanceCategorizationSettings', () => {
     ).toBeNull();
     expect(screen.getByText('Expenses')).toBeVisible();
     expect(screen.getAllByText('Income')).toHaveLength(2);
+    expect(
+      screen.getAllByText(
+        'Keep guidance short and specific. Longer guidance increases API cost and may reduce classification consistency.',
+      ),
+    ).toHaveLength(1);
 
     await user.click(screen.getByRole('checkbox', { name: 'Rent' }));
     expect(screen.getByRole('checkbox', { name: 'Rent' })).not.toBeChecked();
@@ -181,7 +186,12 @@ describe('FinanceCategorizationSettings', () => {
       screen.getAllByText(
         'Keep guidance short and specific. Longer guidance increases API cost and may reduce classification consistency.',
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(
+      within(dialog).queryByText(
+        'Keep guidance short and specific. Longer guidance increases API cost and may reduce classification consistency.',
+      ),
+    ).toBeNull();
     const expandedGuidance = within(dialog).getByRole('textbox');
     await user.type(
       expandedGuidance,
@@ -233,6 +243,57 @@ describe('FinanceCategorizationSettings', () => {
       ).toBeNull();
     });
     expect(expandButton).toHaveFocus();
+  });
+
+  it('expands and exactly persists multiline categorization instructions', async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<FinanceCategorizationSettings />);
+    const categorizationInstructions = screen.getByRole('textbox', {
+      name: 'Categorization instructions',
+    });
+    const multilineInstructions =
+      '\nFirst paragraph.\n\nSecond paragraph with more detail.\n';
+
+    expect(categorizationInstructions.tagName).toBe('TEXTAREA');
+    await user.clear(categorizationInstructions);
+    await user.type(categorizationInstructions, multilineInstructions);
+
+    const expandButton = screen.getByRole('button', {
+      name: 'Expand categorization instructions',
+    });
+    await user.click(expandButton);
+    const dialog = screen.getByRole('dialog', {
+      name: 'Categorization instructions',
+    });
+    expect(within(dialog).getByRole('textbox')).toHaveValue(
+      multilineInstructions,
+    );
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(expandButton).toHaveFocus());
+    await user.click(
+      screen.getByRole('button', { name: 'Save categorization settings' }),
+    );
+
+    const savedSettings =
+      mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'];
+    expect(JSON.parse(savedSettings).masterPrompt).toBe(multilineInstructions);
+
+    mocks.state.serializedSettings = savedSettings;
+    act(() => resolveSaveSettings?.());
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Settings saved',
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+      'Edited after save',
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+    unmount();
+    render(<FinanceCategorizationSettings />);
+    expect(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+    ).toHaveValue(multilineInstructions);
   });
 
   it('shows Settings saved only after persistence succeeds and clears it on edits', async () => {

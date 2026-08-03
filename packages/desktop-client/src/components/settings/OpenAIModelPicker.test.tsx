@@ -1,7 +1,7 @@
 import type { ComponentProps } from 'react';
 
 import type { FinanceCategorizationModel } from '@actual-app/core/types/finance';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -67,6 +67,77 @@ describe('OpenAIModelPicker', () => {
     expect(
       screen.getByRole('option', { name: /unknown-model/i }),
     ).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('keeps grouped variable-height options in a scrollable readable layout', async () => {
+    const user = userEvent.setup();
+    const longCompatibleModelId =
+      'gpt-compatible-model-with-a-very-long-provider-generated-identifier';
+    const longIncompatibleModelId =
+      'gpt-incompatible-model-with-a-very-long-provider-generated-identifier';
+    const longCompatibilityReason =
+      'This model cannot accept the text categorization request shape required by this feature and should remain readable on multiple lines.';
+    renderPicker({
+      loadModels: async () => ({
+        models: [
+          models[2]!,
+          {
+            compatibility: 'compatible',
+            id: longCompatibleModelId,
+            isRecommended: false,
+            reason: null,
+          },
+          {
+            compatibility: 'incompatible',
+            id: longIncompatibleModelId,
+            isRecommended: false,
+            reason: longCompatibilityReason,
+          },
+        ],
+      }),
+    });
+
+    const search = screen.getByRole('combobox', {
+      name: 'Search OpenAI models',
+    });
+    expect(search).toHaveStyle({ flex: '1 1 180px', minWidth: 0 });
+    await user.click(search);
+
+    const listbox = await screen.findByRole('listbox', {
+      name: 'Available OpenAI models',
+    });
+    expect(listbox).toHaveStyle({
+      maxHeight: 220,
+      overflowY: 'auto',
+      width: '100%',
+    });
+
+    for (const groupName of [
+      'Recommended',
+      'Other compatible models',
+      'Incompatible models',
+    ]) {
+      expect(screen.getByRole('group', { name: groupName })).toHaveStyle({
+        flexShrink: 0,
+        width: '100%',
+      });
+    }
+
+    const incompatibleOption = screen.getByRole('option', {
+      name: new RegExp(longIncompatibleModelId, 'i'),
+    });
+    expect(incompatibleOption).toHaveStyle({
+      flexShrink: 0,
+      width: '100%',
+    });
+    expect(within(incompatibleOption).getByRole('button')).toHaveStyle({
+      alignItems: 'stretch',
+      whiteSpace: 'normal',
+      width: '100%',
+    });
+    expect(
+      within(incompatibleOption).getByText(longCompatibilityReason),
+    ).toHaveStyle({ overflowWrap: 'anywhere', width: '100%' });
   });
 
   it('searches and selects a compatible model with the keyboard', async () => {

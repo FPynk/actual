@@ -29,6 +29,10 @@ type PickerState =
 
 const recommendedModelIds = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
 
+function getModelOptionId(modelId: string) {
+  return `openai-model-${modelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
 function getErrorMessage(reason: string, t: (key: string) => string) {
   switch (reason) {
     case 'not-configured':
@@ -153,6 +157,13 @@ export function OpenAIModelPicker({
     );
   }, [onSelectionValidityChange, pickerState, value]);
 
+  useEffect(() => {
+    if (!activeModelId) return;
+    document
+      .getElementById(getModelOptionId(activeModelId))
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeModelId]);
+
   const moveActiveModel = (direction: 1 | -1) => {
     if (selectableVisibleModels.length === 0) return;
     const currentIndex = selectableVisibleModels.findIndex(
@@ -179,14 +190,12 @@ export function OpenAIModelPicker({
     <FormField style={{ width: '100%' }}>
       <FormLabel title={t('Model')} htmlFor="openai-model-search" />
       <View style={{ gap: 8 }}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           <Input
             id="openai-model-search"
             aria-label={t('Search OpenAI models')}
             aria-activedescendant={
-              activeModelId
-                ? `openai-model-${activeModelId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
-                : undefined
+              activeModelId ? getModelOptionId(activeModelId) : undefined
             }
             aria-autocomplete="list"
             aria-controls="openai-model-listbox"
@@ -213,6 +222,7 @@ export function OpenAIModelPicker({
             }}
             placeholder={t('Search available OpenAI models')}
             role="combobox"
+            style={{ flex: '1 1 180px', minWidth: 0 }}
             value={search}
           />
           <Button
@@ -247,7 +257,9 @@ export function OpenAIModelPicker({
               border: `1px solid ${theme.tableBorder}`,
               borderRadius: 4,
               maxHeight: 220,
+              overscrollBehavior: 'contain',
               overflowY: 'auto',
+              width: '100%',
             }}
           >
             {[
@@ -271,13 +283,19 @@ export function OpenAIModelPicker({
               },
             ].map(group =>
               group.models.length > 0 ? (
-                <View key={group.label} aria-label={group.label} role="group">
+                <View
+                  key={group.label}
+                  aria-label={group.label}
+                  role="group"
+                  style={{ flexShrink: 0, width: '100%' }}
+                >
                   <h3
                     style={{
                       color: theme.pageTextSubdued,
                       fontWeight: 600,
+                      lineHeight: 1.35,
                       margin: 0,
-                      padding: 8,
+                      padding: '8px 10px',
                     }}
                   >
                     {group.label}
@@ -290,7 +308,7 @@ export function OpenAIModelPicker({
                     return (
                       <div
                         key={model.id}
-                        id={`openai-model-${model.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`}
+                        id={getModelOptionId(model.id)}
                         aria-label={`${model.id}${
                           model.isRecommended ? ` (${t('Recommended')})` : ''
                         }${
@@ -301,16 +319,22 @@ export function OpenAIModelPicker({
                         aria-selected={isSelected}
                         aria-disabled={isDisabled || !isCompatible}
                         role="option"
+                        style={{ flexShrink: 0, width: '100%' }}
                       >
                         <Button
                           isDisabled={isDisabled || !isCompatible}
                           onPress={() => selectModel(model.id)}
                           style={{
-                            alignItems: 'flex-start',
+                            alignItems: 'stretch',
                             borderRadius: 0,
+                            boxSizing: 'border-box',
                             flexDirection: 'column',
+                            gap: 4,
+                            justifyContent: 'flex-start',
+                            minWidth: 0,
                             padding: 8,
                             textAlign: 'left',
+                            whiteSpace: 'normal',
                             width: '100%',
                           }}
                           variant={
@@ -319,14 +343,30 @@ export function OpenAIModelPicker({
                               : 'menu'
                           }
                         >
-                          <Text style={{ fontWeight: 600 }}>
+                          <Text
+                            style={{
+                              display: 'block',
+                              fontWeight: 600,
+                              lineHeight: 1.35,
+                              overflowWrap: 'anywhere',
+                              width: '100%',
+                            }}
+                          >
                             {model.id}
                             {model.isRecommended && ` (${t('Recommended')})`}
                             {isUnavailableSavedModel &&
                               ` (${t('Unavailable')})`}
                           </Text>
                           {model.reason && (
-                            <Text style={{ color: theme.pageTextSubdued }}>
+                            <Text
+                              style={{
+                                color: theme.pageTextSubdued,
+                                display: 'block',
+                                lineHeight: 1.35,
+                                overflowWrap: 'anywhere',
+                                width: '100%',
+                              }}
+                            >
                               {model.reason}
                             </Text>
                           )}

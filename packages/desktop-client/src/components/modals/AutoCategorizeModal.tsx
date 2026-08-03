@@ -99,7 +99,7 @@ function parseCategorizationSettings(
       masterPrompt:
         typeof settings.masterPrompt === 'string' &&
         settings.masterPrompt.trim().length > 0
-          ? settings.masterPrompt.trim()
+          ? settings.masterPrompt
           : defaultFinanceCategorizationSettings.masterPrompt,
       model:
         typeof settings.model === 'string' && settings.model.trim()
