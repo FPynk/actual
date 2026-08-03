@@ -46,6 +46,7 @@ import { SelectedTransactionsButton } from '#components/transactions/SelectedTra
 import { useDateFormat } from '#hooks/useDateFormat';
 import { useLocale } from '#hooks/useLocale';
 import { useLocalPref } from '#hooks/useLocalPref';
+import { useSelectedItems } from '#hooks/useSelected';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
@@ -201,6 +202,7 @@ export function AccountHeader({
   const dispatch = useDispatch();
 
   const [reconcileOpen, setReconcileOpen] = useState(false);
+  const selectedTransactionIds = useSelectedItems();
   const searchInput = useRef<HTMLInputElement>(null);
   const reconcileRef = useRef(null);
   const splitsExpanded = useSplitsExpanded();
@@ -400,7 +402,10 @@ export function AccountHeader({
             {/* @ts-expect-error fix me */}
             <FilterButton onApply={onApplyFilter} />
           </View>
-          <Button variant="bare" onPress={() => onAutoCategorize([])}>
+          <Button
+            variant="bare"
+            onPress={() => onAutoCategorize([...selectedTransactionIds])}
+          >
             <Trans>Auto-categorize</Trans>
           </Button>
           <View style={{ flex: 1 }} />

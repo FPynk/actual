@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import express from 'express';
 
 import { isAdmin } from './account-db';
@@ -13,8 +15,184 @@ const maxConcurrentRequests = 2;
 const maxCandidatesPerRequest = 25;
 const maximumRetryDelayMs = 5_000;
 const requestTimeoutMs = 30_000;
+const modelListCacheDurationMs = 60_000;
+const modelListRequestTimeoutMs = 10_000;
+const modelCompatibilityPolicyVersion = 1;
 const activeRequestScopes = new Set();
 let activeProviderRequests = 0;
+const modelListCache = new Map();
+
+const recommendedModelIds = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+const openAiOwnedByValues = new Set(['openai', 'openai-internal', 'system']);
+const compatibleModelIdPatterns = [
+  /^gpt-5\.6-(?:sol|terra|luna)(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^gpt-5-chat-latest(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^gpt-5(?:\.(?:1|2|4|5))?(?:-(?:mini|nano|pro))?(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^gpt-4\.1(?:-(?:mini|nano))?(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^gpt-4o(?:-mini)?(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^o(?:1|3)(?:-(?:mini|pro))?(?:-\d{4}-\d{2}-\d{2})?$/,
+  /^o4-mini(?:-\d{4}-\d{2}-\d{2})?$/,
+];
+
+function isFineTunedModelId(modelId) {
+  return modelId.startsWith('ft:') || modelId.includes(':ft-');
+}
+
+export function classifyOpenAiCategorizationModel(modelId) {
+  const isRecommended = recommendedModelIds.includes(modelId);
+  const isCompatible = compatibleModelIdPatterns.some(pattern =>
+    pattern.test(modelId),
+  );
+  return {
+    compatibility: isCompatible ? 'compatible' : 'incompatible',
+    id: modelId,
+    isRecommended,
+    reason: isCompatible
+      ? null
+      : `Model compatibility policy ${modelCompatibilityPolicyVersion} has not verified this model for categorization.`,
+  };
+}
+
+function isValidProviderModel(model) {
+  return (
+    model &&
+    typeof model === 'object' &&
+    validNonEmptyString(model.id, 100) &&
+    model.id === model.id.trim() &&
+    validNonEmptyString(model.owned_by, 100)
+  );
+}
+
+function parseProviderModelList(response) {
+  if (
+    !response ||
+    typeof response !== 'object' ||
+    !Array.isArray(response.data) ||
+    !response.data.every(isValidProviderModel)
+  ) {
+    return null;
+  }
+
+  const modelIds = new Set();
+  for (const model of response.data) {
+    if (modelIds.has(model.id)) return null;
+    modelIds.add(model.id);
+  }
+
+  return response.data
+    .filter(
+      model =>
+        openAiOwnedByValues.has(model.owned_by) &&
+        !isFineTunedModelId(model.id),
+    )
+    .map(model => classifyOpenAiCategorizationModel(model.id.trim()))
+    .sort((left, right) => {
+      const leftRecommendationIndex = recommendedModelIds.indexOf(left.id);
+      const rightRecommendationIndex = recommendedModelIds.indexOf(right.id);
+      if (leftRecommendationIndex !== -1 || rightRecommendationIndex !== -1) {
+        return (
+          (leftRecommendationIndex === -1
+            ? Number.MAX_SAFE_INTEGER
+            : leftRecommendationIndex) -
+          (rightRecommendationIndex === -1
+            ? Number.MAX_SAFE_INTEGER
+            : rightRecommendationIndex)
+        );
+      }
+      return left.id.localeCompare(right.id);
+    });
+}
+
+export function clearOpenAiModelListCache() {
+  modelListCache.clear();
+}
+
+export async function requestOpenAiCategorizationModels(
+  apiKey,
+  { fetchFunction = fetch } = {},
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    modelListRequestTimeoutMs,
+  );
+  try {
+    let response;
+    try {
+      response = await fetchFunction('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      return {
+        error:
+          error instanceof Error && error.name === 'AbortError'
+            ? 'provider-timeout'
+            : 'provider-unavailable',
+      };
+    }
+    if (
+      !response ||
+      typeof response.ok !== 'boolean' ||
+      typeof response.json !== 'function'
+    ) {
+      return { error: 'invalid-provider-response' };
+    }
+    if (!response.ok) {
+      return {
+        error:
+          response.status === 401 || response.status === 403
+            ? 'provider-authentication-failed'
+            : 'provider-unavailable',
+      };
+    }
+    let responseBody;
+    try {
+      responseBody = await response.json();
+    } catch (error) {
+      return {
+        error:
+          controller.signal.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'provider-timeout'
+            : 'invalid-provider-response',
+      };
+    }
+    const parsed = parseProviderModelList(responseBody);
+    return parsed ? { models: parsed } : { error: 'invalid-provider-response' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function createCredentialFingerprint(apiKey) {
+  return createHash('sha256').update(apiKey).digest('hex');
+}
+
+async function getCachedOpenAiCategorizationModels({
+  apiKey,
+  cacheKey,
+  forceRefresh,
+}) {
+  const cached = modelListCache.get(cacheKey);
+  const credentialFingerprint = createCredentialFingerprint(apiKey);
+  if (
+    !forceRefresh &&
+    cached?.credentialFingerprint === credentialFingerprint &&
+    Date.now() - cached.createdAt < modelListCacheDurationMs
+  ) {
+    return { models: cached.models };
+  }
+
+  const result = await requestOpenAiCategorizationModels(apiKey);
+  if ('error' in result) return result;
+  modelListCache.set(cacheKey, {
+    createdAt: Date.now(),
+    credentialFingerprint,
+    models: result.models,
+  });
+  return result;
+}
 
 function getProposalSchema(candidateCount) {
   return {
@@ -449,10 +627,36 @@ app.get('/status', (req, res) => {
     .send({ status: 'ok', data: { configured: Boolean(key), source } });
 });
 
+app.get('/models', async (req, res) => {
+  const { key } = getConfiguredOpenAiKey(res.locals.fileId);
+  if (!key) {
+    res.status(409).send({ status: 'error', reason: 'not-configured' });
+    return;
+  }
+
+  const result = await getCachedOpenAiCategorizationModels({
+    apiKey: key,
+    cacheKey: res.locals.fileId,
+    forceRefresh: req.query.refresh === '1',
+  });
+  if ('error' in result) {
+    res.status(502).send({ status: 'error', reason: result.error });
+    return;
+  }
+  res.status(200).send({ status: 'ok', data: { models: result.models } });
+});
+
 app.post('/categorize', async (req, res) => {
   const request = validateCategorizationRequest(req.body);
   if (!request) {
     res.status(400).send({ status: 'error', reason: 'invalid-request' });
+    return;
+  }
+  if (
+    classifyOpenAiCategorizationModel(request.model).compatibility !==
+    'compatible'
+  ) {
+    res.status(400).send({ status: 'error', reason: 'incompatible-model' });
     return;
   }
   const { key } = getConfiguredOpenAiKey(res.locals.fileId);

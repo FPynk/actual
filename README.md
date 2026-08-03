@@ -94,8 +94,16 @@ next scheduled attempt.
 
 ### Review and automation tools
 
-Open **Settings > AI transaction categorization** to configure a model,
-instructions, categories the AI may use, and optional category guidance. Enter
+Open **Settings > AI transaction categorization** to choose a model,
+instructions, categories the AI may use, and optional category guidance. The
+searchable model picker loads the official models currently available to the
+configured OpenAI project and API key. Recommended categorization models are
+listed first. Other known-compatible models can be selected; models that are
+not suitable for Actual's text and structured-output request remain visible but
+disabled. Availability differs between projects and keys, and not every model
+returned by the OpenAI Models API can categorize transactions. Use **Refresh
+models** after changing model access. A saved choice that is no longer returned
+stays visible as **Unavailable** and is never silently replaced. Enter
 an API key there only for a local server you control, or have the server
 operator provide `OPENAI_API_KEY` in the launch environment. The key is held
 server-side, never returned to the browser, synchronized with the budget, or
@@ -106,9 +114,9 @@ Before each categorization preview, Actual tells you what it will send to
 OpenAI: selected transaction descriptions, payees, dates, amounts, currency,
 account names, the selected category names/guidance, and your instruction. It
 does not send the API key, transaction IDs, notes, attachments, balances,
-budget name, or unselected transactions, and requests disable provider-side
-response storage. Suggestions are reviewed before applying; check them and use
-Actual undo if needed.
+budget name, or transactions outside the scope you choose, and requests
+disable provider-side response storage. Suggestions are reviewed before
+applying; check them and use Actual undo if needed.
 
 After applying a suggestion, the review can offer **Create merchant rule**.
 Use it to open Actual's normal Rule Editor and normalize an imported merchant

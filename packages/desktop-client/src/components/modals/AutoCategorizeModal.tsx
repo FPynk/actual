@@ -292,6 +292,7 @@ export function AutoCategorizeModal({
     setAcceptedDisclosure(false);
     setStage('requesting');
     try {
+      let providerError: string | null = null;
       const result = await requestCategorizationProposalsSequentially({
         candidates: preparedCandidates,
         allowedCategoryIds,
@@ -308,7 +309,10 @@ export function AutoCategorizeModal({
             })),
             candidates: batch.map(toCategorizationGatewayCandidate),
           });
-          if ('error' in result) throw new Error(result.error);
+          if ('error' in result) {
+            providerError = result.error;
+            throw new Error(result.error);
+          }
           return result.proposals.map(proposal => ({
             candidateId: proposal.candidate_id,
             categoryId: proposal.category_id,
@@ -336,9 +340,14 @@ export function AutoCategorizeModal({
           return;
         }
         setError(
-          t(
-            'OpenAI did not return valid suggestions. No transactions were changed.',
-          ),
+          providerError === 'provider-request-failed' ||
+            providerError === 'incompatible-model'
+            ? t(
+                'OpenAI rejected the selected model or request. Choose another compatible model or refresh the model list. No transactions were changed.',
+              )
+            : t(
+                'OpenAI did not return valid suggestions. No transactions were changed.',
+              ),
         );
         setStage('consent');
         return;
@@ -366,12 +375,18 @@ export function AutoCategorizeModal({
         );
       }
       setStage('review');
-    } catch {
+    } catch (requestError) {
       if (!isMountedRef.current) return;
       setError(
-        t(
-          'OpenAI did not return valid suggestions. No transactions were changed.',
-        ),
+        requestError instanceof Error &&
+          (requestError.message === 'provider-request-failed' ||
+            requestError.message === 'incompatible-model')
+          ? t(
+              'OpenAI rejected the selected model or request. Choose another compatible model or refresh the model list. No transactions were changed.',
+            )
+          : t(
+              'OpenAI did not return valid suggestions. No transactions were changed.',
+            ),
       );
       setStage('consent');
     } finally {
@@ -530,25 +545,50 @@ export function AutoCategorizeModal({
 
             {stage === 'consent' && (
               <>
-                <Text>
-                  <Trans count={preparedCandidates.length}>
-                    {{ count: preparedCandidates.length }} eligible expenses
-                    will use{' '}
-                    {{ requests: Math.ceil(preparedCandidates.length / 25) }}
-                    sequential OpenAI requests.{' '}
-                    {{ skipped: skippedTransactionCount }}
-                    ineligible rows will be skipped.
-                  </Trans>
-                </Text>
+                {scopeKind === 'selected' ? (
+                  <Text>
+                    <Trans>
+                      Selected transactions:{' '}
+                      {{ selected: selectedTransactionIds.length }}. Eligible
+                      expenses: {{ eligible: preparedCandidates.length }}.
+                      Sequential OpenAI requests:{' '}
+                      {{ requests: Math.ceil(preparedCandidates.length / 25) }}.
+                      Skipped ineligible selected rows:{' '}
+                      {{ skipped: skippedTransactionCount }}.
+                    </Trans>
+                  </Text>
+                ) : (
+                  <Text>
+                    <Trans>
+                      Eligible expenses:{' '}
+                      {{ eligible: preparedCandidates.length }}. Sequential
+                      OpenAI requests:{' '}
+                      {{ requests: Math.ceil(preparedCandidates.length / 25) }}.
+                      Skipped ineligible rows:{' '}
+                      {{ skipped: skippedTransactionCount }}.
+                    </Trans>
+                  </Text>
+                )}
                 <Information>
-                  <Trans>
-                    Descriptions, payees, dates, amounts, currency, account
-                    names, your selected category names and guidance, and your
-                    custom instruction will be sent to OpenAI to generate
-                    suggestions. No OpenAI API key, Actual transaction IDs,
-                    notes, attachments, balances, budget name, or unselected
-                    transactions are sent.
-                  </Trans>
+                  {scopeKind === 'selected' ? (
+                    <Trans>
+                      Descriptions, payees, dates, amounts, currency, account
+                      names, your selected category names and guidance, and your
+                      custom instruction will be sent to OpenAI to generate
+                      suggestions. No OpenAI API key, Actual transaction IDs,
+                      notes, attachments, balances, budget name, or unchecked
+                      transactions are sent.
+                    </Trans>
+                  ) : (
+                    <Trans>
+                      Descriptions, payees, dates, amounts, currency, account
+                      names, your selected category names and guidance, and your
+                      custom instruction will be sent to OpenAI to generate
+                      suggestions. No OpenAI API key, Actual transaction IDs,
+                      notes, attachments, balances, budget name, or transactions
+                      outside this chosen scope are sent.
+                    </Trans>
+                  )}
                 </Information>
                 <LabeledCheckbox
                   id="categorization-privacy-consent"

@@ -178,6 +178,16 @@ editable global prompt, allowed category IDs/names/guidance, and the minimum
 selected transaction fields. It explicitly forbids categories outside the
 allow-list and requires `null` on uncertainty.
 
+Model discovery uses the authenticated server and its existing server-owned
+key to call OpenAI's Models API. The browser receives only model IDs plus
+Actual's versioned compatibility result. The picker shows every OpenAI-owned,
+non-fine-tuned model returned for that project/key, enables only model families
+verified for the Responses API and structured categorization output, and keeps
+unknown or incompatible models visible but disabled. Model access is
+project/key-dependent. A short budget-and-key-isolated cache reduces provider
+calls; explicit refresh bypasses it. A missing saved model remains visible as
+unavailable and is not replaced automatically.
+
 Use the OpenAI structured-output capability through the official server SDK.
 Validate schema, transaction IDs, category IDs, size limits, and response count
 before returning. Rate-limit and cap batches; display an estimated count and
