@@ -29,8 +29,8 @@ Native Actual gains these workflows for the currently open budget:
 - recurring-payment detection and review, distinguishing optional subscriptions
   from household or financial bills, with an approved candidate creating or
   updating an Actual schedule;
-- Amazon export and user-supplied `.eml` import, charge matching, and item
-  detail in a read-only review; and
+- Amazon export and user-supplied `.eml` import, charge matching, item detail,
+  and explicitly reviewed native notes/categories/splits; and
 - manual and scheduled use of Actual's existing bank-sync providers, including
   SimpleFIN.
 
@@ -46,20 +46,24 @@ native pass targets the web app served by an Actual sync server; desktop secret
 storage is a follow-up unless its existing secure-storage seam is directly
 reusable.
 
-### Future Amazon apply path
+### Reviewed Amazon apply path
 
-Applying approved Amazon notes, categories, or splits is future work, not part
-of the implemented read-only review. If added, it must use normal Actual
-mutations, require explicit approval, and never auto-apply a fuzzy match or
-change reconciled rows.
+Amazon apply is an explicit, native Actual action rather than an automatic
+import side effect. The server rebuilds the saved source and revalidates the
+current target before changing it. A single allocation can set a selected
+category; multiple allocations can create balanced native splits, and the user
+may append a concise Amazon note without replacing existing notes. Ambiguous,
+stale, reconciled, transfer, off-budget, and existing-split targets never
+write. The existing Actual undo history restores the ledger, and an applied
+review can be reopened. No Amazon data is sent to a Companion or another app.
 
 ## What moves and what is removed
 
-| Keep/adapt from Companion | Remove with Companion |
-| --- | --- |
+| Keep/adapt from Companion                                                                                                                                         | Remove with Companion                                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Pure reconciliation scoring, subscription detection, Amazon parsers/matcher, report calculations, classification DTO validation, fixtures, and synthetic E2E data | `@actual-app/finance-companion`, its HTTP routes/UI, port 4100, local principal/session/CSRF code, Companion SQLite and migrations, integrity anchor, adapter process/queue/lock, Companion configuration, backup/restore, Docker image, and `start:finance` |
-| Deterministic explainability/reason codes and stale-target checks | Companion copies of Actual accounts, categories, transactions, provider credentials, and source-identity registry |
-| Existing Actual import identity hardening and bank-sync implementation | Any direct Actual SQLite access or API-directory ownership scheme |
+| Deterministic explainability/reason codes and stale-target checks                                                                                                 | Companion copies of Actual accounts, categories, transactions, provider credentials, and source-identity registry                                                                                                                                            |
+| Existing Actual import identity hardening and bank-sync implementation                                                                                            | Any direct Actual SQLite access or API-directory ownership scheme                                                                                                                                                                                            |
 
 Delete the package and root launcher only after every native route has shipped,
 the migration is complete, and the native end-to-end suite passes. Until then it
@@ -154,15 +158,15 @@ split-child, category-missing, or reconciled target returns `stale`/`blocked`
 and changes nothing. Every successful batch uses Actual's existing mutation
 transaction and undo history. Reconciled transactions are read-only evidence.
 
-| Flow | Native flow | Allowed write |
-| --- | --- | --- |
-| Imports and reconciliation | Existing parser/import preview retains strict `(account, imported_id)` protection. Exact repeated IDs are ignored/updated by the current reconciler. Candidate scoring compares amount, normalized payee, date, pending/posted state and source evidence; fuzzy candidates always open review. | User chooses merge/keep-both/defer. Merge revalidates both rows and uses one narrow core operation that preserves the chosen canonical row's protected/manual fields and deletes only the approved redundant, unreconciled row. |
-| OpenAI categorization | User chooses scope and allowed categories, optionally includes already categorized rows, and reviews the explicit disclosure. Server sends only selected description/payee, amount, date, account label, allowed categories and editable guidance. The cheap configured model must return JSON `{transactionId, categoryId|null, confidence, reason}`. IDs and categories are validated locally; invalid/low-confidence answers are proposals only. | User applies selected proposals; one core batch sets category only. It creates no rule and does not overwrite an existing category unless the explicit checkbox was selected. |
-| Merchant normalization | Candidate logic groups imported-payee aliases against confirmed Actual payees; UI shows evidence and a suggested existing payee. | Approval creates a normal imported-payee rule using Actual's rule mutation. Rejection/suppression is metadata only. |
-| Recurring payments | Detector examines ledger history, cadence, amount variance, gaps and normalized payee. It reuses existing schedules as evidence and shows cadence/reason/confidence. | Approval creates/updates one Actual schedule through its existing schedule mutation. No past transaction changes. |
-| Amazon | User uploads an Amazon data export or `.eml`; parse, normalize, match charges, and show item/tax/shipping/refund evidence. Raw input is discarded after parse; normalized review metadata is persisted so the review can reopen. Matching and reopening never change the ledger. | None. The implemented review is read-only; the future Amazon apply path is described above. |
-| Bank sync | Manual sync remains Actual's action. The device-local scheduler runs only while the Actual browser tab is open (and resumes when it is open again), then invokes the existing per-account sync mutation for each selected account. It has no server-side schedule, CLI invocation, or headless job. | Existing provider sync only; downstream reconciliation rules still apply. |
-| Reporting | Query current Actual transactions using the selected report range/filter; pure integer-money calculations provide total, average day/week/month, median, category and merchant breakdowns, month-over-month change, and rolling 30-day spending while honoring transfers, refunds and split children. | None. |
+| Flow                       | Native flow                                                                                                                                                                                                                                                                                                                | Allowed write                                                                                                                                                                                                                                                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Imports and reconciliation | Existing parser/import preview retains strict `(account, imported_id)` protection. Exact repeated IDs are ignored/updated by the current reconciler. Candidate scoring compares amount, normalized payee, date, pending/posted state and source evidence; fuzzy candidates always open review.                             | User chooses merge/keep-both/defer. Merge revalidates both rows and uses one narrow core operation that preserves the chosen canonical row's protected/manual fields and deletes only the approved redundant, unreconciled row.                                                                                                             |
+| OpenAI categorization      | User chooses scope and allowed categories, optionally includes already categorized rows, and reviews the explicit disclosure. Server sends only selected description/payee, amount, date, account label, allowed categories and editable guidance. The cheap configured model must return JSON `{transactionId, categoryId | null, confidence, reason}`. IDs and categories are validated locally; invalid/low-confidence answers are proposals only.                                                                                                                                                                                                                    | User applies selected proposals; one core batch sets category only. It creates no rule and does not overwrite an existing category unless the explicit checkbox was selected. |
+| Merchant normalization     | Candidate logic groups imported-payee aliases against confirmed Actual payees; UI shows evidence and a suggested existing payee.                                                                                                                                                                                           | Approval creates a normal imported-payee rule using Actual's rule mutation. Rejection/suppression is metadata only.                                                                                                                                                                                                                         |
+| Recurring payments         | Detector examines ledger history, cadence, amount variance, gaps and normalized payee. It reuses existing schedules as evidence and shows cadence/reason/confidence.                                                                                                                                                       | Approval creates/updates one Actual schedule through its existing schedule mutation. No past transaction changes.                                                                                                                                                                                                                           |
+| Amazon                     | User uploads an Amazon data export or `.eml`; parse, normalize, match charges, and show item/tax/shipping/refund evidence. Raw input is discarded after parse; normalized review metadata is persisted so the review can reopen.                                                                                           | Only an explicit reviewed apply may write: a single allocation sets a selected category, while multiple allocations become balanced native splits; a concise note is optional. The server revalidates source and target, blocks ambiguous/stale/reconciled/transfer/off-budget/existing-split targets, and Actual undo restores the ledger. |
+| Bank sync                  | Manual sync remains Actual's action. The device-local scheduler runs only while the Actual browser tab is open (and resumes when it is open again), then invokes the existing per-account sync mutation for each selected account. It has no server-side schedule, CLI invocation, or headless job.                        | Existing provider sync only; downstream reconciliation rules still apply.                                                                                                                                                                                                                                                                   |
+| Reporting                  | Query current Actual transactions using the selected report range/filter; pure integer-money calculations provide total, average day/week/month, median, category and merchant breakdowns, month-over-month change, and rolling 30-day spending while honoring transfers, refunds and split children.                      | None.                                                                                                                                                                                                                                                                                                                                       |
 
 ## OpenAI contract
 
@@ -201,15 +205,15 @@ suggestions are not applied automatically.
 
 ## Parallel delivery boundaries
 
-| Workstream | Owns | Must not modify |
-| --- | --- | --- |
-| Core integrity | import identity hardening, candidate/mutation commands, fixtures | UI components, server OpenAI settings |
-| Categorization | server OpenAI boundary, preferences, transaction bulk UI | reconciliation and Amazon mutation code |
-| Reports | pure metrics and Reports UI | transaction write paths |
-| Recurring | detector, native schedule review/UI | categorization and Amazon storage |
-| Amazon | parser/matcher, metadata adapter, import/review UI | generic reconciliation scoring |
-| Operations/removal | scheduler adaptation, Companion migration/removal, docs | feature behavior except integration fixes |
-| Verification | synthetic E2E, mutation/race/security regression tests | production feature implementation |
+| Workstream         | Owns                                                             | Must not modify                           |
+| ------------------ | ---------------------------------------------------------------- | ----------------------------------------- |
+| Core integrity     | import identity hardening, candidate/mutation commands, fixtures | UI components, server OpenAI settings     |
+| Categorization     | server OpenAI boundary, preferences, transaction bulk UI         | reconciliation and Amazon mutation code   |
+| Reports            | pure metrics and Reports UI                                      | transaction write paths                   |
+| Recurring          | detector, native schedule review/UI                              | categorization and Amazon storage         |
+| Amazon             | parser/matcher, metadata adapter, import/review UI               | generic reconciliation scoring            |
+| Operations/removal | scheduler adaptation, Companion migration/removal, docs          | feature behavior except integration fixes |
+| Verification       | synthetic E2E, mutation/race/security regression tests           | production feature implementation         |
 
 The core-integrity command shapes land first and are the only shared dependency
 for categorization, reconciliation, recurring schedules, and Amazon applies.
@@ -227,9 +231,10 @@ Other read-only workstreams may proceed immediately in parallel.
   client/core mechanism; lack of server disables OpenAI and bank sync,
   including the tab-bound scheduled-sync control, and shows actionable setup
   state.
-- **Amazon schema variance:** versioned parsers and fixtures, user-controlled
-  uploads, raw file deletion after parse, normalized persisted review metadata,
-  and review-only matching until an explicit apply.
+- **Amazon schema variance and ledger safety:** versioned parsers and fixtures,
+  user-controlled uploads, raw file deletion after parse, normalized persisted
+  review metadata, explicit apply only, server-side revalidation, balanced
+  splits, and Actual undo.
 - **Migration loss:** no automatic deletion, preview/confirmation, exportable
   old metadata and restart/migration E2E coverage.
 
@@ -243,11 +248,12 @@ Other read-only workstreams may proceed immediately in parallel.
   prompt/guidance, already-categorized toggle, preview, selective apply, undo,
   and server-only configurable OpenAI key/model.
 - Exact duplicate import protection is covered; fuzzy reconciliation requires
-  explicit approval, and Amazon matches remain review-only; reconciled rows are
-  never changed.
+  explicit approval. Amazon applies are also explicitly reviewed and
+  revalidated; ambiguous and reconciled rows are never changed.
 - Recurring review distinguishes optional subscriptions from household or
   financial bills. Approved recurring candidates create or update native
-  schedules through Actual commands; Amazon review remains read-only.
+  schedules through Actual commands; approved Amazon reviews use native
+  notes/categories/splits and undo.
 - Existing imports, reports, schedules, bank sync, login, backup and normal
   startup continue to work without Companion configuration.
 - Focused core/server/UI tests plus synthetic browser E2E cover happy paths,

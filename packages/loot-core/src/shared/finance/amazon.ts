@@ -72,8 +72,12 @@ export type AmazonPaymentSource = Readonly<{
 
 export type AmazonTransaction = Readonly<{
   id: string;
+  account?: string;
   amount: number;
+  category?: string | null;
+  cleared?: boolean;
   date: string;
+  notes?: string | null;
   payee?: string | null;
   payee_name?: string | null;
   imported_payee?: string | null;
@@ -926,7 +930,10 @@ function createMatch(
           ? null
           : {
               id: transaction.id,
+              account: transaction.account ?? null,
               amount: transaction.amount,
+              category: transaction.category ?? null,
+              cleared: Boolean(transaction.cleared),
               date: transaction.date,
               payeeId: transaction.payee ?? null,
               payeeName: transaction.payee_name ?? null,
@@ -934,6 +941,7 @@ function createMatch(
               isParent: Boolean(transaction.is_parent),
               isChild: Boolean(transaction.is_child),
               isStartingBalance: Boolean(transaction.starting_balance_flag),
+              notes: transaction.notes ?? null,
               reconciled: Boolean(transaction.reconciled),
               tombstone: Boolean(transaction.tombstone || transaction._deleted),
               transferId: transaction.transfer_id ?? null,

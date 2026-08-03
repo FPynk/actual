@@ -123,7 +123,7 @@ test.describe('Native finance workflows', () => {
     await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible();
   });
 
-  test('matches an Amazon JSON export in read-only review', async () => {
+  test('applies a reviewed Amazon allocation as native splits and undoes it', async () => {
     const settingsPage = await navigation.goToSettingsPage();
     await settingsPage.enableExperimentalFeature('Currency support');
     const defaultCurrency = page
@@ -155,8 +155,8 @@ test.describe('Native finance workflows', () => {
               externalOrderId: 'E2E-123-1234567',
               orderDate: '2017-01-01',
               currencyCode: 'USD',
-              itemSubtotal: 1999,
-              taxTotal: 0,
+              itemSubtotal: 1800,
+              taxTotal: 199,
               shippingTotal: 0,
               discountTotal: 0,
               giftCardTotal: 0,
@@ -165,7 +165,19 @@ test.describe('Native finance workflows', () => {
             },
           ],
           shipments: [],
-          items: [],
+          items: [
+            {
+              externalOrderId: 'E2E-123-1234567',
+              externalItemId: 'E2E-split-item',
+              title: 'Native Amazon split item',
+              quantity: 1,
+              unitAmount: 1800,
+              taxAmount: 199,
+              shippingAmount: 0,
+              discountAmount: 0,
+              refundAmount: 0,
+            },
+          ],
           refunds: [],
         }),
       ),
@@ -176,16 +188,47 @@ test.describe('Native finance workflows', () => {
       page.getByText(/Suggested transaction: Amazon E2E match on/),
     ).toBeVisible();
     const amazonReviewDialog = page.getByRole('dialog');
+    const chooseCategory = amazonReviewDialog.getByRole('button', {
+      name: 'Choose category',
+    });
+    await expect(chooseCategory).toHaveCount(2);
+    await chooseCategory.first().click();
+    await page.getByTestId('Food-category-item').click();
+    await chooseCategory.last().click();
+    await page.getByTestId('Food-category-item').click();
+
+    await amazonReviewDialog
+      .getByRole('button', { name: 'Apply to transaction' })
+      .click();
     await expect(
-      amazonReviewDialog.getByRole('button', { name: 'Close' }),
+      amazonReviewDialog.getByText(
+        /This review was applied\. Undo restores the ledger/,
+      ),
     ).toBeVisible();
-    await expect(
-      amazonReviewDialog.getByRole('button', {
-        name: /Apply|Approve|Update transaction|Create splits/i,
-      }),
-    ).toHaveCount(0);
+    await amazonReviewDialog.getByRole('button', { name: 'Close' }).click();
+
+    await expect(accountPage.transactionTable).toContainText(
+      'Native Amazon split item',
+    );
+    await expect(accountPage.transactionTable).toContainText(
+      'Amazon E2E match',
+    );
+    await expect(accountPage.transactionTable).toContainText(
+      'Amazon E2E-123-1234567',
+    );
+    await expect(accountPage.transactionTableRow).toHaveCount(3);
+    await expect(accountPage.getNthTransaction(1).category).toHaveText('Food');
+    await expect(accountPage.getNthTransaction(2).category).toHaveText('Food');
+
+    await accountPage.transactionTable.click();
+    await page.keyboard.press('Control+z');
     await expect(
       accountPage.transactionTableRow.filter({ hasText: 'Amazon E2E match' }),
     ).toHaveCount(1);
+    await expect(accountPage.transactionTableRow).toHaveCount(1);
+    await expect(accountPage.getNthTransaction(0).category).toHaveText(
+      'Categorize',
+    );
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('');
   });
 });

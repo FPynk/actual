@@ -128,9 +128,17 @@ one supported Amazon JSON export or a downloaded order, shipment, or refund
 parsing and does not connect to your mailbox. It persists only normalized review
 metadata so you can reopen the review; it does not retain the original JSON or
 email. It displays possible charge matches and item/tax/shipping/refund
-allocations, but never changes the ledger until you explicitly authorize an
-apply action. **Current limitation:** this snapshot is read-only; Amazon review
-does not yet write transaction notes, categories, or splits.
+allocations. Set Actual's default currency to match the imported file. For an
+eligible match, optionally choose categories and explicitly apply the review.
+A selected category on a single allocation updates the transaction directly;
+multiple allocations can create balanced native Actual splits. You can also
+choose to append a concise Amazon note without replacing existing notes.
+Actual rechecks the saved Amazon data and the current transaction on the server
+before writing. Ambiguous, stale, reconciled, transfer, off-budget, and
+existing-split transactions never change. The normal Actual **Undo** action
+restores the ledger. Review history remains explicit: use **Reopen review**
+before applying it again. This all happens in the normal Actual account view;
+it does not start or connect to another app.
 
 ### Expenditure reports
 

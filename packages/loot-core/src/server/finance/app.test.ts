@@ -4,19 +4,23 @@ import * as prefs from '#server/prefs';
 import { clearUndo, undo } from '#server/undo';
 import { categorizationFingerprint } from '#shared/finance-categorization';
 import { withFinanceReviewDecision } from '#shared/finance-metadata';
+import {
+  buildAmazonPaymentSources,
+  matchAmazonPayments,
+} from '#shared/finance/amazon';
 import { detectRecurringPayments } from '#shared/finance/recurring-detector';
 import { financeCategorizationPreferenceId } from '#types/finance';
 
 import {
   app,
-  isReconciliationDecision,
-  isRecurringReviewDecision,
   getAmazonReviewDecisions,
   getAmazonReviewOrders,
+  isReconciliationDecision,
+  isRecurringReviewDecision,
   reopenAmazonReviewDecision,
+  reopenRecurringReviewDecision,
   saveAmazonReviewDecision,
   saveAmazonReviewOrders,
-  reopenRecurringReviewDecision,
   saveRecurringReviewDecision,
 } from './app';
 
@@ -268,10 +272,12 @@ describe('Amazon review persistence', () => {
     await global.emptyDatabase()();
     prefs.unloadPrefs();
     await prefs.loadPrefs();
+    clearUndo();
   });
 
   afterEach(async () => {
     prefs.unloadPrefs();
+    clearUndo();
     await global.emptyDatabase()();
   });
 
@@ -325,6 +331,272 @@ describe('Amazon review persistence', () => {
     expect(await getAmazonReviewOrders()).toEqual([changedOrder]);
     expect(await getAmazonReviewDecisions()).toEqual([]);
     expect(await currentTransactions()).toEqual([]);
+  });
+
+  it('applies approved Amazon allocations as one balanced native split and one undo', async () => {
+    const splitOrder = {
+      ...syntheticOrder,
+      items: [
+        { ...syntheticOrder.items[0], unitAmount: 700 },
+        {
+          ...syntheticOrder.items[0],
+          id: 'second-synthetic-item',
+          title: 'Second synthetic item',
+          unitAmount: 599,
+        },
+      ],
+      orderId: '222-3333333-4444444',
+    };
+    await db.insertCategoryGroup({
+      id: 'amazon-expenses',
+      name: 'Amazon expenses',
+      is_income: 0,
+    });
+    await db.insertCategory({
+      id: 'amazon-household',
+      name: 'Household',
+      cat_group: 'amazon-expenses',
+      is_income: 0,
+    });
+    await db.insertCategory({
+      id: 'amazon-groceries',
+      name: 'Groceries',
+      cat_group: 'amazon-expenses',
+      is_income: 0,
+    });
+    await db.insertAccount({ id: 'amazon-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'amazon-payee', name: 'Amazon' });
+    await db.insertTransaction({
+      id: 'amazon-transaction',
+      account: 'amazon-checking',
+      amount: -1299,
+      category: null,
+      cleared: true,
+      date: '2026-08-01',
+      imported_payee: 'AMZN MKTP',
+      notes: 'Existing note',
+      payee: 'amazon-payee',
+    });
+    db.runQuery('INSERT INTO preferences (id, value) VALUES (?, ?)', [
+      'defaultCurrencyCode',
+      'USD',
+    ]);
+    await saveAmazonReviewOrders({ orders: [splitOrder] });
+    const [match] = matchAmazonPayments(
+      buildAmazonPaymentSources([splitOrder]),
+      [
+        {
+          ...(await db.getTransaction('amazon-transaction'))!,
+          payee_name: 'Amazon',
+        },
+      ],
+      'USD',
+    );
+
+    const result = await runHandler(app.handlers['finance/amazon/apply'], {
+      applyNote: true,
+      applySplit: true,
+      candidateKey: match.candidateKey,
+      categoryIdsByAllocationId: {
+        'second-synthetic-item:merchandise': 'amazon-groceries',
+        'synthetic-item:merchandise': 'amazon-household',
+      },
+      evidenceFingerprint: match.evidenceFingerprint,
+      transactionId: 'amazon-transaction',
+    });
+
+    expect(result).toEqual({
+      status: 'applied',
+      appliedFields: ['note', 'split'],
+    });
+    expect(await db.getTransaction('amazon-transaction')).toMatchObject({
+      category: null,
+      is_parent: true,
+      notes: 'Existing note\nAmazon 222-3333333-4444444',
+      payee: null,
+    });
+    expect(
+      await db.all(
+        'SELECT amount, category, notes FROM v_transactions WHERE parent_id = ? ORDER BY amount',
+        ['amazon-transaction'],
+      ),
+    ).toEqual([
+      {
+        amount: -700,
+        category: 'amazon-household',
+        notes: 'Synthetic test item',
+      },
+      {
+        amount: -599,
+        category: 'amazon-groceries',
+        notes: 'Second synthetic item',
+      },
+    ]);
+    expect(await getAmazonReviewDecisions()).toMatchObject([
+      { candidateKey: match.candidateKey, decision: 'applied' },
+    ]);
+
+    await runMutator(() => undo());
+
+    expect(await db.getTransaction('amazon-transaction')).toMatchObject({
+      category: null,
+      is_parent: false,
+      notes: 'Existing note',
+      payee: 'amazon-payee',
+    });
+    expect(
+      await db.all('SELECT id FROM v_transactions WHERE parent_id = ?', [
+        'amazon-transaction',
+      ]),
+    ).toEqual([]);
+    expect(await getAmazonReviewDecisions()).toMatchObject([
+      { candidateKey: match.candidateKey, decision: 'applied' },
+    ]);
+  });
+
+  it('applies a selected category directly for a one-allocation Amazon charge', async () => {
+    await db.insertCategoryGroup({
+      id: 'amazon-expenses',
+      name: 'Amazon expenses',
+      is_income: 0,
+    });
+    await db.insertCategory({
+      id: 'amazon-household',
+      name: 'Household',
+      cat_group: 'amazon-expenses',
+      is_income: 0,
+    });
+    await db.insertCategoryGroup({
+      id: 'amazon-income',
+      name: 'Income',
+      is_income: 1,
+    });
+    await db.insertCategory({
+      id: 'amazon-income-category',
+      name: 'Income category',
+      cat_group: 'amazon-income',
+      is_income: 1,
+    });
+    await db.insertAccount({ id: 'amazon-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'amazon-payee', name: 'Amazon' });
+    await db.insertTransaction({
+      id: 'amazon-transaction',
+      account: 'amazon-checking',
+      amount: -1299,
+      category: null,
+      date: '2026-08-01',
+      payee: 'amazon-payee',
+    });
+    db.runQuery('INSERT INTO preferences (id, value) VALUES (?, ?)', [
+      'defaultCurrencyCode',
+      'USD',
+    ]);
+    await saveAmazonReviewOrders({ orders: [syntheticOrder] });
+    const [match] = matchAmazonPayments(
+      buildAmazonPaymentSources([syntheticOrder]),
+      [
+        {
+          ...(await db.getTransaction('amazon-transaction'))!,
+          payee_name: 'Amazon',
+        },
+      ],
+      'USD',
+    );
+
+    await expect(
+      runHandler(app.handlers['finance/amazon/apply'], {
+        applyNote: false,
+        applySplit: false,
+        candidateKey: match.candidateKey,
+        categoryIdsByAllocationId: {
+          'synthetic-item:merchandise': 'amazon-income-category',
+        },
+        evidenceFingerprint: match.evidenceFingerprint,
+        transactionId: 'amazon-transaction',
+      }),
+    ).rejects.toThrow('Amazon allocation category does not exist.');
+    expect(
+      (await db.getTransaction('amazon-transaction'))?.category,
+    ).toBeNull();
+
+    const result = await runHandler(app.handlers['finance/amazon/apply'], {
+      applyNote: false,
+      applySplit: false,
+      candidateKey: match.candidateKey,
+      categoryIdsByAllocationId: {
+        'synthetic-item:merchandise': 'amazon-household',
+      },
+      evidenceFingerprint: match.evidenceFingerprint,
+      transactionId: 'amazon-transaction',
+    });
+
+    expect(result).toEqual({
+      status: 'applied',
+      appliedFields: ['category'],
+    });
+    expect(await db.getTransaction('amazon-transaction')).toMatchObject({
+      category: 'amazon-household',
+      is_parent: false,
+    });
+  });
+
+  it('does not write when a reviewed target becomes unsafe', async () => {
+    await db.insertAccount({ id: 'amazon-checking', name: 'Checking' });
+    await db.insertPayee({ id: 'amazon-payee', name: 'Amazon' });
+    await db.insertTransaction({
+      id: 'amazon-transaction',
+      account: 'amazon-checking',
+      amount: -1299,
+      category: null,
+      date: '2026-08-01',
+      payee: 'amazon-payee',
+    });
+    db.runQuery('INSERT INTO preferences (id, value) VALUES (?, ?)', [
+      'defaultCurrencyCode',
+      'USD',
+    ]);
+    await saveAmazonReviewOrders({ orders: [syntheticOrder] });
+    const [match] = matchAmazonPayments(
+      buildAmazonPaymentSources([syntheticOrder]),
+      [
+        {
+          ...(await db.getTransaction('amazon-transaction'))!,
+          payee_name: 'Amazon',
+        },
+      ],
+      'USD',
+    );
+    for (const update of [
+      { label: 'reconciled', values: { reconciled: true } },
+      { label: 'transfer', values: { transfer_id: 'other-transaction' } },
+      { label: 'split parent', values: { is_parent: true } },
+    ]) {
+      await db.updateTransaction({
+        id: 'amazon-transaction',
+        ...update.values,
+      });
+      await expect(
+        runHandler(app.handlers['finance/amazon/apply'], {
+          applyNote: true,
+          applySplit: false,
+          candidateKey: match.candidateKey,
+          categoryIdsByAllocationId: {},
+          evidenceFingerprint: match.evidenceFingerprint,
+          transactionId: 'amazon-transaction',
+        }),
+        update.label,
+      ).resolves.toEqual({ status: 'stale', appliedFields: [] });
+      await db.updateTransaction({
+        id: 'amazon-transaction',
+        is_parent: false,
+        reconciled: false,
+        transfer_id: null,
+      });
+    }
+    expect(await db.getTransaction('amazon-transaction')).toMatchObject({
+      notes: null,
+    });
+    expect(await getAmazonReviewDecisions()).toEqual([]);
   });
 });
 

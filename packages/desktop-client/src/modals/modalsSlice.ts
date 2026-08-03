@@ -58,6 +58,7 @@ export type Modal =
       name: 'amazon-import-review';
       options: {
         transactions: AmazonTransaction[];
+        onApplied: () => Promise<void>;
       };
     }
   | {

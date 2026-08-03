@@ -25,17 +25,27 @@ import type { TFunction } from 'i18next';
 
 import { Modal, ModalButtons, ModalHeader } from '#components/common/Modal';
 import { FinancialText } from '#components/FinancialText';
+import { useCategories } from '#hooks/useCategories';
 import { useFormat } from '#hooks/useFormat';
 import type { Modal as ModalType } from '#modals/modalsSlice';
+import { pushModal } from '#modals/modalsSlice';
+import { useDispatch } from '#redux';
 
 type Props = Extract<ModalType, { name: 'amazon-import-review' }>['options'];
-type AmazonReviewDecision = 'deferred' | 'rejected';
+type AmazonReviewDecision = 'deferred' | 'rejected' | 'applied';
+type AmazonManualReviewDecision = Exclude<AmazonReviewDecision, 'applied'>;
 type AmazonReviewDecisionRecord = FinanceReviewDecisionRecord &
   Readonly<{ decision: AmazonReviewDecision; feature: 'amazon' }>;
-
-export function AmazonImportReviewModal({ transactions }: Props) {
+type AmazonApplyOptions = Readonly<{
+  applyNote: boolean;
+  applySplit: boolean;
+  categoryIdsByAllocationId: Readonly<Record<string, string | null>>;
+}>;
+export function AmazonImportReviewModal({ transactions, onApplied }: Props) {
   const { t } = useTranslation();
   const { currency: budgetCurrency } = useFormat();
+  const dispatch = useDispatch();
+  const { data: { list: categories } = { list: [] } } = useCategories();
   const [orders, setOrders] = useState<readonly AmazonOrder[]>([]);
   const [decisions, setDecisions] = useState<
     readonly AmazonReviewDecisionRecord[]
@@ -46,6 +56,9 @@ export function AmazonImportReviewModal({ transactions }: Props) {
   const [activeCandidateKey, setActiveCandidateKey] = useState<string | null>(
     null,
   );
+  const [applyOptionsByCandidateKey, setApplyOptionsByCandidateKey] = useState<
+    Readonly<Record<string, AmazonApplyOptions>>
+  >({});
   const latestReadId = useRef(0);
   const latestReviewLoadId = useRef(0);
   const [pendingReplacementOrders, setPendingReplacementOrders] = useState<
@@ -170,7 +183,7 @@ export function AmazonImportReviewModal({ transactions }: Props) {
 
   async function recordDecision(
     match: AmazonMatch,
-    decision: AmazonReviewDecision,
+    decision: AmazonManualReviewDecision,
   ) {
     setActiveCandidateKey(match.candidateKey);
     setError(null);
@@ -197,6 +210,93 @@ export function AmazonImportReviewModal({ transactions }: Props) {
       await refreshPersistedReview();
     } catch {
       setError(t('The Amazon review could not be reopened.'));
+    } finally {
+      setActiveCandidateKey(null);
+    }
+  }
+
+  function getApplyOptions(match: AmazonMatch): AmazonApplyOptions {
+    return (
+      applyOptionsByCandidateKey[match.candidateKey] ??
+      defaultApplyOptions(match)
+    );
+  }
+
+  function updateApplyOptions(
+    match: AmazonMatch,
+    update: (current: AmazonApplyOptions) => AmazonApplyOptions,
+  ) {
+    setApplyOptionsByCandidateKey(current => ({
+      ...current,
+      [match.candidateKey]: update(
+        current[match.candidateKey] ?? defaultApplyOptions(match),
+      ),
+    }));
+  }
+
+  function chooseAllocationCategory(
+    match: AmazonMatch,
+    allocation: AmazonMatch['source']['allocations'][number],
+  ) {
+    dispatch(
+      pushModal({
+        modal: {
+          name: 'category-autocomplete',
+          options: {
+            title: t('Category for {{allocation}}', {
+              allocation: allocation.label,
+            }),
+            showNoneOption: true,
+            onSelect: categoryId => {
+              updateApplyOptions(match, current => ({
+                ...current,
+                categoryIdsByAllocationId: {
+                  ...current.categoryIdsByAllocationId,
+                  [allocation.id]: categoryId,
+                },
+              }));
+            },
+          },
+        },
+      }),
+    );
+  }
+
+  async function applyReviewedChanges(match: AmazonMatch) {
+    if (match.transaction === null) return;
+    const options = getApplyOptions(match);
+    const hasCategorySelection = Object.values(
+      options.categoryIdsByAllocationId,
+    ).some(categoryId => categoryId !== null);
+    if (!options.applyNote && !options.applySplit && !hasCategorySelection) {
+      setError(t('Choose a note, category, or split before applying.'));
+      return;
+    }
+
+    setActiveCandidateKey(match.candidateKey);
+    setError(null);
+    try {
+      const result = await send('finance/amazon/apply', {
+        candidateKey: match.candidateKey,
+        evidenceFingerprint: match.evidenceFingerprint,
+        transactionId: match.transaction.id,
+        ...options,
+      });
+      if (result.status !== 'applied') {
+        await refreshPersistedReview();
+        setError(
+          t(
+            'This Amazon suggestion changed. Review the current transaction before applying it.',
+          ),
+        );
+        return;
+      }
+      await onApplied();
+      await refreshPersistedReview();
+    } catch {
+      setError(
+        t('The reviewed Amazon changes could not be applied to Actual.'),
+      );
     } finally {
       setActiveCandidateKey(null);
     }
@@ -268,114 +368,118 @@ export function AmazonImportReviewModal({ transactions }: Props) {
                 <Trans>Replace saved Amazon data</Trans>
               </Button>
             )}
-            {matches.map(match => (
-              <View
-                key={match.candidateKey}
-                style={{
-                  padding: 12,
-                  border: `1px solid ${theme.tableBorder}`,
-                  borderRadius: 4,
-                  gap: 6,
-                  flexDirection: 'column',
-                }}
-              >
+            {matches.map(match => {
+              const decision = decisionsByCandidateKey.get(match.candidateKey);
+              return (
                 <View
+                  key={match.candidateKey}
                   style={{
-                    alignItems: 'center',
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
+                    padding: 12,
+                    border: `1px solid ${theme.tableBorder}`,
+                    borderRadius: 4,
+                    gap: 6,
+                    flexDirection: 'column',
                   }}
                 >
-                  <Text style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>
-                    {match.source.description}
-                  </Text>
-                  <FinancialText style={{ fontWeight: 600 }}>
-                    {formatSourceAmount(
-                      t,
-                      match.source.amount,
-                      match.source.currency,
-                    )}
-                  </FinancialText>
-                </View>
-                <Text>
-                  {getStatusLabel(t, match.status)} ·{' '}
-                  {t('Score: {{score}}', { score: match.score })}
-                </Text>
-                <Text style={{ color: theme.pageTextSubdued }}>
-                  {match.source.date} · {match.source.currency} ·{' '}
-                  {match.reasons
-                    .map(reason => getReasonLabel(t, reason))
-                    .join(' · ')}
-                </Text>
-                {match.transaction !== null && (
-                  <Text style={{ overflowWrap: 'anywhere' }}>
-                    {t('Suggested transaction: {{payee}} on {{date}}', {
-                      payee:
-                        match.transaction.payee_name ??
-                        match.transaction.imported_payee ??
-                        t('Unnamed transaction'),
-                      date: match.transaction.date,
-                    })}
-                  </Text>
-                )}
-                {decisionsByCandidateKey.get(match.candidateKey) != null && (
-                  <Text>
-                    {t('Review status: {{status}}', {
-                      status: getDecisionLabel(
-                        t,
-                        decisionsByCandidateKey.get(match.candidateKey)!
-                          .decision,
-                      ),
-                    })}
-                  </Text>
-                )}
-                <View style={{ gap: 3, flexDirection: 'column' }}>
-                  {match.source.allocations.map(value => (
-                    <View
-                      key={value.id}
-                      style={{
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <Text style={{ overflowWrap: 'anywhere' }}>
-                        {value.label} · {getAllocationLabel(t, value.kind)}
-                      </Text>
-                      <FinancialText>
-                        {formatSourceAmount(
-                          t,
-                          value.amount,
-                          match.source.currency,
-                        )}
-                      </FinancialText>
-                    </View>
-                  ))}
-                </View>
-                {decisionsByCandidateKey.get(match.candidateKey) == null ? (
-                  <View style={{ flexDirection: 'row', gap: 8 }}>
-                    <Button
-                      isDisabled={activeCandidateKey === match.candidateKey}
-                      onPress={() => void recordDecision(match, 'deferred')}
-                    >
-                      <Trans>Defer</Trans>
-                    </Button>
-                    <Button
-                      isDisabled={activeCandidateKey === match.candidateKey}
-                      onPress={() => void recordDecision(match, 'rejected')}
-                    >
-                      <Trans>Reject</Trans>
-                    </Button>
-                  </View>
-                ) : (
-                  <Button
-                    isDisabled={activeCandidateKey === match.candidateKey}
-                    onPress={() => void reopen(match)}
+                  <View
+                    style={{
+                      alignItems: 'center',
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                    }}
                   >
-                    <Trans>Reopen</Trans>
-                  </Button>
-                )}
-              </View>
-            ))}
+                    <Text style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>
+                      {match.source.description}
+                    </Text>
+                    <FinancialText style={{ fontWeight: 600 }}>
+                      {formatSourceAmount(
+                        t,
+                        match.source.amount,
+                        match.source.currency,
+                      )}
+                    </FinancialText>
+                  </View>
+                  <Text>
+                    {getStatusLabel(t, match.status)} ·{' '}
+                    {t('Score: {{score}}', { score: match.score })}
+                  </Text>
+                  <Text style={{ color: theme.pageTextSubdued }}>
+                    {match.source.date} · {match.source.currency} ·{' '}
+                    {match.reasons
+                      .map(reason => getReasonLabel(t, reason))
+                      .join(' · ')}
+                  </Text>
+                  {match.transaction !== null && (
+                    <Text style={{ overflowWrap: 'anywhere' }}>
+                      {t('Suggested transaction: {{payee}} on {{date}}', {
+                        payee:
+                          match.transaction.payee_name ??
+                          match.transaction.imported_payee ??
+                          t('Unnamed transaction'),
+                        date: match.transaction.date,
+                      })}
+                    </Text>
+                  )}
+                  {decision != null && (
+                    <Text>
+                      {t('Review status: {{status}}', {
+                        status: getDecisionLabel(t, decision.decision),
+                      })}
+                    </Text>
+                  )}
+                  {decision?.decision === 'applied' && (
+                    <Text role="status" style={{ color: theme.noticeText }}>
+                      <Trans>
+                        This review was applied. Undo restores the ledger;
+                        Reopen review changes only the review status.
+                      </Trans>
+                    </Text>
+                  )}
+                  <View style={{ gap: 3, flexDirection: 'column' }}>
+                    {match.source.allocations.map(value => (
+                      <View
+                        key={value.id}
+                        style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <Text style={{ overflowWrap: 'anywhere' }}>
+                          {value.label} · {getAllocationLabel(t, value.kind)}
+                        </Text>
+                        <FinancialText>
+                          {formatSourceAmount(
+                            t,
+                            value.amount,
+                            match.source.currency,
+                          )}
+                        </FinancialText>
+                      </View>
+                    ))}
+                  </View>
+                  {decision == null ? (
+                    <AmazonApplyControls
+                      match={match}
+                      options={getApplyOptions(match)}
+                      categories={categories}
+                      isWorking={activeCandidateKey === match.candidateKey}
+                      onChooseCategory={chooseAllocationCategory}
+                      onOptionsChange={updateApplyOptions}
+                      onApply={applyReviewedChanges}
+                      onDefer={() => void recordDecision(match, 'deferred')}
+                      onReject={() => void recordDecision(match, 'rejected')}
+                    />
+                  ) : (
+                    <Button
+                      isDisabled={activeCandidateKey === match.candidateKey}
+                      onPress={() => void reopen(match)}
+                    >
+                      <Trans>Reopen review</Trans>
+                    </Button>
+                  )}
+                </View>
+              );
+            })}
             <ModalButtons style={{ marginTop: 8 }}>
               <Button onPress={() => state.close()}>
                 <Trans>Close</Trans>
@@ -385,6 +489,167 @@ export function AmazonImportReviewModal({ transactions }: Props) {
         </>
       )}
     </Modal>
+  );
+}
+
+function defaultApplyOptions(match: AmazonMatch): AmazonApplyOptions {
+  return {
+    applyNote: true,
+    applySplit: match.source.allocations.length > 1,
+    categoryIdsByAllocationId: Object.fromEntries(
+      match.source.allocations.map(allocation => [allocation.id, null]),
+    ),
+  };
+}
+
+function AmazonApplyControls({
+  match,
+  options,
+  categories,
+  isWorking,
+  onChooseCategory,
+  onOptionsChange,
+  onApply,
+  onDefer,
+  onReject,
+}: {
+  match: AmazonMatch;
+  options: AmazonApplyOptions;
+  categories: readonly { id: string; name: string }[];
+  isWorking: boolean;
+  onChooseCategory: (
+    match: AmazonMatch,
+    allocation: AmazonMatch['source']['allocations'][number],
+  ) => void;
+  onOptionsChange: (
+    match: AmazonMatch,
+    update: (current: AmazonApplyOptions) => AmazonApplyOptions,
+  ) => void;
+  onApply: (match: AmazonMatch) => void;
+  onDefer: () => void;
+  onReject: () => void;
+}) {
+  const { t } = useTranslation();
+  const canApply =
+    match.transaction !== null &&
+    (match.status === 'ready' || match.status === 'review');
+  const hasCategorySelection = Object.values(
+    options.categoryIdsByAllocationId,
+  ).some(categoryId => categoryId !== null);
+  const hasChangesToApply =
+    options.applyNote || options.applySplit || hasCategorySelection;
+
+  if (!canApply) {
+    return (
+      <View style={{ gap: 8 }}>
+        <Text style={{ color: theme.pageTextSubdued }}>
+          <Trans>
+            Actual can only apply a confirmed one-to-one transaction match.
+          </Trans>
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Button isDisabled={isWorking} onPress={onDefer}>
+            <Trans>Defer</Trans>
+          </Button>
+          <Button isDisabled={isWorking} onPress={onReject}>
+            <Trans>Reject</Trans>
+          </Button>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ gap: 8, flexDirection: 'column' }}>
+      <Text style={{ fontWeight: 600 }}>
+        <Trans>Apply reviewed changes</Trans>
+      </Text>
+      <label>
+        <input
+          checked={options.applyNote}
+          disabled={isWorking}
+          type="checkbox"
+          onChange={event =>
+            onOptionsChange(match, current => ({
+              ...current,
+              applyNote: event.currentTarget.checked,
+            }))
+          }
+        />{' '}
+        <Trans>Add Amazon order details to this transaction note</Trans>
+      </label>
+      {match.source.allocations.map(allocation => {
+        const categoryId = options.categoryIdsByAllocationId[allocation.id];
+        const categoryName =
+          categories.find(category => category.id === categoryId)?.name ??
+          t('Uncategorized');
+        return (
+          <View
+            key={allocation.id}
+            style={{ alignItems: 'center', flexDirection: 'row', gap: 8 }}
+          >
+            <Text style={{ flex: 1, overflowWrap: 'anywhere' }}>
+              {t('Category for {{allocation}}: {{category}}', {
+                allocation: allocation.label,
+                category: categoryName,
+              })}
+            </Text>
+            <Button
+              variant="bare"
+              isDisabled={isWorking}
+              onPress={() => onChooseCategory(match, allocation)}
+            >
+              <Trans>Choose category</Trans>
+            </Button>
+          </View>
+        );
+      })}
+      {match.source.allocations.length > 1 && (
+        <label>
+          <input
+            checked={options.applySplit}
+            disabled={isWorking || hasCategorySelection}
+            type="checkbox"
+            onChange={event =>
+              onOptionsChange(match, current => ({
+                ...current,
+                applySplit: event.currentTarget.checked,
+              }))
+            }
+          />{' '}
+          <Trans>
+            Replace this transaction with the balanced allocations above
+          </Trans>
+        </label>
+      )}
+      {match.source.allocations.length > 1 && hasCategorySelection && (
+        <Text style={{ color: theme.pageTextSubdued }}>
+          <Trans>
+            Clear allocation categories before applying without a split.
+          </Trans>
+        </Text>
+      )}
+      <Text style={{ color: theme.pageTextSubdued }}>
+        <Trans>
+          Applied changes use Actual's normal Undo action in the account page.
+        </Trans>
+      </Text>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Button isDisabled={isWorking} onPress={onDefer}>
+          <Trans>Defer</Trans>
+        </Button>
+        <Button isDisabled={isWorking} onPress={onReject}>
+          <Trans>Reject</Trans>
+        </Button>
+        <Button
+          variant="primary"
+          isDisabled={isWorking || !hasChangesToApply}
+          onPress={() => onApply(match)}
+        >
+          <Trans>Apply to transaction</Trans>
+        </Button>
+      </View>
+    </View>
   );
 }
 
@@ -420,7 +685,9 @@ function getDecisionLabel(
   t: TFunction,
   decision: AmazonReviewDecision,
 ): string {
-  return decision === 'deferred' ? t('Deferred') : t('Rejected');
+  if (decision === 'deferred') return t('Deferred');
+  if (decision === 'rejected') return t('Rejected');
+  return t('Applied');
 }
 
 function getReasonLabel(t: TFunction, reason: AmazonMatchReason): string {
