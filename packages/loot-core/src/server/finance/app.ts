@@ -1,3 +1,5 @@
+import { v4 as uuidv4 } from 'uuid';
+
 import * as asyncStorage from '#platform/server/asyncStorage';
 import { fetch } from '#platform/server/fetch';
 import { createApp } from '#server/app';
@@ -7,14 +9,24 @@ import { mutator } from '#server/mutators';
 import * as prefs from '#server/prefs';
 import { createSchedule, updateSchedule } from '#server/schedules/app';
 import { getServer } from '#server/server-config';
+import { batchUpdateTransactions } from '#server/transactions';
 import { mergeTransactions } from '#server/transactions/merge';
 import { undoable } from '#server/undo';
 import {
   withFinanceReviewDecision,
   withoutFinanceReviewDecision,
 } from '#shared/finance-metadata';
-import { normalizeAmazonReviewOrders } from '#shared/finance/amazon';
-import type { AmazonOrder } from '#shared/finance/amazon';
+import {
+  buildAmazonPaymentSources,
+  matchAmazonPayments,
+  normalizeAmazonReviewOrders,
+} from '#shared/finance/amazon';
+import type {
+  AmazonMatch,
+  AmazonOrder,
+  AmazonPaymentSource,
+  AmazonTransaction,
+} from '#shared/finance/amazon';
 import {
   detectRecurringPayments,
   validateRecurringPaymentCandidateForApply,
@@ -25,13 +37,14 @@ import type {
   RecurringPaymentTransaction,
 } from '#shared/finance/recurring-detector';
 import { q } from '#shared/query';
+import { makeChild } from '#shared/transactions';
 import type {
+  AmazonReviewOrder,
   FinanceCategorizationRequest,
   FinanceCategorizationResponse,
   FinanceCategorizationStatus,
   FinanceReviewDecision,
   FinanceReviewDecisionRecord,
-  AmazonReviewOrder,
 } from '#types/finance';
 import type {
   PayeeEntity,
@@ -67,6 +80,7 @@ export type FinanceHandlers = {
   'finance/amazon/get-decisions': typeof getAmazonReviewDecisions;
   'finance/amazon/save-decision': typeof saveAmazonReviewDecision;
   'finance/amazon/reopen-decision': typeof reopenAmazonReviewDecision;
+  'finance/amazon/apply': typeof applyAmazonReview;
   'finance-categorization-status': typeof getCategorizationStatus;
   'finance-categorize': typeof categorizeTransactions;
   'finance-categorization-api-key-set': typeof setCategorizationApiKey;
@@ -260,8 +274,11 @@ const maximumEvidenceFingerprintLength = 65_536;
 
 type RecurringReviewDecision = (typeof recurringReviewDecisions)[number];
 
-const amazonReviewDecisions = ['deferred', 'rejected'] as const;
+const amazonReviewDecisions = ['deferred', 'rejected', 'applied'] as const;
+const manuallySavedAmazonReviewDecisions = ['deferred', 'rejected'] as const;
 type AmazonReviewDecision = (typeof amazonReviewDecisions)[number];
+type ManuallySavedAmazonReviewDecision =
+  (typeof manuallySavedAmazonReviewDecisions)[number];
 type AmazonReviewDecisionRecord = FinanceReviewDecisionRecord &
   Readonly<{ decision: AmazonReviewDecision; feature: 'amazon' }>;
 
@@ -346,10 +363,10 @@ export async function saveAmazonReviewDecision({
   decision,
 }: {
   candidateKey: string;
-  decision: AmazonReviewDecision;
+  decision: ManuallySavedAmazonReviewDecision;
 }): Promise<AmazonReviewDecisionRecord> {
   assertAmazonReviewCandidateKey(candidateKey);
-  if (!isAmazonReviewDecision(decision)) {
+  if (!isManuallySavedAmazonReviewDecision(decision)) {
     throw new Error('Invalid Amazon review decision.');
   }
   const record = {
@@ -383,6 +400,282 @@ function isAmazonReviewDecision(
   decision: string,
 ): decision is AmazonReviewDecision {
   return amazonReviewDecisions.some(value => value === decision);
+}
+
+function isManuallySavedAmazonReviewDecision(
+  decision: string,
+): decision is ManuallySavedAmazonReviewDecision {
+  return manuallySavedAmazonReviewDecisions.some(value => value === decision);
+}
+
+type ApplyAmazonReviewResult = Readonly<{
+  appliedFields: readonly ('note' | 'split' | 'category')[];
+  status: 'applied' | 'stale';
+}>;
+
+const maximumAmazonSplitAllocations = 100;
+
+export async function applyAmazonReview({
+  applyNote,
+  applySplit,
+  candidateKey,
+  categoryIdsByAllocationId,
+  evidenceFingerprint,
+  transactionId,
+}: {
+  applyNote: boolean;
+  applySplit: boolean;
+  candidateKey: string;
+  categoryIdsByAllocationId: Record<string, string | null>;
+  evidenceFingerprint: string;
+  transactionId: string;
+}): Promise<ApplyAmazonReviewResult> {
+  assertAmazonReviewCandidateKey(candidateKey);
+  if (
+    typeof evidenceFingerprint !== 'string' ||
+    evidenceFingerprint.length === 0 ||
+    evidenceFingerprint.length > maximumEvidenceFingerprintLength ||
+    typeof transactionId !== 'string' ||
+    transactionId.length === 0 ||
+    transactionId.length > maximumCandidateKeyLength ||
+    typeof applyNote !== 'boolean' ||
+    typeof applySplit !== 'boolean' ||
+    !isCategoryIdsByAllocationId(categoryIdsByAllocationId)
+  ) {
+    throw new Error('Invalid Amazon apply request.');
+  }
+
+  const currentMatch = await getCurrentAmazonMatch(candidateKey);
+  if (
+    currentMatch === null ||
+    currentMatch.transaction === null ||
+    currentMatch.transaction.id !== transactionId ||
+    currentMatch.evidenceFingerprint !== evidenceFingerprint ||
+    (currentMatch.status !== 'ready' && currentMatch.status !== 'review')
+  ) {
+    return { status: 'stale', appliedFields: [] };
+  }
+
+  const transaction = await db.getTransaction(transactionId);
+  const account = transaction ? await db.getAccount(transaction.account) : null;
+  if (
+    !transaction ||
+    !account ||
+    !isSafeAmazonApplyTarget(transaction, account)
+  ) {
+    throw new Error('Amazon review target is not safe to update.');
+  }
+
+  const source = currentMatch.source;
+  const normalizedCategoryIdsByAllocationId =
+    normalizeAmazonAllocationCategories(source, categoryIdsByAllocationId);
+  const selectedCategoryIds = new Set(
+    Object.values(normalizedCategoryIdsByAllocationId).filter(
+      (categoryId): categoryId is string => categoryId !== null,
+    ),
+  );
+  if (selectedCategoryIds.size > 0) {
+    await assertAmazonCategoriesExist(selectedCategoryIds);
+  }
+
+  const hasSingleAllocationCategory =
+    !applySplit &&
+    source.allocations.length === 1 &&
+    normalizedCategoryIdsByAllocationId[source.allocations[0].id] !== null;
+  if (
+    !applySplit &&
+    source.allocations.length > 1 &&
+    selectedCategoryIds.size > 0
+  ) {
+    throw new Error('Amazon allocation categories require a split.');
+  }
+  if (applySplit) {
+    if (
+      source.allocations.length < 2 ||
+      source.allocations.length > maximumAmazonSplitAllocations ||
+      source.allocations.reduce(
+        (total, allocation) => total + allocation.amount,
+        0,
+      ) !== transaction.amount
+    ) {
+      throw new Error('Amazon allocations cannot safely create a split.');
+    }
+  }
+
+  const appliedFields: Array<'note' | 'split' | 'category'> = [];
+  const updatedTransaction: {
+    category?: TransactionEntity['category'] | null;
+    id: TransactionEntity['id'];
+    is_parent?: boolean;
+    notes?: string;
+    payee?: TransactionEntity['payee'];
+  } = { id: transaction.id };
+  if (applyNote) {
+    updatedTransaction.notes = appendAmazonReviewNote(
+      transaction.notes,
+      source,
+    );
+    appliedFields.push('note');
+  }
+  if (applySplit) {
+    updatedTransaction.is_parent = true;
+    updatedTransaction.category = null;
+    updatedTransaction.payee = null;
+    appliedFields.push('split');
+  } else if (hasSingleAllocationCategory) {
+    updatedTransaction.category =
+      normalizedCategoryIdsByAllocationId[source.allocations[0].id] ??
+      undefined;
+    appliedFields.push('category');
+  }
+
+  if (appliedFields.length === 0) {
+    throw new Error('Choose an Amazon change to apply.');
+  }
+
+  await batchUpdateTransactions({
+    added: applySplit
+      ? source.allocations.map((allocation, index) =>
+          makeChild(transaction, {
+            amount: allocation.amount,
+            category:
+              normalizedCategoryIdsByAllocationId[allocation.id] ?? undefined,
+            id: uuidv4(),
+            notes: allocation.label,
+            sort_order: -(index + 1),
+          }),
+        )
+      : [],
+    updated: [updatedTransaction as TransactionEntity],
+    runTransfers: false,
+  });
+  await saveAmazonAppliedReviewDecision(candidateKey);
+  return { status: 'applied', appliedFields };
+}
+
+async function getCurrentAmazonMatch(
+  candidateKey: string,
+): Promise<AmazonMatch | null> {
+  const [transactionsResult, payeesResult, currencyPreference] =
+    await Promise.all([
+      aqlQuery(q('transactions').select('*')),
+      aqlQuery(q('payees').select('*')),
+      db.first<Pick<db.DbPreference, 'value'>>(
+        'SELECT value FROM preferences WHERE id = ?',
+        ['defaultCurrencyCode'],
+      ),
+    ]);
+  const payeeNames = new Map(
+    (payeesResult.data as PayeeEntity[]).map(payee => [payee.id, payee.name]),
+  );
+  const transactions = (transactionsResult.data as TransactionEntity[]).map(
+    transaction =>
+      ({
+        ...transaction,
+        payee_name:
+          transaction.payee == null
+            ? null
+            : (payeeNames.get(transaction.payee) ?? null),
+      }) satisfies AmazonTransaction,
+  );
+  return (
+    matchAmazonPayments(
+      buildAmazonPaymentSources(prefs.getFinanceMetadata().amazonOrders),
+      transactions,
+      currencyPreference?.value ?? '',
+    ).find(match => match.candidateKey === candidateKey) ?? null
+  );
+}
+
+function isCategoryIdsByAllocationId(
+  value: unknown,
+): value is Record<string, string | null> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).every(
+      allocationId => allocationId.length > 0 && allocationId.length <= 256,
+    ) &&
+    Object.values(value).every(
+      categoryId =>
+        categoryId === null ||
+        (typeof categoryId === 'string' &&
+          categoryId.length > 0 &&
+          categoryId.length <= 256),
+    )
+  );
+}
+
+function normalizeAmazonAllocationCategories(
+  source: AmazonPaymentSource,
+  categoryIdsByAllocationId: Record<string, string | null>,
+): Record<string, string | null> {
+  const allocationIds = new Set(source.allocations.map(value => value.id));
+  const categoryAllocationIds = Object.keys(categoryIdsByAllocationId);
+  if (categoryAllocationIds.some(id => !allocationIds.has(id))) {
+    throw new Error('Amazon allocation categories do not match this review.');
+  }
+  return Object.fromEntries(
+    source.allocations.map(allocation => [
+      allocation.id,
+      categoryIdsByAllocationId[allocation.id] ?? null,
+    ]),
+  );
+}
+
+async function assertAmazonCategoriesExist(
+  categoryIds: ReadonlySet<string>,
+): Promise<void> {
+  const categories = (await db.getCategoriesGrouped())
+    .filter(group => !group.hidden && !group.is_income)
+    .flatMap(group => group.categories)
+    .filter(category => !category.hidden && !category.is_income)
+    .map(category => category.id);
+  if ([...categoryIds].some(categoryId => !categories.includes(categoryId))) {
+    throw new Error('Amazon allocation category does not exist.');
+  }
+}
+
+function isSafeAmazonApplyTarget(
+  transaction: TransactionEntity,
+  account: db.DbAccount,
+): boolean {
+  return !(
+    transaction.is_parent ||
+    transaction.is_child ||
+    transaction.parent_id ||
+    transaction.reconciled ||
+    transaction.starting_balance_flag ||
+    transaction.tombstone ||
+    transaction._deleted ||
+    transaction.transfer_id ||
+    account.offbudget ||
+    account.closed ||
+    account.tombstone
+  );
+}
+
+function appendAmazonReviewNote(
+  currentNotes: string | undefined,
+  source: AmazonPaymentSource,
+): string {
+  const amazonNote = `Amazon ${source.orderId}`;
+  if (currentNotes?.includes(amazonNote)) return currentNotes;
+  return currentNotes ? `${currentNotes}\n${amazonNote}` : amazonNote;
+}
+
+async function saveAmazonAppliedReviewDecision(
+  candidateKey: string,
+): Promise<void> {
+  await prefs.saveFinanceMetadata(
+    withFinanceReviewDecision(prefs.getFinanceMetadata(), {
+      candidateKey,
+      decision: 'applied',
+      feature: 'amazon',
+      updatedAt: new Date().toISOString(),
+    }),
+  );
 }
 
 function toStoredAmazonReviewOrders(
@@ -422,7 +715,10 @@ function assertAmazonReviewCandidateKey(candidateKey: string): void {
   assertCandidateKey(candidateKey);
   if (
     !candidateKey.startsWith('amazon:') ||
-    /[\u0000-\u001F\u007F]/.test(candidateKey)
+    [...candidateKey].some(
+      character =>
+        character.charCodeAt(0) <= 0x1f || character.charCodeAt(0) === 0x7f,
+    )
   ) {
     throw new Error('Invalid Amazon review candidate key.');
   }
@@ -667,6 +963,7 @@ app.method(
   'finance/amazon/reopen-decision',
   mutator(reopenAmazonReviewDecision),
 );
+app.method('finance/amazon/apply', mutator(undoable(applyAmazonReview)));
 app.method('finance-categorization-status', getCategorizationStatus);
 app.method('finance-categorize', categorizeTransactions);
 app.method('finance-categorization-api-key-set', setCategorizationApiKey);

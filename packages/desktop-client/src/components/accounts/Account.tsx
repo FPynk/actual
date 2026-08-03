@@ -660,8 +660,12 @@ class AccountInternal extends PureComponent<
         ...data,
       ]).map(transaction => ({
         id: transaction.id,
+        account: transaction.account,
         amount: transaction.amount,
+        category: transaction.category ?? null,
+        cleared: transaction.cleared,
         date: transaction.date,
+        notes: transaction.notes ?? null,
         payee: transaction.payee ?? null,
         payee_name:
           transaction.payee == null
@@ -680,7 +684,7 @@ class AccountInternal extends PureComponent<
         pushModal({
           modal: {
             name: 'amazon-import-review',
-            options: { transactions },
+            options: { transactions, onApplied: this.refetchTransactions },
           },
         }),
       );
