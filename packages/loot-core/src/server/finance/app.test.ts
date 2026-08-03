@@ -687,8 +687,20 @@ describe('native categorization apply', () => {
       cat_group: 'categorization-expenses',
       is_income: 0,
     });
+    await db.insertCategoryGroup({
+      id: 'categorization-income',
+      name: 'Income',
+      is_income: 1,
+    });
+    await db.insertCategory({
+      id: 'categorization-salary',
+      name: 'Salary',
+      cat_group: 'categorization-income',
+      is_income: 1,
+    });
     await db.insertAccount({ id: 'categorization-checking', name: 'Checking' });
     await db.insertPayee({ id: 'categorization-market', name: 'Market' });
+    await db.insertPayee({ id: 'categorization-employer', name: 'Employer' });
     await db.insertTransaction({
       id: 'categorization-transaction',
       account: 'categorization-checking',
@@ -698,9 +710,20 @@ describe('native categorization apply', () => {
       imported_payee: 'MARKET 123',
       payee: 'categorization-market',
     });
+    await db.insertTransaction({
+      id: 'categorization-deposit',
+      account: 'categorization-checking',
+      amount: 250_000,
+      category: null,
+      date: '2026-08-03',
+      imported_payee: 'PAYROLL DEPOSIT',
+      payee: 'categorization-employer',
+    });
     db.runQuery('INSERT INTO preferences (id, value) VALUES (?, ?)', [
       financeCategorizationPreferenceId,
-      JSON.stringify({ categoryIds: ['categorization-groceries'] }),
+      JSON.stringify({
+        categoryIds: ['categorization-groceries', 'categorization-salary'],
+      }),
     ]);
   });
 
@@ -710,7 +733,7 @@ describe('native categorization apply', () => {
     await global.emptyDatabase()();
   });
 
-  it('applies one category batch and restores it with one undo', async () => {
+  it('applies a mixed outflow and inflow batch and restores both with one undo', async () => {
     const result = await runHandler(
       app.handlers['finance-categorization-apply'],
       {
@@ -731,22 +754,46 @@ describe('native categorization apply', () => {
             }),
             transactionId: 'categorization-transaction',
           },
+          {
+            categoryId: 'categorization-salary',
+            fingerprint: categorizationFingerprint({
+              accountId: 'categorization-checking',
+              accountName: 'Checking',
+              amount: 250_000,
+              categoryId: null,
+              date: '2026-08-03',
+              importedPayee: 'PAYROLL DEPOSIT',
+              payeeId: 'categorization-employer',
+              payeeName: 'Employer',
+              transactionId: 'categorization-deposit',
+            }),
+            transactionId: 'categorization-deposit',
+          },
         ],
       },
     );
 
     expect(result).toEqual({
-      appliedTransactionIds: ['categorization-transaction'],
+      appliedTransactionIds: [
+        'categorization-transaction',
+        'categorization-deposit',
+      ],
       skipped: [],
     });
     expect(
       (await db.getTransaction('categorization-transaction'))?.category,
     ).toBe('categorization-groceries');
+    expect((await db.getTransaction('categorization-deposit'))?.category).toBe(
+      'categorization-salary',
+    );
 
     await runMutator(() => undo());
 
     expect(
       (await db.getTransaction('categorization-transaction'))?.category,
+    ).toBeNull();
+    expect(
+      (await db.getTransaction('categorization-deposit'))?.category,
     ).toBeNull();
   });
 });

@@ -32,7 +32,7 @@ describe('categorization transaction scopes', () => {
     expect(query.tableOptions).toEqual({ splits: 'all' });
   });
 
-  it('keeps checked off-page IDs in scope and reports checked ineligible rows as skipped', async () => {
+  it('keeps checked off-page IDs in scope, including positive deposits', async () => {
     const checkedTransactionIds = ['checked-off-page', 'checked-income'];
     const uncheckedRow: CategorizationQueryRow = {
       account: 'account-1',
@@ -75,9 +75,12 @@ describe('categorization transaction scopes', () => {
     });
 
     expect(result.candidates.map(candidate => candidate.transactionId)).toEqual(
-      ['checked-off-page'],
+      ['checked-off-page', 'checked-income'],
     );
-    expect(result.skipped['not-expense']).toBe(1);
+    expect(result.candidates.map(candidate => candidate.direction)).toEqual([
+      'outflow',
+      'inflow',
+    ]);
     expect(
       JSON.stringify(result.candidates.map(toCategorizationGatewayCandidate)),
     ).not.toContain('unchecked-transaction');
@@ -163,7 +166,7 @@ describe('categorization transaction scopes', () => {
         const { offset } = query.serialize();
         requestedOffsets.push(offset);
         if (offset === 0) {
-          return [expenseRow('one'), { ...expenseRow('income'), amount: 100 }];
+          return [expenseRow('one'), { ...expenseRow('zero'), amount: 0 }];
         }
         if (offset === 2) {
           return [expenseRow('two'), expenseRow('three')];
@@ -175,6 +178,6 @@ describe('categorization transaction scopes', () => {
     expect(requestedOffsets).toEqual([0, 2]);
     expect(result.exceededMaximum).toBe(true);
     expect(result.candidates).toHaveLength(3);
-    expect(result.skipped['not-expense']).toBe(1);
+    expect(result.skipped['zero-amount']).toBe(1);
   });
 });

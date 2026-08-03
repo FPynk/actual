@@ -129,7 +129,7 @@ export const financeCategorizationPreferenceId =
 export const defaultOpenAiCategorizationModel = 'gpt-5.6-luna' as const;
 
 export const defaultFinanceCategorizationInstruction =
-  'Choose the single best category for each expense. Use no category when the available details are insufficient.';
+  'Choose the single best category for each transaction, considering whether it is an inflow or outflow. Use no category when the available details are insufficient.';
 
 export type FinanceCategorizationSettings = {
   categoryGuidance: Record<string, string>;
@@ -161,6 +161,7 @@ export type FinanceCategorizationCandidate = {
   currency: string;
   date: string;
   description?: string;
+  direction: 'inflow' | 'outflow';
   payee?: string;
 };
 

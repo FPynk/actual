@@ -1,7 +1,24 @@
-import { filterByStartDate, parseCategoryFields, parseDate } from './utils';
+import {
+  filterByStartDate,
+  parseAmountFields,
+  parseCategoryFields,
+  parseDate,
+} from './utils';
 import type { ImportTransaction } from './utils';
 
 describe('Import transactions', () => {
+  it('parses separate Capital One-style payment and deposit columns with correct signs', () => {
+    const csvRow = (outflow: string, inflow: string) =>
+      ({ outflow, inflow }) as unknown as Partial<ImportTransaction>;
+
+    expect(
+      parseAmountFields(csvRow('45.67', ''), true, false, '', false, '1'),
+    ).toEqual({ amount: -45.67, outflow: -45.67, inflow: 0 });
+    expect(
+      parseAmountFields(csvRow('', '1250.00'), true, false, '', false, '1'),
+    ).toEqual({ amount: 1250, outflow: 0, inflow: 1250 });
+  });
+
   describe('date parsing', () => {
     const invalidInputs: Array<{
       str: Parameters<typeof parseDate>[0];
