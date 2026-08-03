@@ -193,3 +193,22 @@ export type FinanceCategorizationStatus = {
   configured: boolean;
   source: 'budget' | 'environment' | 'global' | 'none';
 };
+
+export type FinanceCategorizationModelCompatibility =
+  | 'compatible'
+  | 'incompatible';
+
+/**
+ * This is intentionally only the model metadata that is safe to return from
+ * the server. Provider ownership and creation metadata remain server-side.
+ */
+export type FinanceCategorizationModel = {
+  compatibility: FinanceCategorizationModelCompatibility;
+  id: string;
+  isRecommended: boolean;
+  reason: string | null;
+};
+
+export type FinanceCategorizationModelList = {
+  models: FinanceCategorizationModel[];
+};

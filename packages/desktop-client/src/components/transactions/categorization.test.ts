@@ -1,3 +1,4 @@
+import { toCategorizationGatewayCandidate } from '@actual-app/core/shared/finance-categorization';
 import { q } from '@actual-app/core/shared/query';
 
 import {
@@ -29,6 +30,60 @@ describe('categorization transaction scopes', () => {
     expect(query.limit).toBe(500);
     expect(query.offset).toBe(0);
     expect(query.tableOptions).toEqual({ splits: 'all' });
+  });
+
+  it('keeps checked off-page IDs in scope and reports checked ineligible rows as skipped', async () => {
+    const checkedTransactionIds = ['checked-off-page', 'checked-income'];
+    const uncheckedRow: CategorizationQueryRow = {
+      account: 'account-1',
+      amount: -100,
+      date: '2026-08-01',
+      id: 'unchecked-transaction',
+      imported_payee: 'Unchecked merchant',
+    };
+    const result = await prepareCategorizationScopeCandidates({
+      scope: {
+        kind: 'selected',
+        transactionIds: checkedTransactionIds,
+      },
+      includeCategorized: false,
+      currency: 'USD',
+      decimalPlaces: 2,
+      createCandidateId: () => 'candidate',
+      readPage: async query => {
+        expect(query.serialize().filterExpressions).toEqual([
+          { id: { $oneof: checkedTransactionIds } },
+        ]);
+        return [
+          {
+            account: 'account-1',
+            amount: -100,
+            date: '2026-08-01',
+            id: 'checked-off-page',
+            imported_payee: 'Off-page merchant',
+          },
+          {
+            account: 'account-1',
+            amount: 100,
+            date: '2026-08-01',
+            id: 'checked-income',
+            imported_payee: 'Checked income',
+          },
+          uncheckedRow,
+        ].filter(row => checkedTransactionIds.includes(row.id));
+      },
+    });
+
+    expect(result.candidates.map(candidate => candidate.transactionId)).toEqual(
+      ['checked-off-page'],
+    );
+    expect(result.skipped['not-expense']).toBe(1);
+    expect(
+      JSON.stringify(result.candidates.map(toCategorizationGatewayCandidate)),
+    ).not.toContain('unchecked-transaction');
+    expect(
+      JSON.stringify(result.candidates.map(toCategorizationGatewayCandidate)),
+    ).not.toContain('Unchecked merchant');
   });
 
   it('retains the complete current filter while replacing its paging', () => {

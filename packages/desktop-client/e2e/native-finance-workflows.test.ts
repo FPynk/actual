@@ -61,6 +61,30 @@ test.describe('Native finance workflows', () => {
     ).not.toBeVisible();
   });
 
+  test('uses checked transactions from either auto-categorize entry point', async () => {
+    await accountPage.createSingleTransaction({
+      date: '01/01/2017',
+      payee: 'Checked transaction',
+      debit: '12.34',
+    });
+
+    const categorizationScope = page.getByRole('button', {
+      name: 'Transactions to classify',
+    });
+
+    await page.getByRole('button', { name: 'Auto-categorize' }).click();
+    await expect(categorizationScope).toContainText('Current filtered view');
+    await page.keyboard.press('Escape');
+
+    await accountPage.selectNthTransaction(0);
+    await page.getByRole('button', { name: 'Auto-categorize' }).click();
+    await expect(categorizationScope).toContainText('Selected transactions');
+    await page.keyboard.press('Escape');
+
+    await accountPage.clickSelectAction('Auto-categorize');
+    await expect(categorizationScope).toContainText('Selected transactions');
+  });
+
   test('reviews duplicate and recurring candidates without changing transactions or schedules', async () => {
     await page.getByRole('button', { name: 'Review duplicates' }).click();
     const duplicateDialog = page.getByRole('dialog');

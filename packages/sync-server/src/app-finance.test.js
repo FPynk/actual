@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getAccountDb } from './account-db';
 import {
+  classifyOpenAiCategorizationModel,
+  clearOpenAiModelListCache,
   extractResponseOutput,
   getConfiguredOpenAiKey,
   handlers,
   parseProposals,
   requestOpenAiCategorization,
+  requestOpenAiCategorizationModels,
   validateCategorizationRequest,
 } from './app-finance';
 import { SecretName, secretsService } from './services/secrets-service';
@@ -32,6 +35,7 @@ const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 
 beforeEach(() => {
   delete process.env.OPENAI_API_KEY;
+  clearOpenAiModelListCache();
 });
 
 afterEach(() => {
@@ -55,9 +59,220 @@ afterEach(() => {
 });
 
 describe('OpenAI finance categorization', () => {
-  it('requires an authenticated Actual session', async () => {
+  it('lists official OpenAI-owned models and redacts provider metadata', async () => {
+    secretsService.set(
+      SecretName.openai_apiKey,
+      'budget-model-list-key',
+      'test-file-id',
+    );
+    const providerFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              created: 123,
+              id: 'gpt-5.6-luna',
+              object: 'model',
+              owned_by: 'openai',
+            },
+            {
+              created: 456,
+              id: 'gpt-5.6-sol',
+              object: 'model',
+              owned_by: 'openai',
+            },
+            {
+              created: 789,
+              id: 'gpt-experimental',
+              object: 'model',
+              owned_by: 'openai',
+            },
+            {
+              created: 987,
+              id: 'ft:gpt-5.6-luna:team:custom',
+              object: 'model',
+              owned_by: 'openai',
+            },
+            {
+              created: 654,
+              id: 'third-party-model',
+              object: 'model',
+              owned_by: 'other-provider',
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', providerFetch);
+
     const response = await supertest(handlers)
-      .get('/status')
+      .get('/models')
+      .set('X-Actual-File-Id', 'test-file-id')
+      .set('x-actual-token', 'valid-token');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({
+      status: 'ok',
+      data: {
+        models: [
+          {
+            compatibility: 'compatible',
+            id: 'gpt-5.6-sol',
+            isRecommended: true,
+            reason: null,
+          },
+          {
+            compatibility: 'compatible',
+            id: 'gpt-5.6-luna',
+            isRecommended: true,
+            reason: null,
+          },
+          {
+            compatibility: 'incompatible',
+            id: 'gpt-experimental',
+            isRecommended: false,
+            reason:
+              'Model compatibility policy 1 has not verified this model for categorization.',
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(
+      'budget-model-list-key',
+    );
+    expect(JSON.stringify(response.body)).not.toContain('owned_by');
+    expect(JSON.stringify(response.body)).not.toContain('created');
+    expect(providerFetch).toHaveBeenCalledWith(
+      'https://api.openai.com/v1/models',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer budget-model-list-key' },
+      }),
+    );
+  });
+
+  it('uses a short model-list cache until the client forces a refresh', async () => {
+    secretsService.set(
+      SecretName.openai_apiKey,
+      'budget-model-list-key',
+      'test-file-id',
+    );
+    const providerFetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: 'gpt-5.6-terra', object: 'model', owned_by: 'openai' },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', providerFetch);
+
+    const authenticatedRequest = () =>
+      supertest(handlers)
+        .get('/models')
+        .set('X-Actual-File-Id', 'test-file-id')
+        .set('x-actual-token', 'valid-token');
+
+    expect((await authenticatedRequest()).statusCode).toBe(200);
+    expect((await authenticatedRequest()).statusCode).toBe(200);
+    secretsService.set(
+      SecretName.openai_apiKey,
+      'rotated-model-list-key',
+      'test-file-id',
+    );
+    expect((await authenticatedRequest()).statusCode).toBe(200);
+    expect(
+      (
+        await supertest(handlers)
+          .get('/models?refresh=1')
+          .set('X-Actual-File-Id', 'test-file-id')
+          .set('x-actual-token', 'valid-token')
+      ).statusCode,
+    ).toBe(200);
+
+    expect(providerFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails malformed provider model metadata safely', async () => {
+    const providerFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 42, owned_by: 'openai' }] }), {
+        status: 200,
+      }),
+    );
+
+    await expect(
+      requestOpenAiCategorizationModels('not-a-real-key', {
+        fetchFunction: providerFetch,
+      }),
+    ).resolves.toEqual({ error: 'invalid-provider-response' });
+    expect(classifyOpenAiCategorizationModel('unknown-model')).toEqual({
+      compatibility: 'incompatible',
+      id: 'unknown-model',
+      isRecommended: false,
+      reason:
+        'Model compatibility policy 1 has not verified this model for categorization.',
+    });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-5.6-terra-2026-08-01'),
+    ).toMatchObject({ compatibility: 'compatible', isRecommended: false });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-4.1-mini-2025-04-14'),
+    ).toMatchObject({ compatibility: 'compatible' });
+    expect(classifyOpenAiCategorizationModel('gpt-5.4-mini')).toMatchObject({
+      compatibility: 'compatible',
+    });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-5.5-pro-2026-08-01'),
+    ).toMatchObject({ compatibility: 'compatible' });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-5-chat-latest'),
+    ).toMatchObject({ compatibility: 'compatible' });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-5-chat-latest-2025-08-07'),
+    ).toMatchObject({ compatibility: 'compatible' });
+    expect(
+      classifyOpenAiCategorizationModel('gpt-5.3-chat-latest'),
+    ).toMatchObject({ compatibility: 'incompatible' });
+    expect(classifyOpenAiCategorizationModel('gpt-5.3-codex')).toMatchObject({
+      compatibility: 'incompatible',
+    });
+    expect(classifyOpenAiCategorizationModel('o3')).toMatchObject({
+      compatibility: 'compatible',
+    });
+    expect(classifyOpenAiCategorizationModel('o4-deep-research')).toMatchObject(
+      {
+        compatibility: 'incompatible',
+      },
+    );
+  });
+
+  it('rejects duplicate model ids from the provider', async () => {
+    const providerFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: 'gpt-5.6-luna', owned_by: 'openai' },
+            { id: 'gpt-5.6-luna', owned_by: 'openai' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(
+      requestOpenAiCategorizationModels('not-a-real-key', {
+        fetchFunction: providerFetch,
+      }),
+    ).resolves.toEqual({ error: 'invalid-provider-response' });
+  });
+
+  it('requires an authenticated Actual session for model discovery', async () => {
+    const response = await supertest(handlers)
+      .get('/models')
       .set('X-Actual-File-Id', 'test-file-id');
 
     expect(response.statusCode).toBe(401);
@@ -65,6 +280,53 @@ describe('OpenAI finance categorization', () => {
       status: 'error',
       reason: 'unauthorized',
     });
+  });
+
+  it('rejects an incompatible categorization model before any provider call', async () => {
+    const providerFetch = vi.fn();
+    vi.stubGlobal('fetch', providerFetch);
+
+    const response = await supertest(handlers)
+      .post('/categorize')
+      .set('X-Actual-File-Id', 'test-file-id')
+      .set('x-actual-token', 'valid-token')
+      .send({ ...request, model: 'whisper-1' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toEqual({
+      status: 'error',
+      reason: 'incompatible-model',
+    });
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+
+  it('maps provider model-list HTTP and parsing failures clearly', async () => {
+    await expect(
+      requestOpenAiCategorizationModels('not-a-real-key', {
+        fetchFunction: vi
+          .fn()
+          .mockResolvedValue(new Response('', { status: 401 })),
+      }),
+    ).resolves.toEqual({ error: 'provider-authentication-failed' });
+    await expect(
+      requestOpenAiCategorizationModels('not-a-real-key', {
+        fetchFunction: vi
+          .fn()
+          .mockResolvedValue(new Response('', { status: 503 })),
+      }),
+    ).resolves.toEqual({ error: 'provider-unavailable' });
+    await expect(
+      requestOpenAiCategorizationModels('not-a-real-key', {
+        fetchFunction: vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => {
+            const abortError = new Error('aborted');
+            abortError.name = 'AbortError';
+            throw abortError;
+          },
+        }),
+      }),
+    ).resolves.toEqual({ error: 'provider-timeout' });
   });
 
   it('reports budget key status without returning any key material', async () => {

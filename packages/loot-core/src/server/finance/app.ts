@@ -40,6 +40,7 @@ import { q } from '#shared/query';
 import { makeChild } from '#shared/transactions';
 import type {
   AmazonReviewOrder,
+  FinanceCategorizationModelList,
   FinanceCategorizationRequest,
   FinanceCategorizationResponse,
   FinanceCategorizationStatus,
@@ -82,6 +83,7 @@ export type FinanceHandlers = {
   'finance/amazon/reopen-decision': typeof reopenAmazonReviewDecision;
   'finance/amazon/apply': typeof applyAmazonReview;
   'finance-categorization-status': typeof getCategorizationStatus;
+  'finance-categorization-models': typeof getCategorizationModels;
   'finance-categorize': typeof categorizeTransactions;
   'finance-categorization-api-key-set': typeof setCategorizationApiKey;
   'finance-categorization-apply': typeof applyFinanceCategorization;
@@ -124,6 +126,17 @@ async function financeRequest<ResponseData>(
 
 async function getCategorizationStatus() {
   return await financeRequest<FinanceCategorizationStatus>('/status', 'GET');
+}
+
+async function getCategorizationModels({
+  refresh = false,
+}: {
+  refresh?: boolean;
+} = {}) {
+  return await financeRequest<FinanceCategorizationModelList>(
+    refresh ? '/models?refresh=1' : '/models',
+    'GET',
+  );
 }
 
 async function categorizeTransactions(request: FinanceCategorizationRequest) {
@@ -965,6 +978,7 @@ app.method(
 );
 app.method('finance/amazon/apply', mutator(undoable(applyAmazonReview)));
 app.method('finance-categorization-status', getCategorizationStatus);
+app.method('finance-categorization-models', getCategorizationModels);
 app.method('finance-categorize', categorizeTransactions);
 app.method('finance-categorization-api-key-set', setCategorizationApiKey);
 app.method(
