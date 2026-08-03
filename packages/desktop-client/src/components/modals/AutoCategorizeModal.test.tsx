@@ -112,10 +112,22 @@ vi.mock('@actual-app/components/view', () => ({
   View: ({
     children,
     style,
+    ...props
   }: {
     children: ReactNode;
     style?: CSSProperties;
-  }) => <div style={style}>{children}</div>,
+  } & ComponentProps<'div'>) => (
+    <div
+      {...props}
+      style={Object.fromEntries(
+        Object.entries(style ?? {}).filter(
+          ([property]) => !property.startsWith('@'),
+        ),
+      )}
+    >
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('@actual-app/core/platform/client/connection', () => ({
@@ -488,6 +500,103 @@ describe('AutoCategorizeModal selected scope', () => {
       screen.getByText(/transactions outside this chosen scope are sent/),
     ).toBeVisible();
     expect(screen.queryByText(/unchecked transactions are sent/)).toBeNull();
+  });
+
+  it('keeps proposal selections independent when rows are unchecked and rechecked', async () => {
+    const user = userEvent.setup();
+    render(
+      <AutoCategorizeModal
+        currentQuery="{}"
+        initialScope="selected"
+        onApplied={vi.fn()}
+        onCreateRule={vi.fn()}
+        selectedTransactionIds={['checked-expense', 'checked-income']}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
+    );
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'I understand and want to generate suggestions for this run',
+      }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Generate suggestions' }),
+    );
+
+    const expenseProposal = await screen.findByRole('checkbox', {
+      name: 'Checked merchant with an intentionally long imported description that must wrap without covering review controls',
+    });
+    const incomeProposal = screen.getByRole('checkbox', {
+      name: 'Checked income',
+    });
+    expect(expenseProposal).toBeChecked();
+    expect(incomeProposal).toBeChecked();
+    await user.click(expenseProposal);
+    expect(expenseProposal).not.toBeChecked();
+    expect(incomeProposal).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Apply 1 categories' }),
+    ).toBeEnabled();
+
+    await user.click(incomeProposal);
+    expect(incomeProposal).not.toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Apply 0 categories' }),
+    ).toBeDisabled();
+
+    await user.click(expenseProposal);
+    expect(expenseProposal).toBeChecked();
+    expect(incomeProposal).not.toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Apply 1 categories' }),
+    ).toBeEnabled();
+  });
+
+  it('shows at most ten detailed proposals on each review page', async () => {
+    const user = userEvent.setup();
+    const transactionIds = Array.from(
+      { length: 11 },
+      (_, index) => `proposal-${index + 1}`,
+    );
+    mocks.aqlQuery.mockResolvedValue({
+      data: transactionIds.map((id, index) => ({
+        account: 'account-1',
+        amount: -1234,
+        date: '2026-08-01',
+        id,
+        imported_payee: `Long proposal merchant ${index + 1}`,
+      })),
+    });
+    render(
+      <AutoCategorizeModal
+        currentQuery="{}"
+        initialScope="selected"
+        onApplied={vi.fn()}
+        onCreateRule={vi.fn()}
+        selectedTransactionIds={transactionIds}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
+    );
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'I understand and want to generate suggestions for this run',
+      }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Generate suggestions' }),
+    );
+
+    expect(await screen.findByText('Page 1 of 2')).toBeVisible();
+    expect(screen.getAllByTestId('categorization-review-row')).toHaveLength(10);
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('Page 2 of 2')).toBeVisible();
+    expect(screen.getAllByTestId('categorization-review-row')).toHaveLength(1);
   });
 
   it('shows a clear model-rejection error without creating proposals', async () => {

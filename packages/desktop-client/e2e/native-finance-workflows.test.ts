@@ -86,14 +86,23 @@ async function configureCategorizationReviewFixture(page: Page) {
   }, new URL('/', page.url()).origin);
 }
 
-async function openCategorizationReview(page: Page, accountPage: AccountPage) {
+function categorizationPayee(index: number) {
+  return `A deliberately long merchant description ${index} that must wrap without covering categorization controls`;
+}
+
+async function openCategorizationReview(
+  page: Page,
+  accountPage: AccountPage,
+  proposalCount = 1,
+) {
   await configureCategorizationReviewFixture(page);
-  await accountPage.createSingleTransaction({
-    date: '01/01/2017',
-    debit: '12.34',
-    payee:
-      'A deliberately long merchant description that must wrap without covering categorization controls',
-  });
+  for (let index = 1; index <= proposalCount; index++) {
+    await accountPage.createSingleTransaction({
+      date: '01/01/2017',
+      debit: '12.34',
+      payee: categorizationPayee(index),
+    });
+  }
   await page.getByRole('button', { name: 'Auto-categorize' }).click();
   await page
     .getByRole('button', { name: 'Review eligible transactions' })
@@ -104,26 +113,37 @@ async function openCategorizationReview(page: Page, accountPage: AccountPage) {
     })
     .check();
   await page.getByRole('button', { name: 'Generate suggestions' }).click();
-  await expect(page.getByText('1 suggestions selected.')).toBeVisible();
+  await expect(
+    page.getByText(`${proposalCount} suggestions selected.`),
+  ).toBeVisible();
 }
 
-async function expectCategorizationReviewControlsDoNotOverlap(page: Page) {
+async function expectCategorizationReviewControlsDoNotOverlap(
+  page: Page,
+  expectedVisibleRows = 1,
+) {
   const dialog = page.getByRole('dialog');
-  const payee = dialog.getByText(
-    'A deliberately long merchant description that must wrap without covering categorization controls',
+  const reviewRows = dialog.getByTestId('categorization-review-row');
+  const reviewList = dialog.getByTestId('categorization-review-list');
+  await expect(reviewRows).toHaveCount(expectedVisibleRows);
+  const firstReviewRow = reviewRows.first();
+  const payee = firstReviewRow.getByText(
+    /^A deliberately long merchant description \d+ that must wrap without covering categorization controls$/,
   );
-  const direction = dialog.getByText('Outflow');
-  const amount = dialog.getByText(/12\.34/);
-  const date = dialog.getByText('2017-01-01');
-  const currentCategory = dialog.getByText('Current: Uncategorized');
-  const categoryLabel = dialog.locator(
+  const direction = firstReviewRow.getByText('Outflow');
+  const amount = firstReviewRow.getByText(/12\.34/);
+  const date = firstReviewRow.getByText('2017-01-01');
+  const currentCategory = firstReviewRow.getByText('Current: Uncategorized');
+  const categoryLabel = firstReviewRow.locator(
     'label[for^="categorization-category-"]',
   );
-  const categoryControl = dialog.locator('[id^="categorization-category-"]');
-  const explanation = dialog.getByText(
+  const categoryControl = firstReviewRow.locator(
+    '[id^="categorization-category-"]',
+  );
+  const explanation = firstReviewRow.getByText(
     'A deliberately long deterministic explanation must remain separate from the current category and category control.',
   );
-  const confidence = dialog.getByText('high confidence');
+  const confidence = firstReviewRow.getByText('high confidence');
 
   await expect(categoryLabel).toHaveCount(1);
   await expect(categoryControl).toHaveCount(1);
@@ -160,6 +180,31 @@ async function expectCategorizationReviewControlsDoNotOverlap(page: Page) {
     keyof typeof namedLocators,
     NonNullable<Awaited<ReturnType<Locator['boundingBox']>>>
   >;
+  const reviewRowBoxes = await Promise.all(
+    Array.from({ length: expectedVisibleRows }, (_, index) =>
+      reviewRows.nth(index).boundingBox(),
+    ),
+  );
+  if (reviewRowBoxes.some(box => box === null)) {
+    throw new Error('expected visible categorization review rows');
+  }
+  const nonNullReviewRowBoxes = reviewRowBoxes as NonNullable<
+    Awaited<ReturnType<Locator['boundingBox']>>
+  >[];
+  for (let index = 0; index < nonNullReviewRowBoxes.length; index++) {
+    for (
+      let nextIndex = index + 1;
+      nextIndex < nonNullReviewRowBoxes.length;
+      nextIndex++
+    ) {
+      expect(
+        boxesDoNotOverlap(
+          nonNullReviewRowBoxes[index],
+          nonNullReviewRowBoxes[nextIndex],
+        ),
+      ).toBe(true);
+    }
+  }
   const nonOverlappingPairs: Array<
     readonly [keyof typeof namedLocators, keyof typeof namedLocators]
   > = [
@@ -186,6 +231,21 @@ async function expectCategorizationReviewControlsDoNotOverlap(page: Page) {
       dialogBox.x + dialogBox.width + 1,
     );
   }
+
+  const listDimensions = await reviewList.evaluate(element => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  if (expectedVisibleRows > 1) {
+    expect(listDimensions.scrollHeight).toBeGreaterThan(
+      listDimensions.clientHeight,
+    );
+  }
+  const applyButton = dialog.getByRole('button', {
+    name: /Apply \d+ categories/,
+  });
+  await applyButton.scrollIntoViewIfNeeded();
+  await expect(applyButton).toBeVisible();
 }
 
 test.describe('Native finance workflows', () => {
@@ -280,6 +340,28 @@ test.describe('Native finance workflows', () => {
 
     await page.setViewportSize({ width: 350, height: 700 });
     await expectCategorizationReviewControlsDoNotOverlap(page);
+  });
+
+  test('keeps eleven long proposal cards scrollable and non-overlapping', async () => {
+    await openCategorizationReview(page, accountPage, 11);
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Page 1 of 2')).toBeVisible();
+    await expectCategorizationReviewControlsDoNotOverlap(page, 10);
+
+    await page.setViewportSize({ width: 350, height: 700 });
+    await expectCategorizationReviewControlsDoNotOverlap(page, 10);
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.evaluate(() => {
+      document.body.style.zoom = '1.25';
+    });
+    await expectCategorizationReviewControlsDoNotOverlap(page, 10);
+
+    await dialog.getByRole('button', { name: 'Next' }).click();
+    await expect(dialog.getByText('Page 2 of 2')).toBeVisible();
+    await expect(dialog.getByTestId('categorization-review-row')).toHaveCount(
+      1,
+    );
   });
 
   test('uses checked transactions from either auto-categorize entry point', async () => {

@@ -66,7 +66,7 @@ type ReviewRow = {
   proposal: CategorizationProposal;
 };
 
-const categorizationReviewPageSize = 100;
+const categorizationReviewPageSize = 10;
 
 function parseCategorizationSettings(
   serializedSettings: string | undefined,
@@ -686,10 +686,13 @@ export function AutoCategorizeModal({
                   </Trans>
                 </Text>
                 <View
+                  data-testid="categorization-review-list"
                   style={{
                     border: `1px solid ${theme.tableBorder}`,
                     borderRadius: 6,
-                    maxHeight: '55vh',
+                    flex: '1 1 auto',
+                    maxHeight: '50vh',
+                    minHeight: 0,
                     overflowY: 'auto',
                   }}
                 >
@@ -701,10 +704,12 @@ export function AutoCategorizeModal({
                     return (
                       <View
                         key={row.candidate.candidateId}
+                        data-testid="categorization-review-row"
                         style={{
                           borderBottom: `1px solid ${theme.tableBorder}`,
-                          padding: 10,
-                          gap: 6,
+                          flexShrink: 0,
+                          gap: 12,
+                          padding: 12,
                         }}
                       >
                         <View
@@ -713,6 +718,10 @@ export function AutoCategorizeModal({
                             flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 8,
+                            '@media (max-width: 500px)': {
+                              alignItems: 'stretch',
+                              flexDirection: 'column',
+                            },
                           }}
                         >
                           <LabeledCheckbox
@@ -720,9 +729,10 @@ export function AutoCategorizeModal({
                             checked={isSelected}
                             disabled={!row.proposal.categoryId}
                             onChange={event => {
+                              const isChecked = event.currentTarget.checked;
                               setSelectedCandidateIds(previous => {
                                 const next = new Set(previous);
-                                if (event.currentTarget.checked) {
+                                if (isChecked) {
                                   next.add(row.candidate.candidateId);
                                 } else {
                                   next.delete(row.candidate.candidateId);
@@ -730,7 +740,11 @@ export function AutoCategorizeModal({
                                 return next;
                               });
                             }}
-                            style={{ flex: '1 1 240px', minWidth: 0 }}
+                            style={{
+                              alignItems: 'flex-start',
+                              flex: '1 1 100%',
+                              minWidth: 0,
+                            }}
                           >
                             <Text
                               style={{
@@ -765,6 +779,10 @@ export function AutoCategorizeModal({
                             flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 8,
+                            '@media (max-width: 500px)': {
+                              alignItems: 'stretch',
+                              flexDirection: 'column',
+                            },
                           }}
                         >
                           <Text
@@ -786,10 +804,14 @@ export function AutoCategorizeModal({
                           <View
                             style={{
                               alignItems: 'center',
-                              flex: '2 1 260px',
+                              flex: '1 1 280px',
                               flexDirection: 'row',
                               gap: 8,
                               minWidth: 0,
+                              '@media (max-width: 500px)': {
+                                alignItems: 'stretch',
+                                flexDirection: 'column',
+                              },
                             }}
                           >
                             <FormLabel
@@ -826,12 +848,18 @@ export function AutoCategorizeModal({
                                   return next;
                                 });
                               }}
-                              style={{ flex: 1, minWidth: 0, width: 'auto' }}
+                              style={{
+                                flex: '1 1 auto',
+                                maxWidth: 360,
+                                minWidth: 0,
+                                width: '100%',
+                              }}
                             />
                           </View>
                           <Text
                             style={{
                               color: theme.pageTextSubdued,
+                              flex: '0 0 auto',
                               whiteSpace: 'nowrap',
                             }}
                           >
