@@ -39,6 +39,7 @@ function providerCandidate(
     currency: 'USD',
     date: '2026-08-01',
     description: 'CORNER SHOP 123',
+    direction: 'outflow',
     fingerprint: 'fingerprint',
     transactionId: `transaction-${candidateId}`,
   };
@@ -70,16 +71,28 @@ describe('finance categorization', () => {
     expect(includedResult.candidates).toHaveLength(2);
   });
 
-  it('excludes non-expenses, transfers, splits, reconciled, starting balances, off-budget, and undescribed rows', () => {
+  it('includes Capital One-style separate debit and credit records while excluding zero-value and protected rows', () => {
     const transactions = [
-      expense({ transactionId: 'income', amount: 100 }),
-      expense({ transactionId: 'transfer', transferId: 'linked' }),
-      expense({ transactionId: 'split', isChild: true }),
-      expense({ transactionId: 'reconciled', reconciled: true }),
-      expense({ transactionId: 'starting-balance', startingBalance: true }),
-      expense({ transactionId: 'off-budget', accountOffBudget: true }),
+      expense({ transactionId: 'capital-one-credit', amount: 250_000 }),
+      expense({ transactionId: 'capital-one-debit', amount: -12_345 }),
+      expense({ transactionId: 'zero', amount: 0 }),
+      expense({ transactionId: 'transfer', amount: 100, transferId: 'linked' }),
+      expense({ transactionId: 'split', amount: 100, isChild: true }),
+      expense({ transactionId: 'reconciled', amount: 100, reconciled: true }),
+      expense({
+        transactionId: 'starting-balance',
+        amount: 100,
+        startingBalance: true,
+      }),
+      expense({
+        transactionId: 'off-budget',
+        amount: 100,
+        accountOffBudget: true,
+      }),
+      expense({ transactionId: 'deleted', amount: 100, deleted: true }),
       expense({
         transactionId: 'undescribed',
+        amount: 100,
         importedPayee: '',
         payeeName: '',
       }),
@@ -93,15 +106,27 @@ describe('finance categorization', () => {
       createCandidateId: () => 'candidate',
     });
 
-    expect(result.candidates).toHaveLength(0);
+    expect(result.candidates).toMatchObject([
+      {
+        amount: '2500.00',
+        direction: 'inflow',
+        transactionId: 'capital-one-credit',
+      },
+      {
+        amount: '-123.45',
+        direction: 'outflow',
+        transactionId: 'capital-one-debit',
+      },
+    ]);
     expect(result.skipped).toMatchObject({
+      deleted: 1,
       'missing-description': 1,
-      'not-expense': 1,
       'off-budget': 1,
       reconciled: 1,
       split: 1,
       'starting-balance': 1,
       transfer: 1,
+      'zero-amount': 1,
     });
   });
 
@@ -119,6 +144,7 @@ describe('finance categorization', () => {
       candidateId: 'opaque-candidate',
       currency: 'USD',
       description: 'CORNER SHOP 123',
+      direction: 'outflow',
       payee: 'Corner Shop',
     });
     const providerPayload = toCategorizationGatewayCandidate(candidate);
@@ -296,5 +322,35 @@ describe('finance categorization', () => {
       { transactionId: 'stale', reason: 'stale' },
       { transactionId: 'disallowed', reason: 'category-not-allowed' },
     ]);
+  });
+
+  it('allows configured income and expense categories for positive inflows and refunds', () => {
+    const income = expense({ amount: 250_000, transactionId: 'paycheck' });
+    const refund = expense({ amount: 2_499, transactionId: 'refund' });
+    const result = planCategorizationApply({
+      proposals: [
+        {
+          transactionId: income.transactionId,
+          categoryId: 'salary',
+          fingerprint: categorizationFingerprint(income),
+        },
+        {
+          transactionId: refund.transactionId,
+          categoryId: 'groceries',
+          fingerprint: categorizationFingerprint(refund),
+        },
+      ],
+      currentTransactions: [income, refund],
+      allowedCategoryIds: new Set(['salary', 'groceries']),
+      includeCategorized: false,
+    });
+
+    expect(result).toEqual({
+      skipped: [],
+      updates: [
+        { id: 'paycheck', category: 'salary' },
+        { id: 'refund', category: 'groceries' },
+      ],
+    });
   });
 });

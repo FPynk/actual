@@ -69,13 +69,10 @@ export async function applyFinanceCategorization({
   );
   const allowedCategoryIds = new Set(
     categoryGroups
-      .filter(group => !group.hidden && !group.is_income)
+      .filter(group => !group.hidden)
       .flatMap(group => group.categories)
       .filter(
-        category =>
-          configuredCategoryIds.has(category.id) &&
-          !category.hidden &&
-          !category.is_income,
+        category => configuredCategoryIds.has(category.id) && !category.hidden,
       )
       .map(category => category.id),
   );

@@ -65,6 +65,7 @@ vi.mock('#hooks/useCategories', () => ({
       grouped: [
         {
           id: 'expenses',
+          name: 'Expenses',
           categories: [
             { id: 'groceries', name: 'Groceries', is_income: false },
             { id: 'rent', name: 'Rent', is_income: false },
@@ -73,6 +74,7 @@ vi.mock('#hooks/useCategories', () => ({
         },
         {
           id: 'hidden-group',
+          name: 'Hidden group',
           hidden: true,
           categories: [
             {
@@ -84,6 +86,7 @@ vi.mock('#hooks/useCategories', () => ({
         },
         {
           id: 'income-group',
+          name: 'Income',
           is_income: true,
           categories: [{ id: 'income', name: 'Income', is_income: true }],
         },
@@ -137,11 +140,13 @@ describe('FinanceCategorizationSettings', () => {
 
     expect(screen.getByRole('checkbox', { name: 'Groceries' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Rent' })).toBeChecked();
-    expect(screen.queryByRole('checkbox', { name: 'Income' })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: 'Income' })).toBeChecked();
     expect(screen.queryByRole('checkbox', { name: 'Hidden' })).toBeNull();
     expect(
       screen.queryByRole('checkbox', { name: 'Hidden group visible' }),
     ).toBeNull();
+    expect(screen.getByText('Expenses')).toBeVisible();
+    expect(screen.getAllByText('Income')).toHaveLength(2);
 
     await user.click(screen.getByRole('checkbox', { name: 'Rent' }));
     expect(screen.getByRole('checkbox', { name: 'Rent' })).not.toBeChecked();
@@ -154,7 +159,7 @@ describe('FinanceCategorizationSettings', () => {
       expect.objectContaining({
         prefs: {
           'finance.openai-categorization': expect.stringContaining(
-            '"categoryIds":["groceries"]',
+            '"categoryIds":["groceries","income"]',
           ),
         },
       }),

@@ -1,5 +1,10 @@
 import { isValidElement } from 'react';
-import type { ChangeEvent, ComponentProps, ReactNode } from 'react';
+import type {
+  ChangeEvent,
+  ComponentProps,
+  CSSProperties,
+  ReactNode,
+} from 'react';
 
 import { q } from '@actual-app/core/shared/query';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -68,15 +73,18 @@ vi.mock('@actual-app/components/select', () => ({
     onChange,
     options,
     value,
+    style,
   }: {
     id: string;
     onChange: (value: string) => void;
     options: Array<readonly [string, string]>;
     value: string;
+    style?: CSSProperties;
   }) => (
     <select
       id={id}
       onChange={event => onChange(event.currentTarget.value)}
+      style={style}
       value={value}
     >
       {options.map(([optionValue, label]) => (
@@ -89,13 +97,25 @@ vi.mock('@actual-app/components/select', () => ({
 }));
 
 vi.mock('@actual-app/components/text', () => ({
-  Text: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Text: ({
+    children,
+    style,
+  }: {
+    children: ReactNode;
+    style?: CSSProperties;
+  }) => <div style={style}>{children}</div>,
 }));
 
 vi.mock('@actual-app/components/theme', () => ({ theme: {} }));
 
 vi.mock('@actual-app/components/view', () => ({
-  View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  View: ({
+    children,
+    style,
+  }: {
+    children: ReactNode;
+    style?: CSSProperties;
+  }) => <div style={style}>{children}</div>,
 }));
 
 vi.mock('@actual-app/core/platform/client/connection', () => ({
@@ -120,8 +140,16 @@ vi.mock('#components/common/Modal', () => ({
         : children}
     </div>
   ),
-  ModalButtons: ({ children }: { children: ReactNode }) => (
-    <div>{children}</div>
+  ModalButtons: ({
+    children,
+    style,
+  }: {
+    children: ReactNode;
+    style?: CSSProperties;
+  }) => (
+    <div data-testid="modal-buttons" style={style}>
+      {children}
+    </div>
   ),
   ModalCloseButton: () => null,
   ModalHeader: ({ title }: { title: string }) => <h1>{title}</h1>,
@@ -133,7 +161,9 @@ vi.mock('#components/FinancialText', () => ({
 
 vi.mock('#components/forms', () => ({
   FormField: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  FormLabel: ({ title }: { title: string }) => <label>{title}</label>,
+  FormLabel: ({ htmlFor, title }: { htmlFor?: string; title: string }) => (
+    <label htmlFor={htmlFor}>{title}</label>
+  ),
 }));
 
 vi.mock('#components/forms/LabeledCheckbox', () => ({
@@ -142,13 +172,15 @@ vi.mock('#components/forms/LabeledCheckbox', () => ({
     children,
     id,
     onChange,
+    style,
   }: {
     checked: boolean;
     children: ReactNode;
     id: string;
     onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+    style?: CSSProperties;
   }) => (
-    <label htmlFor={id}>
+    <label htmlFor={id} style={style}>
       <input checked={checked} id={id} onChange={onChange} type="checkbox" />
       {children}
     </label>
@@ -161,13 +193,29 @@ vi.mock('#hooks/useCategories', () => ({
       grouped: [
         {
           categories: [
-            { id: 'groceries', is_income: false, name: 'Groceries' },
+            {
+              id: 'groceries',
+              is_income: false,
+              name: 'Groceries and household supplies with an intentionally long category name',
+            },
           ],
           hidden: false,
           is_income: false,
         },
+        {
+          categories: [{ id: 'income', is_income: true, name: 'Income' }],
+          hidden: false,
+          is_income: true,
+        },
       ],
-      list: [{ id: 'groceries', is_income: false, name: 'Groceries' }],
+      list: [
+        {
+          id: 'groceries',
+          is_income: false,
+          name: 'Groceries and household supplies with an intentionally long category name',
+        },
+        { id: 'income', is_income: true, name: 'Income' },
+      ],
     },
   }),
 }));
@@ -193,7 +241,7 @@ describe('AutoCategorizeModal selected scope', () => {
   beforeEach(() => {
     mocks.serializedSettings = JSON.stringify({
       categoryGuidance: {},
-      categoryIds: ['groceries'],
+      categoryIds: ['groceries', 'income'],
       masterPrompt: 'Choose a category.',
       model: 'gpt-5.6-luna',
     });
@@ -211,7 +259,8 @@ describe('AutoCategorizeModal selected scope', () => {
             amount: -1234,
             date: '2026-08-01',
             id: 'checked-expense',
-            imported_payee: 'Checked merchant',
+            imported_payee:
+              'Checked merchant with an intentionally long imported description that must wrap without covering review controls',
           },
           {
             account: 'account-1',
@@ -239,7 +288,8 @@ describe('AutoCategorizeModal selected scope', () => {
           candidate_id: candidate.candidate_id,
           category_id: 'groceries',
           confidence: 'high',
-          explanation: 'Merchant match.',
+          explanation:
+            'Merchant match supported by a deliberately long synthetic explanation that must remain readable without overlapping the category selector or confidence label.',
         })),
       }),
     );
@@ -249,7 +299,7 @@ describe('AutoCategorizeModal selected scope', () => {
     const user = userEvent.setup();
     mocks.serializedSettings = JSON.stringify({
       categoryGuidance: {},
-      categoryIds: ['groceries'],
+      categoryIds: ['groceries', 'income'],
       masterPrompt: 'Choose a category.',
       model: 'gpt-4.1-mini',
     });
@@ -264,16 +314,16 @@ describe('AutoCategorizeModal selected scope', () => {
     );
 
     await user.click(
-      screen.getByRole('button', { name: 'Review eligible expenses' }),
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
     );
 
     expect(
       await screen.findByText(
-        /Selected transactions: 2\. Eligible expenses: 1\./,
+        /Requested selected transactions: 2\. Eligible transactions: 2\./,
       ),
     ).toBeVisible();
     expect(
-      screen.getByText(/Skipped ineligible selected rows: 1\./),
+      screen.getByText(/Skipped ineligible selected rows: 0\./),
     ).toBeVisible();
     expect(screen.getByText(/unchecked transactions are sent/)).toBeVisible();
 
@@ -292,17 +342,113 @@ describe('AutoCategorizeModal selected scope', () => {
         expect.objectContaining({
           model: 'gpt-4.1-mini',
           candidates: [
-            expect.objectContaining({ description: 'Checked merchant' }),
+            expect.objectContaining({
+              description:
+                'Checked merchant with an intentionally long imported description that must wrap without covering review controls',
+            }),
+            expect.objectContaining({ description: 'Checked income' }),
           ],
         }),
       );
     });
-    expect(JSON.stringify(mocks.send.mock.calls)).not.toContain(
-      'checked-income',
-    );
+    expect(await screen.findByText('Inflow')).toBeVisible();
+    expect(screen.getByText('Outflow')).toBeVisible();
+    expect(screen.getByText('+1234')).toBeVisible();
+    expect(
+      screen.getAllByText('Current: Uncategorized')[0].parentElement,
+    ).toHaveStyle({
+      flexWrap: 'wrap',
+      gap: '8px',
+    });
+    expect(
+      screen.getByText(
+        'Checked merchant with an intentionally long imported description that must wrap without covering review controls',
+      ),
+    ).toHaveStyle({ overflowWrap: 'anywhere' });
+    expect(
+      screen.getAllByText(
+        'Merchant match supported by a deliberately long synthetic explanation that must remain readable without overlapping the category selector or confidence label.',
+      )[0],
+    ).toHaveStyle({ overflowWrap: 'anywhere' });
+    expect(
+      screen.getAllByRole('option', {
+        name: 'Groceries and household supplies with an intentionally long category name',
+      }),
+    ).not.toHaveLength(0);
+    expect(screen.getByTestId('modal-buttons')).toHaveStyle({
+      flexWrap: 'wrap',
+      gap: '8px',
+    });
     expect(JSON.stringify(mocks.send.mock.calls)).not.toContain(
       'Unchecked merchant',
     );
+  });
+
+  it('explains zero-value rows that are skipped from a mixed selected scope', async () => {
+    const user = userEvent.setup();
+    mocks.aqlQuery.mockImplementationOnce(async query => {
+      expect(query.serialize().filterExpressions).toEqual([
+        {
+          id: {
+            $oneof: ['checked-expense', 'checked-income', 'checked-zero'],
+          },
+        },
+      ]);
+      return {
+        data: [
+          {
+            account: 'account-1',
+            amount: -1234,
+            date: '2026-08-01',
+            id: 'checked-expense',
+            imported_payee: 'Checked merchant',
+          },
+          {
+            account: 'account-1',
+            amount: 1234,
+            date: '2026-08-01',
+            id: 'checked-income',
+            imported_payee: 'Checked income',
+          },
+          {
+            account: 'account-1',
+            amount: 0,
+            date: '2026-08-01',
+            id: 'checked-zero',
+            imported_payee: 'Zero-value row',
+          },
+        ],
+      };
+    });
+
+    render(
+      <AutoCategorizeModal
+        currentQuery="{}"
+        initialScope="selected"
+        onApplied={vi.fn()}
+        onCreateRule={vi.fn()}
+        selectedTransactionIds={[
+          'checked-expense',
+          'checked-income',
+          'checked-zero',
+        ]}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Requested selected transactions: 3\. Eligible transactions: 2\./,
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Skipped ineligible selected rows: 1\./),
+    ).toBeVisible();
+    expect(screen.getByText('Skipped reasons: zero amount: 1')).toBeVisible();
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it('updates the disclosure when the user deliberately changes scope', async () => {
@@ -330,10 +476,14 @@ describe('AutoCategorizeModal selected scope', () => {
 
     await user.selectOptions(screen.getByRole('combobox'), 'current-filter');
     await user.click(
-      screen.getByRole('button', { name: 'Review eligible expenses' }),
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
     );
 
-    expect(await screen.findByText(/Eligible expenses: 1\./)).toBeVisible();
+    expect(
+      await screen.findByText(
+        /Requested transactions: 1\. Eligible transactions: 1\./,
+      ),
+    ).toBeVisible();
     expect(
       screen.getByText(/transactions outside this chosen scope are sent/),
     ).toBeVisible();
@@ -354,7 +504,7 @@ describe('AutoCategorizeModal selected scope', () => {
     );
 
     await user.click(
-      screen.getByRole('button', { name: 'Review eligible expenses' }),
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
     );
     await user.click(
       screen.getByRole('checkbox', {

@@ -26,6 +26,7 @@ const request = {
       amount: '-24.99',
       currency: 'USD',
       date: '2026-08-02',
+      direction: 'outflow',
     },
   ],
 };
@@ -421,6 +422,12 @@ describe('OpenAI finance categorization', () => {
     expect(
       validateCategorizationRequest({
         ...request,
+        candidates: [{ ...request.candidates[0], direction: 'inflow' }],
+      }),
+    ).toBeNull();
+    expect(
+      validateCategorizationRequest({
+        ...request,
         candidates: [
           { ...request.candidates[0], notes: 'must not leave Actual' },
         ],
@@ -432,6 +439,30 @@ describe('OpenAI finance categorization', () => {
         candidates: [{ ...request.candidates[0], transaction_id: 'actual-id' }],
       }),
     ).toBeNull();
+  });
+
+  it('accepts a mixed inflow and outflow batch with directions that match signed amounts', () => {
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [
+          request.candidates[0],
+          {
+            candidate_id: 'candidate-2',
+            description: 'PAYROLL DEPOSIT',
+            amount: '2500.00',
+            currency: 'USD',
+            date: '2026-08-02',
+            direction: 'inflow',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      candidates: [
+        { candidate_id: 'candidate-1', direction: 'outflow' },
+        { candidate_id: 'candidate-2', direction: 'inflow' },
+      ],
+    });
   });
 
   it('uses a non-stored strict structured Responses request', async () => {
@@ -484,6 +515,7 @@ describe('OpenAI finance categorization', () => {
     expect(options.headers.Authorization).toBe('Bearer not-a-real-key');
     expect(JSON.parse(options.body)).toMatchObject({
       store: false,
+      instructions: expect.stringContaining('inflows or outflows'),
       text: {
         format: {
           name: 'transaction_category_proposals',
@@ -491,6 +523,9 @@ describe('OpenAI finance categorization', () => {
           strict: true,
         },
       },
+    });
+    expect(JSON.parse(options.body)).toMatchObject({
+      input: expect.stringContaining('"direction":"outflow"'),
     });
     expect(options.body).not.toContain('notes');
   });

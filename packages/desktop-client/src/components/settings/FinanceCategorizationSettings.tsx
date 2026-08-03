@@ -235,10 +235,14 @@ export function FinanceCategorizationSettings() {
     setModelListRevision(revision => revision + 1);
   };
 
-  const categories = (categoryData?.grouped ?? [])
-    .filter(group => !group.hidden && !group.is_income)
-    .flatMap(group => group.categories ?? [])
-    .filter(category => !category.hidden && !category.is_income);
+  const categoryGroups = (categoryData?.grouped ?? [])
+    .filter(group => !group.hidden)
+    .map(group => ({
+      ...group,
+      categories: (group.categories ?? []).filter(category => !category.hidden),
+    }))
+    .filter(group => group.categories.length > 0);
+  const categories = categoryGroups.flatMap(group => group.categories);
   const selectedCategoryIds = new Set(draftSettings.categoryIds);
   const areAllEligibleCategoriesSelected =
     categories.length > 0 &&
@@ -371,12 +375,12 @@ export function FinanceCategorizationSettings() {
                     masterPrompt: event.currentTarget.value,
                   })
                 }
-                placeholder={t('Explain how to classify your spending')}
+                placeholder={t('Explain how to categorize your transactions')}
               />
             </FormField>
 
             <Text style={{ fontWeight: 600 }}>
-              <Trans>Categories the AI may use</Trans>
+              <Trans>Categories the AI may use for inflows and outflows</Trans>
             </Text>
             <Button
               isDisabled={
@@ -391,97 +395,108 @@ export function FinanceCategorizationSettings() {
             >
               <Trans>Select all</Trans>
             </Button>
-            {categories.map(category => {
-              const selected = selectedCategoryIds.has(category.id);
-              return (
-                <View key={category.id} style={{ gap: 4, width: '100%' }}>
-                  <Text style={{ display: 'flex' }}>
-                    <Checkbox
-                      id={`finance-category-${category.id}`}
-                      checked={selected}
-                      onChange={event => {
-                        const categoryIds = event.currentTarget.checked
-                          ? [...draftSettings.categoryIds, category.id]
-                          : draftSettings.categoryIds.filter(
-                              id => id !== category.id,
-                            );
-                        if (!event.currentTarget.checked) {
-                          if (expandedCategoryId === category.id) {
-                            closeExpandedGuidance();
-                          }
-                        }
-                        updateDraftSettings({ ...draftSettings, categoryIds });
-                      }}
-                    />
-                    <label htmlFor={`finance-category-${category.id}`}>
-                      {category.name}
-                    </label>
-                  </Text>
-                  {selected && (
-                    <View style={{ alignItems: 'flex-start', gap: 4 }}>
-                      <textarea
-                        aria-label={t('Guidance for {{categoryName}}', {
-                          categoryName: category.name,
-                        })}
-                        value={
-                          draftSettings.categoryGuidance[category.id] || ''
-                        }
-                        onChange={event =>
-                          updateDraftSettings({
-                            ...draftSettings,
-                            categoryGuidance: {
-                              ...draftSettings.categoryGuidance,
-                              [category.id]: event.currentTarget.value,
-                            },
-                          })
-                        }
-                        placeholder={t('Optional guidance for this category')}
-                        style={{
-                          backgroundColor: theme.tableBackground,
-                          border: `1px solid ${theme.formInputBorder}`,
-                          borderRadius: 4,
-                          color: theme.tableText,
-                          maxHeight: 160,
-                          minHeight: 80,
-                          overflowY: 'auto',
-                          padding: 7,
-                          resize: 'vertical',
-                          width: '100%',
-                        }}
-                      />
-                      <Text style={{ color: theme.warningText }}>
-                        <Trans>
-                          Keep guidance short and specific. Longer guidance
-                          increases API cost and may reduce classification
-                          consistency.
-                        </Trans>
+            {categoryGroups.map(group => (
+              <View key={group.id} style={{ gap: 8, width: '100%' }}>
+                <Text style={{ fontWeight: 600 }}>{group.name}</Text>
+                {group.categories.map(category => {
+                  const selected = selectedCategoryIds.has(category.id);
+                  return (
+                    <View key={category.id} style={{ gap: 4, width: '100%' }}>
+                      <Text style={{ display: 'flex' }}>
+                        <Checkbox
+                          id={`finance-category-${category.id}`}
+                          checked={selected}
+                          onChange={event => {
+                            const categoryIds = event.currentTarget.checked
+                              ? [...draftSettings.categoryIds, category.id]
+                              : draftSettings.categoryIds.filter(
+                                  id => id !== category.id,
+                                );
+                            if (!event.currentTarget.checked) {
+                              if (expandedCategoryId === category.id) {
+                                closeExpandedGuidance();
+                              }
+                            }
+                            updateDraftSettings({
+                              ...draftSettings,
+                              categoryIds,
+                            });
+                          }}
+                        />
+                        <label htmlFor={`finance-category-${category.id}`}>
+                          {category.name}
+                        </label>
                       </Text>
-                      <Button
-                        ref={element => {
-                          if (element) {
-                            guidanceExpandButtonRefs.current.set(
-                              category.id,
-                              element,
-                            );
-                          } else {
-                            guidanceExpandButtonRefs.current.delete(
-                              category.id,
-                            );
-                          }
-                        }}
-                        variant="bare"
-                        aria-label={t('Expand guidance for {{categoryName}}', {
-                          categoryName: category.name,
-                        })}
-                        onPress={() => setExpandedCategoryId(category.id)}
-                      >
-                        <Trans>Expand</Trans>
-                      </Button>
+                      {selected && (
+                        <View style={{ alignItems: 'flex-start', gap: 4 }}>
+                          <textarea
+                            aria-label={t('Guidance for {{categoryName}}', {
+                              categoryName: category.name,
+                            })}
+                            value={
+                              draftSettings.categoryGuidance[category.id] || ''
+                            }
+                            onChange={event =>
+                              updateDraftSettings({
+                                ...draftSettings,
+                                categoryGuidance: {
+                                  ...draftSettings.categoryGuidance,
+                                  [category.id]: event.currentTarget.value,
+                                },
+                              })
+                            }
+                            placeholder={t(
+                              'Optional guidance for this category',
+                            )}
+                            style={{
+                              backgroundColor: theme.tableBackground,
+                              border: `1px solid ${theme.formInputBorder}`,
+                              borderRadius: 4,
+                              color: theme.tableText,
+                              maxHeight: 160,
+                              minHeight: 80,
+                              overflowY: 'auto',
+                              padding: 7,
+                              resize: 'vertical',
+                              width: '100%',
+                            }}
+                          />
+                          <Text style={{ color: theme.warningText }}>
+                            <Trans>
+                              Keep guidance short and specific. Longer guidance
+                              increases API cost and may reduce classification
+                              consistency.
+                            </Trans>
+                          </Text>
+                          <Button
+                            ref={element => {
+                              if (element) {
+                                guidanceExpandButtonRefs.current.set(
+                                  category.id,
+                                  element,
+                                );
+                              } else {
+                                guidanceExpandButtonRefs.current.delete(
+                                  category.id,
+                                );
+                              }
+                            }}
+                            variant="bare"
+                            aria-label={t(
+                              'Expand guidance for {{categoryName}}',
+                              { categoryName: category.name },
+                            )}
+                            onPress={() => setExpandedCategoryId(category.id)}
+                          >
+                            <Trans>Expand</Trans>
+                          </Button>
+                        </View>
+                      )}
                     </View>
-                  )}
-                </View>
-              );
-            })}
+                  );
+                })}
+              </View>
+            ))}
             <ButtonWithLoading
               isDisabled={!canSaveSettings || settingsSaveStatus === 'pending'}
               isLoading={settingsSaveStatus === 'pending'}

@@ -144,9 +144,9 @@ export function AutoCategorizeModal({
     () =>
       new Set(
         (categoryData?.grouped ?? [])
-          .filter(group => !group.hidden && !group.is_income)
+          .filter(group => !group.hidden)
           .flatMap(group => group.categories ?? [])
-          .filter(category => !category.hidden && !category.is_income)
+          .filter(category => !category.hidden)
           .map(category => category.id),
       ),
     [categoryData?.grouped],
@@ -157,8 +157,7 @@ export function AutoCategorizeModal({
         const category = categoriesById.get(categoryId);
         return category &&
           selectableCategoryIds.has(category.id) &&
-          !category.hidden &&
-          !category.is_income
+          !category.hidden
           ? [category]
           : [];
       }),
@@ -210,7 +209,7 @@ export function AutoCategorizeModal({
       : []),
     ['current-filter', t('Current filtered view')],
     ['date-range', t('Inclusive date range')],
-    ['all', t('All eligible expenses')],
+    ['all', t('All eligible transactions')],
   ];
 
   const buildScope = (): CategorizationScope => {
@@ -235,9 +234,7 @@ export function AutoCategorizeModal({
     setError(null);
     if (allowedCategories.length === 0) {
       setError(
-        t(
-          'Choose at least one expense category in OpenAI categorization settings.',
-        ),
+        t('Choose at least one category in OpenAI categorization settings.'),
       );
       return;
     }
@@ -264,14 +261,14 @@ export function AutoCategorizeModal({
       if (resolved.exceededMaximum) {
         setError(
           t(
-            'This scope contains more than {{maximum}} eligible expenses. Choose a smaller scope.',
+            'This scope contains more than {{maximum}} eligible transactions. Choose a smaller scope.',
             { maximum: maximumCategorizationCandidates },
           ),
         );
         return;
       }
       if (resolved.candidates.length === 0) {
-        setError(t('This scope contains no eligible expenses.'));
+        setError(t('This scope contains no eligible transactions.'));
         return;
       }
       setPreparedCandidates(resolved.candidates);
@@ -362,14 +359,14 @@ export function AutoCategorizeModal({
       if (result.outcome === 'aborted') {
         setError(
           t(
-            'Stopped after completed batches. {{count}} expenses were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
+            'Stopped after completed batches. {{count}} transactions were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
             { count: unanalyzedCandidateCount },
           ),
         );
       } else if (result.outcome === 'failed') {
         setError(
           t(
-            'OpenAI stopped before every batch completed. {{count}} expenses were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
+            'OpenAI stopped before every batch completed. {{count}} transactions were not analyzed. Review the suggestions already received or start a new preview; no transactions were changed.',
             { count: unanalyzedCandidateCount },
           ),
         );
@@ -441,6 +438,31 @@ export function AutoCategorizeModal({
   const skippedTransactionCount = skippedCounts
     ? countSkippedTransactions(skippedCounts)
     : 0;
+  const requestedTransactionCount =
+    scopeKind === 'selected'
+      ? selectedTransactionIds.length
+      : preparedCandidates.length + skippedTransactionCount;
+  const skippedReasonSummary = skippedCounts
+    ? (
+        [
+          [t('already categorized'), skippedCounts['already-categorized']],
+          [t('deleted'), skippedCounts.deleted],
+          [
+            t('missing description or payee'),
+            skippedCounts['missing-description'],
+          ],
+          [t('off-budget account'), skippedCounts['off-budget']],
+          [t('reconciled'), skippedCounts.reconciled],
+          [t('split transaction'), skippedCounts.split],
+          [t('starting balance'), skippedCounts['starting-balance']],
+          [t('transfer'), skippedCounts.transfer],
+          [t('zero amount'), skippedCounts['zero-amount']],
+        ] satisfies Array<readonly [string, number]>
+      )
+        .filter(([, count]) => count > 0)
+        .map(([label, count]) => `${label}: ${count}`)
+        .join('; ')
+    : '';
   const categoryOptions: Array<readonly [string, string]> = [
     ['', t('No category')],
     ...allowedCategories.map(category => [category.id, category.name] as const),
@@ -462,7 +484,7 @@ export function AutoCategorizeModal({
       {({ state }) => (
         <>
           <ModalHeader
-            title={t('Auto-categorize expenses')}
+            title={t('Auto-categorize transactions')}
             rightContent={<ModalCloseButton onPress={() => state.close()} />}
           />
           <View style={{ gap: 16, maxHeight: '80vh' }}>
@@ -521,23 +543,25 @@ export function AutoCategorizeModal({
                   }
                 >
                   <Trans>
-                    Include already categorized expenses and allow replacing
+                    Include already categorized transactions and allow replacing
                     their categories
                   </Trans>
                 </LabeledCheckbox>
                 <Information>
                   <Trans count={allowedCategories.length}>
                     OpenAI may choose from {{ count: allowedCategories.length }}
-                    configured expense categories. Change the allow-list and
-                    guidance in Settings.
+                    configured categories. Change the allow-list and guidance in
+                    Settings.
                   </Trans>
                 </Information>
-                <ModalButtons>
+                <ModalButtons
+                  style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                >
                   <Button onPress={() => state.close()}>
                     <Trans>Cancel</Trans>
                   </Button>
                   <Button variant="primary" onPress={() => void prepareScope()}>
-                    <Trans>Review eligible expenses</Trans>
+                    <Trans>Review eligible transactions</Trans>
                   </Button>
                 </ModalButtons>
               </>
@@ -548,9 +572,9 @@ export function AutoCategorizeModal({
                 {scopeKind === 'selected' ? (
                   <Text>
                     <Trans>
-                      Selected transactions:{' '}
-                      {{ selected: selectedTransactionIds.length }}. Eligible
-                      expenses: {{ eligible: preparedCandidates.length }}.
+                      Requested selected transactions:{' '}
+                      {{ requested: requestedTransactionCount }}. Eligible
+                      transactions: {{ eligible: preparedCandidates.length }}.
                       Sequential OpenAI requests:{' '}
                       {{ requests: Math.ceil(preparedCandidates.length / 25) }}.
                       Skipped ineligible selected rows:{' '}
@@ -560,13 +584,21 @@ export function AutoCategorizeModal({
                 ) : (
                   <Text>
                     <Trans>
-                      Eligible expenses:{' '}
-                      {{ eligible: preparedCandidates.length }}. Sequential
-                      OpenAI requests:{' '}
+                      Requested transactions:{' '}
+                      {{ requested: requestedTransactionCount }}. Eligible
+                      transactions: {{ eligible: preparedCandidates.length }}.
+                      Sequential OpenAI requests:{' '}
                       {{ requests: Math.ceil(preparedCandidates.length / 25) }}.
                       Skipped ineligible rows:{' '}
                       {{ skipped: skippedTransactionCount }}.
                     </Trans>
+                  </Text>
+                )}
+                {skippedReasonSummary && (
+                  <Text style={{ color: theme.pageTextSubdued }}>
+                    {t('Skipped reasons: {{reasons}}', {
+                      reasons: skippedReasonSummary,
+                    })}
                   </Text>
                 )}
                 <Information>
@@ -601,7 +633,9 @@ export function AutoCategorizeModal({
                     I understand and want to generate suggestions for this run
                   </Trans>
                 </LabeledCheckbox>
-                <ModalButtons>
+                <ModalButtons
+                  style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                >
                   <Button onPress={() => setStage('setup')}>
                     <Trans>Back</Trans>
                   </Button>
@@ -624,7 +658,9 @@ export function AutoCategorizeModal({
                     is being changed yet.
                   </Trans>
                 </Information>
-                <ModalButtons>
+                <ModalButtons
+                  style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                >
                   <Button onPress={stopRequestingProposals}>
                     <Trans>Stop requesting</Trans>
                   </Button>
@@ -674,6 +710,7 @@ export function AutoCategorizeModal({
                         <View
                           style={{
                             flexDirection: 'row',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 8,
                           }}
@@ -693,28 +730,50 @@ export function AutoCategorizeModal({
                                 return next;
                               });
                             }}
+                            style={{ flex: '1 1 240px', minWidth: 0 }}
                           >
-                            <Text style={{ fontWeight: 600 }}>
+                            <Text
+                              style={{
+                                fontWeight: 600,
+                                overflowWrap: 'anywhere',
+                              }}
+                            >
                               {row.candidate.description || row.candidate.payee}
                             </Text>
                           </LabeledCheckbox>
-                          <View style={{ flex: 1 }} />
-                          <FinancialText>
+                          <Text style={{ color: theme.pageTextSubdued }}>
+                            {row.candidate.direction === 'inflow'
+                              ? t('Inflow')
+                              : t('Outflow')}
+                          </Text>
+                          <FinancialText style={{ whiteSpace: 'nowrap' }}>
+                            {row.candidate.direction === 'inflow' ? '+' : ''}
                             {format(row.candidate.amountInteger, 'financial')}
                           </FinancialText>
-                          <Text style={{ color: theme.pageTextSubdued }}>
+                          <Text
+                            style={{
+                              color: theme.pageTextSubdued,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
                             {row.candidate.date}
                           </Text>
                         </View>
                         <View
                           style={{
                             flexDirection: 'row',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 8,
                           }}
                         >
                           <Text
-                            style={{ color: theme.pageTextSubdued, width: 180 }}
+                            style={{
+                              color: theme.pageTextSubdued,
+                              flex: '1 1 180px',
+                              minWidth: 0,
+                              overflowWrap: 'anywhere',
+                            }}
                           >
                             {t('Current: {{category}}', {
                               category: row.candidate.currentCategoryId
@@ -724,49 +783,70 @@ export function AutoCategorizeModal({
                                 : t('Uncategorized'),
                             })}
                           </Text>
-                          <FormLabel
-                            title={t('Category')}
-                            htmlFor={categorySelectId}
-                            style={{ marginBottom: 0 }}
-                          />
-                          <Select
-                            id={categorySelectId}
-                            value={row.proposal.categoryId ?? ''}
-                            options={categoryOptions}
-                            onChange={categoryId => {
-                              setReviewRows(previous =>
-                                previous.map(previousRow =>
-                                  previousRow.candidate.candidateId ===
-                                  row.candidate.candidateId
-                                    ? {
-                                        ...previousRow,
-                                        proposal: {
-                                          ...previousRow.proposal,
-                                          categoryId: categoryId || null,
-                                        },
-                                      }
-                                    : previousRow,
-                                ),
-                              );
-                              setSelectedCandidateIds(previous => {
-                                const next = new Set(previous);
-                                if (categoryId) {
-                                  next.add(row.candidate.candidateId);
-                                } else {
-                                  next.delete(row.candidate.candidateId);
-                                }
-                                return next;
-                              });
+                          <View
+                            style={{
+                              alignItems: 'center',
+                              flex: '2 1 260px',
+                              flexDirection: 'row',
+                              gap: 8,
+                              minWidth: 0,
                             }}
-                            style={{ width: 220 }}
-                          />
-                          <Text style={{ color: theme.pageTextSubdued }}>
+                          >
+                            <FormLabel
+                              title={t('Category')}
+                              htmlFor={categorySelectId}
+                              style={{ flexShrink: 0, marginBottom: 0 }}
+                            />
+                            <Select
+                              id={categorySelectId}
+                              value={row.proposal.categoryId ?? ''}
+                              options={categoryOptions}
+                              onChange={categoryId => {
+                                setReviewRows(previous =>
+                                  previous.map(previousRow =>
+                                    previousRow.candidate.candidateId ===
+                                    row.candidate.candidateId
+                                      ? {
+                                          ...previousRow,
+                                          proposal: {
+                                            ...previousRow.proposal,
+                                            categoryId: categoryId || null,
+                                          },
+                                        }
+                                      : previousRow,
+                                  ),
+                                );
+                                setSelectedCandidateIds(previous => {
+                                  const next = new Set(previous);
+                                  if (categoryId) {
+                                    next.add(row.candidate.candidateId);
+                                  } else {
+                                    next.delete(row.candidate.candidateId);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              style={{ flex: 1, minWidth: 0, width: 'auto' }}
+                            />
+                          </View>
+                          <Text
+                            style={{
+                              color: theme.pageTextSubdued,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
                             {t('{{confidence}} confidence', {
                               confidence: row.proposal.confidence,
                             })}
                           </Text>
                         </View>
-                        <Text style={{ color: theme.pageTextSubdued }}>
+                        <Text
+                          style={{
+                            color: theme.pageTextSubdued,
+                            minWidth: 0,
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
                           {row.proposal.explanation}
                         </Text>
                       </View>
@@ -802,7 +882,9 @@ export function AutoCategorizeModal({
                     </Button>
                   </View>
                 )}
-                <ModalButtons>
+                <ModalButtons
+                  style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                >
                   <Button onPress={() => state.close()}>
                     <Trans>Cancel</Trans>
                   </Button>
@@ -865,7 +947,9 @@ export function AutoCategorizeModal({
                     })}
                   </View>
                 )}
-                <ModalButtons>
+                <ModalButtons
+                  style={{ alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                >
                   <Button
                     onPress={() => {
                       undo();

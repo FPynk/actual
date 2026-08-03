@@ -28,12 +28,14 @@ export type CategorizationIneligibilityReason =
   | 'already-categorized'
   | 'deleted'
   | 'missing-description'
-  | 'not-expense'
   | 'off-budget'
   | 'reconciled'
   | 'split'
   | 'starting-balance'
-  | 'transfer';
+  | 'transfer'
+  | 'zero-amount';
+
+export type CategorizationTransactionDirection = 'inflow' | 'outflow';
 
 export type PreparedCategorizationCandidate = {
   account?: string;
@@ -44,6 +46,7 @@ export type PreparedCategorizationCandidate = {
   currency: string;
   date: string;
   description?: string;
+  direction: CategorizationTransactionDirection;
   fingerprint: string;
   payee?: string;
   transactionId: string;
@@ -56,6 +59,7 @@ export type CategorizationGatewayCandidate = {
   currency: string;
   date: string;
   description?: string;
+  direction: CategorizationTransactionDirection;
   payee?: string;
 };
 
@@ -113,7 +117,7 @@ export function getCategorizationIneligibilityReason(
     return 'transfer';
   }
   if (transaction.accountOffBudget) return 'off-budget';
-  if (transaction.amount >= 0) return 'not-expense';
+  if (transaction.amount === 0) return 'zero-amount';
 
   const description = transaction.importedPayee?.trim();
   const payee = transaction.payeeName?.trim();
@@ -144,12 +148,12 @@ export function prepareCategorizationCandidates({
     'already-categorized': 0,
     deleted: 0,
     'missing-description': 0,
-    'not-expense': 0,
     'off-budget': 0,
     reconciled: 0,
     split: 0,
     'starting-balance': 0,
     transfer: 0,
+    'zero-amount': 0,
   };
   const candidates: PreparedCategorizationCandidate[] = [];
 
@@ -176,6 +180,7 @@ export function prepareCategorizationCandidates({
       currency,
       date: transaction.date,
       description: importedDescription || payeeName || undefined,
+      direction: transaction.amount > 0 ? 'inflow' : 'outflow',
       fingerprint: categorizationFingerprint(transaction),
       payee:
         payeeName && payeeName !== importedDescription ? payeeName : undefined,
@@ -210,6 +215,7 @@ export function toCategorizationGatewayCandidate(
     currency: candidate.currency,
     date: candidate.date,
     description: candidate.description,
+    direction: candidate.direction,
     payee: candidate.payee,
   };
 }
