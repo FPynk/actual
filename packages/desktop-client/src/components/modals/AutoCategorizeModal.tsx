@@ -13,6 +13,7 @@ import {
   maximumCategorizationCandidates,
   requestCategorizationProposalsSequentially,
   toCategorizationGatewayCandidate,
+  withCategorizationReceiptEvidence,
 } from '@actual-app/core/shared/finance-categorization';
 import type {
   CategorizationIneligibilityReason,
@@ -22,6 +23,7 @@ import type {
 import type { QueryState } from '@actual-app/core/shared/query';
 import { defaultFinanceCategorizationSettings } from '@actual-app/core/types/finance';
 import type { FinanceCategorizationSettings } from '@actual-app/core/types/finance';
+import type { Receipt } from '@actual-app/core/types/receipts';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Information } from '#components/alerts';
@@ -289,9 +291,23 @@ export function AutoCategorizeModal({
     setAcceptedDisclosure(false);
     setStage('requesting');
     try {
+      const receiptList = await send('receipts/list');
+      const receipts = Array.isArray(receiptList) ? receiptList : [];
+      const receiptsByTransactionId = new Map<string, Receipt>();
+      for (const receipt of receipts) {
+        if (receipt.transactionId && !receipt.linkConflict) {
+          receiptsByTransactionId.set(receipt.transactionId, receipt);
+        }
+      }
+      const candidatesWithReceiptEvidence = preparedCandidates.map(candidate =>
+        withCategorizationReceiptEvidence(
+          candidate,
+          receiptsByTransactionId.get(candidate.transactionId),
+        ),
+      );
       let providerError: string | null = null;
       const result = await requestCategorizationProposalsSequentially({
-        candidates: preparedCandidates,
+        candidates: candidatesWithReceiptEvidence,
         allowedCategoryIds,
         signal: controller.signal,
         requestBatch: async (batch, signal) => {
@@ -325,7 +341,10 @@ export function AutoCategorizeModal({
         return;
       }
       const candidatesById = new Map(
-        preparedCandidates.map(candidate => [candidate.candidateId, candidate]),
+        candidatesWithReceiptEvidence.map(candidate => [
+          candidate.candidateId,
+          candidate,
+        ]),
       );
       const nextReviewRows = result.proposals.map(proposal => ({
         candidate: candidatesById.get(proposal.candidateId)!,
@@ -607,8 +626,11 @@ export function AutoCategorizeModal({
                       Descriptions, payees, dates, amounts, currency, account
                       names, your selected category names and guidance, and your
                       custom instruction will be sent to OpenAI to generate
-                      suggestions. No OpenAI API key, Actual transaction IDs,
-                      notes, attachments, balances, budget name, or unchecked
+                      suggestions. For linked reviewed receipts, the merchant
+                      and up to 40 item labels and amounts may also be sent. No
+                      receipt image, full receipt transcript, payment detail,
+                      OpenAI API key, Actual transaction IDs, notes,
+                      attachments, balances, budget name, or unchecked
                       transactions are sent.
                     </Trans>
                   ) : (
@@ -616,8 +638,11 @@ export function AutoCategorizeModal({
                       Descriptions, payees, dates, amounts, currency, account
                       names, your selected category names and guidance, and your
                       custom instruction will be sent to OpenAI to generate
-                      suggestions. No OpenAI API key, Actual transaction IDs,
-                      notes, attachments, balances, budget name, or transactions
+                      suggestions. For linked reviewed receipts, the merchant
+                      and up to 40 item labels and amounts may also be sent. No
+                      receipt image, full receipt transcript, payment detail,
+                      OpenAI API key, Actual transaction IDs, notes,
+                      attachments, balances, budget name, or transactions
                       outside this chosen scope are sent.
                     </Trans>
                   )}

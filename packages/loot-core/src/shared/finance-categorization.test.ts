@@ -1,11 +1,13 @@
 import {
   categorizationFingerprint,
+  createCategorizationReceiptEvidence,
   getDefaultSelectedCategorizationCandidateIds,
   planCategorizationApply,
   prepareCategorizationCandidates,
   requestCategorizationProposalsSequentially,
   splitCategorizationProviderBatches,
   toCategorizationGatewayCandidate,
+  withCategorizationReceiptEvidence,
 } from './finance-categorization';
 import type {
   CategorizationTransactionSnapshot,
@@ -42,6 +44,7 @@ function providerCandidate(
     direction: 'outflow',
     fingerprint: 'fingerprint',
     transactionId: `transaction-${candidateId}`,
+    transactionFingerprint: 'transaction-fingerprint',
   };
 }
 
@@ -151,6 +154,47 @@ describe('finance categorization', () => {
     expect(providerPayload).not.toHaveProperty('transactionId');
     expect(providerPayload).not.toHaveProperty('fingerprint');
     expect(providerPayload).not.toHaveProperty('notes');
+  });
+
+  it('sends only bounded reviewed receipt evidence and fingerprints it locally', () => {
+    const evidence = createCategorizationReceiptEvidence({
+      fingerprint: 'receipt-fingerprint',
+      id: 'receipt-id',
+      merchant: 'Corner Shop',
+      lineItems: Array.from({ length: 41 }, (_, index) => ({
+        amount: index + 100,
+        label: `Item ${index}`,
+      })),
+      transcriptRevision: 1,
+    });
+    expect(evidence).toMatchObject({
+      fingerprint: expect.stringContaining('receipt-fingerprint'),
+      merchant: 'Corner Shop',
+      truncated: true,
+    });
+    expect(evidence?.lineItems).toHaveLength(40);
+
+    const candidate = withCategorizationReceiptEvidence(
+      providerCandidate('receipt'),
+      {
+        fingerprint: 'receipt-fingerprint',
+        id: 'receipt-id',
+        merchant: 'Corner Shop',
+        transcriptRevision: 1,
+        lineItems: [{ amount: 499, label: 'Apples' }],
+      },
+    );
+    const providerPayload = toCategorizationGatewayCandidate(candidate);
+    expect(providerPayload).toMatchObject({
+      receipt: {
+        line_items: [{ amount: 499, label: 'Apples' }],
+        merchant: 'Corner Shop',
+      },
+    });
+    expect(JSON.stringify(providerPayload)).not.toContain(
+      'receipt-fingerprint',
+    );
+    expect(candidate.fingerprint).not.toBe('fingerprint');
   });
 
   it('chunks no more than 25 candidates and requests batches sequentially', async () => {

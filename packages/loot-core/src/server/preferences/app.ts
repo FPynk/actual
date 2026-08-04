@@ -45,14 +45,23 @@ app.method('load-prefs', loadMetadataPrefs);
 app.method('save-server-prefs', saveServerPrefs);
 
 async function saveSyncedPrefs({
+  expectedBudgetId,
   id,
   value,
 }: {
+  expectedBudgetId?: string;
   id: keyof SyncedPrefs;
   value: string | undefined;
 }) {
   if (!id) {
-    return;
+    return { saved: false };
+  }
+
+  if (
+    expectedBudgetId !== undefined &&
+    _getMetadataPrefs()?.id !== expectedBudgetId
+  ) {
+    return { saved: false };
   }
 
   await db.update('preferences', {
@@ -63,6 +72,8 @@ async function saveSyncedPrefs({
   if (FORMULA_FORMAT_SYNCED_PREFS.has(id)) {
     resetFormulaPreferencesCache();
   }
+
+  return { saved: true };
 }
 
 async function getSyncedPrefs(): Promise<SyncedPrefs> {

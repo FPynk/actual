@@ -35,6 +35,7 @@ import { MobileNavTabs } from './mobile/MobileNavTabs';
 import { TransactionEdit } from './mobile/transactions/TransactionEdit';
 import { Notifications } from './Notifications';
 import { MobilePageHeaderProvider, MobilePageHeaderSlot } from './Page';
+import { NativeReceiptsPage } from './receipts/NativeReceiptsPage';
 import { Reports } from './reports';
 import { LoadingIndicator } from './reports/LoadingIndicator';
 import { NarrowAlternate, WideComponent } from './responsive';
@@ -374,6 +375,7 @@ export function FinancesApp() {
                   />
                   <Route path="/tags" element={<ManageTagsPage />} />
                   <Route path="/settings" element={<Settings />} />
+                  <Route path="/receipts" element={<NativeReceiptsPage />} />
 
                   <Route
                     path="/gocardless/link"

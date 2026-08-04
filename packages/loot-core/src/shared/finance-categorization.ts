@@ -1,5 +1,9 @@
 export const maximumCategorizationCandidates = 5_000;
 export const maximumCategorizationProviderBatchSize = 25;
+export const maximumCategorizationReceiptEvidenceBytes = 8 * 1024;
+export const maximumCategorizationReceiptLineItems = 40;
+export const maximumCategorizationReceiptLineItemLabelLength = 120;
+export const maximumCategorizationReceiptMerchantLength = 128;
 
 export type CategorizationConfidence = 'high' | 'medium' | 'low';
 
@@ -49,7 +53,32 @@ export type PreparedCategorizationCandidate = {
   direction: CategorizationTransactionDirection;
   fingerprint: string;
   payee?: string;
+  receiptEvidence?: CategorizationReceiptEvidence;
   transactionId: string;
+  transactionFingerprint: string;
+};
+
+export type CategorizationReceiptEvidence = {
+  fingerprint: string;
+  lineItems: Array<{
+    amount?: number;
+    label: string;
+    quantity?: number;
+  }>;
+  merchant?: string;
+  truncated: boolean;
+};
+
+export type CategorizationReceiptSource = {
+  fingerprint: string;
+  id: string;
+  lineItems: ReadonlyArray<{
+    amount?: number;
+    label: string;
+    quantity?: number;
+  }>;
+  merchant: string | null;
+  transcriptRevision: number;
 };
 
 export type CategorizationGatewayCandidate = {
@@ -61,6 +90,15 @@ export type CategorizationGatewayCandidate = {
   description?: string;
   direction: CategorizationTransactionDirection;
   payee?: string;
+  receipt?: {
+    line_items: Array<{
+      amount?: number;
+      label: string;
+      quantity?: number;
+    }>;
+    merchant?: string;
+    truncated?: true;
+  };
 };
 
 export type CategorizationProposal = {
@@ -90,6 +128,16 @@ export type CategorizationApplySkipReason =
 
 export function categorizationFingerprint(
   transaction: CategorizationTransactionSnapshot,
+  receiptFingerprint: string | null = null,
+): string {
+  return combineCategorizationFingerprint(
+    categorizationTransactionFingerprint(transaction),
+    receiptFingerprint,
+  );
+}
+
+export function categorizationTransactionFingerprint(
+  transaction: CategorizationTransactionSnapshot,
 ): string {
   return JSON.stringify([
     transaction.date,
@@ -101,6 +149,91 @@ export function categorizationFingerprint(
     transaction.importedPayee ?? null,
     transaction.categoryId ?? null,
   ]);
+}
+
+export function combineCategorizationFingerprint(
+  transactionFingerprint: string,
+  receiptFingerprint: string | null,
+): string {
+  return JSON.stringify([transactionFingerprint, receiptFingerprint]);
+}
+
+export function createCategorizationReceiptEvidence(
+  receipt: CategorizationReceiptSource,
+): CategorizationReceiptEvidence | null {
+  if (!receipt.fingerprint || !receipt.id) return null;
+
+  const merchant = limitCodePoints(
+    receipt.merchant ?? '',
+    maximumCategorizationReceiptMerchantLength,
+  );
+  const sourceLineItems = receipt.lineItems.slice(
+    0,
+    maximumCategorizationReceiptLineItems,
+  );
+  let truncated = receipt.lineItems.length > sourceLineItems.length;
+  const lineItems = sourceLineItems.flatMap(item => {
+    const label = limitCodePoints(
+      item.label,
+      maximumCategorizationReceiptLineItemLabelLength,
+    );
+    if (!label) return [];
+    if (label !== item.label) truncated = true;
+    return [
+      {
+        ...(Number.isSafeInteger(item.amount) ? { amount: item.amount } : {}),
+        label,
+        ...(typeof item.quantity === 'number' && Number.isFinite(item.quantity)
+          ? { quantity: item.quantity }
+          : {}),
+      },
+    ];
+  });
+  if (merchant !== (receipt.merchant ?? '')) truncated = true;
+
+  const evidence: CategorizationReceiptEvidence = {
+    fingerprint: JSON.stringify([
+      receipt.id,
+      receipt.transcriptRevision,
+      receipt.fingerprint,
+    ]),
+    lineItems,
+    ...(merchant ? { merchant } : {}),
+    truncated,
+  };
+  while (
+    lineItems.length > 0 &&
+    receiptEvidenceByteLength(evidence) >
+      maximumCategorizationReceiptEvidenceBytes
+  ) {
+    lineItems.pop();
+    evidence.truncated = true;
+  }
+  if (
+    receiptEvidenceByteLength(evidence) >
+    maximumCategorizationReceiptEvidenceBytes
+  ) {
+    evidence.merchant = undefined;
+    evidence.truncated = true;
+  }
+  return evidence;
+}
+
+export function withCategorizationReceiptEvidence(
+  candidate: PreparedCategorizationCandidate,
+  receipt: CategorizationReceiptSource | null | undefined,
+): PreparedCategorizationCandidate {
+  const receiptEvidence = receipt
+    ? createCategorizationReceiptEvidence(receipt)
+    : undefined;
+  return {
+    ...candidate,
+    ...(receiptEvidence ? { receiptEvidence } : {}),
+    fingerprint: combineCategorizationFingerprint(
+      candidate.transactionFingerprint,
+      receiptEvidence?.fingerprint ?? null,
+    ),
+  };
 }
 
 export function getCategorizationIneligibilityReason(
@@ -169,6 +302,8 @@ export function prepareCategorizationCandidates({
 
     const importedDescription = transaction.importedPayee?.trim();
     const payeeName = transaction.payeeName?.trim();
+    const transactionFingerprint =
+      categorizationTransactionFingerprint(transaction);
     candidates.push({
       account: transaction.accountName?.trim() || undefined,
       amount: (transaction.amount / Math.pow(10, decimalPlaces)).toFixed(
@@ -181,10 +316,14 @@ export function prepareCategorizationCandidates({
       date: transaction.date,
       description: importedDescription || payeeName || undefined,
       direction: transaction.amount > 0 ? 'inflow' : 'outflow',
-      fingerprint: categorizationFingerprint(transaction),
+      fingerprint: combineCategorizationFingerprint(
+        transactionFingerprint,
+        null,
+      ),
       payee:
         payeeName && payeeName !== importedDescription ? payeeName : undefined,
       transactionId: transaction.transactionId,
+      transactionFingerprint,
     });
   }
 
@@ -217,6 +356,17 @@ export function toCategorizationGatewayCandidate(
     description: candidate.description,
     direction: candidate.direction,
     payee: candidate.payee,
+    ...(candidate.receiptEvidence
+      ? {
+          receipt: {
+            line_items: candidate.receiptEvidence.lineItems,
+            ...(candidate.receiptEvidence.merchant
+              ? { merchant: candidate.receiptEvidence.merchant }
+              : {}),
+            ...(candidate.receiptEvidence.truncated ? { truncated: true } : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -304,11 +454,16 @@ export function planCategorizationApply({
   currentTransactions,
   allowedCategoryIds,
   includeCategorized,
+  receiptEvidenceByTransactionId,
 }: {
   proposals: CategorizationApplyProposal[];
   currentTransactions: CategorizationTransactionSnapshot[];
   allowedCategoryIds: ReadonlySet<string>;
   includeCategorized: boolean;
+  receiptEvidenceByTransactionId?: ReadonlyMap<
+    string,
+    CategorizationReceiptEvidence
+  >;
 }): {
   skipped: Array<{
     reason: CategorizationApplySkipReason;
@@ -347,7 +502,13 @@ export function planCategorizationApply({
       });
       continue;
     }
-    if (categorizationFingerprint(transaction) !== proposal.fingerprint) {
+    if (
+      categorizationFingerprint(
+        transaction,
+        receiptEvidenceByTransactionId?.get(transaction.transactionId)
+          ?.fingerprint ?? null,
+      ) !== proposal.fingerprint
+    ) {
       skipped.push({
         reason: 'stale',
         transactionId: proposal.transactionId,
@@ -378,4 +539,16 @@ export function planCategorizationApply({
   }
 
   return { skipped, updates };
+}
+
+function limitCodePoints(value: string, maximum: number): string {
+  return Array.from(value.normalize('NFKC').replace(/\s+/g, ' ').trim())
+    .slice(0, maximum)
+    .join('');
+}
+
+function receiptEvidenceByteLength(
+  value: CategorizationReceiptEvidence,
+): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }

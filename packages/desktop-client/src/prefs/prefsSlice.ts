@@ -130,14 +130,18 @@ export const saveSyncedPrefs = createAppAsyncThunk(
     ) {
       return { saved: false };
     }
-    await Promise.all(
+    const results = await Promise.all(
       Object.entries(prefs).map(([prefName, value]) =>
         send('preferences/save', {
+          ...(expectedBudgetId === undefined ? {} : { expectedBudgetId }),
           id: prefName as keyof SyncedPrefs,
           value,
         }),
       ),
     );
+    if (results.some(result => result?.saved === false)) {
+      return { saved: false };
+    }
     if (
       expectedBudgetId !== undefined &&
       getState().prefs.local.id !== expectedBudgetId
@@ -245,4 +249,3 @@ export const {
   mergeSyncedPrefs,
   setPrefs,
 } = actions;
-

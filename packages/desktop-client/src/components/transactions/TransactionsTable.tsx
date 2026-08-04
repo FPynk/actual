@@ -42,6 +42,7 @@ import {
   SvgEditSkull1,
   SvgHyperlink2,
   SvgLockClosed,
+  SvgNotesPaper,
   SvgSubtract,
 } from '@actual-app/components/icons/v2';
 import { Popover } from '@actual-app/components/popover';
@@ -128,6 +129,7 @@ import { useLocalPref } from '#hooks/useLocalPref';
 import { useMergedRefs } from '#hooks/useMergedRefs';
 import { usePrevious } from '#hooks/usePrevious';
 import { useProperFocus } from '#hooks/useProperFocus';
+import { useQuery as useAqlQuery } from '#hooks/useQuery';
 import { useSelectedDispatch, useSelectedItems } from '#hooks/useSelected';
 import { SheetNameProvider } from '#hooks/useSheetName';
 import { useSplitsExpanded } from '#hooks/useSplitsExpanded';
@@ -944,6 +946,7 @@ type TransactionProps = {
   highlighted?: boolean;
   added?: boolean;
   matched?: boolean;
+  hasReceipt?: boolean;
   expanded?: boolean;
   focusedField?: string;
   categoryGroups: CategoryGroupEntity[];
@@ -1012,6 +1015,7 @@ const Transaction = memo(function Transaction({
   highlighted,
   added,
   matched,
+  hasReceipt,
   expanded,
   focusedField,
   categoryGroups,
@@ -1416,6 +1420,7 @@ const Transaction = memo(function Transaction({
     onCreateRule: ids => onCreateRule?.(ids),
     onScheduleAction: (name, ids) => onScheduleAction?.(name, ids),
     onMakeAsNonSplitTransactions: ids => onMakeAsNonSplitTransactions?.(ids),
+    hasReceipt: Boolean(hasReceipt),
   });
 
   return (
@@ -1545,7 +1550,14 @@ const Transaction = memo(function Transaction({
                       style={{ width: 13, height: 13, color: 'inherit' }}
                     />
                   ) as unknown as string)
-                : undefined
+                : hasReceipt
+                  ? ((
+                      <SvgNotesPaper
+                        aria-label={t('Receipt attached')}
+                        style={{ width: 13, height: 13, color: 'inherit' }}
+                      />
+                    ) as unknown as string)
+                  : undefined
             }
           />
         )}
@@ -2381,6 +2393,7 @@ type TransactionTableInnerProps = {
     [id: TransactionEntity['id']]: AccountEntity | null;
   };
   newTransactions: TransactionEntity[];
+  receiptTransactionIds: ReadonlySet<string>;
 
   transactions: TransactionEntity[];
   loadMoreTransactions: () => void;
@@ -2611,6 +2624,7 @@ function TransactionTableInner({
         added={isNew?.(trans.id)}
         expanded={isExpanded?.(trans.id)}
         matched={isMatched?.(trans.id)}
+        hasReceipt={props.receiptTransactionIds.has(trans.id)}
         showZeroInDeposit={isChildDeposit}
         balance={balances?.[trans.id] ?? 0}
         focusedField={editing ? tableNavigator.focusedField : undefined}
@@ -2848,6 +2862,24 @@ export const TransactionTable = forwardRef(
 
     const dispatch = useDispatch();
     const [showHiddenCategories] = useLocalPref('budget.showHiddenCategories');
+    const { data: receiptLinks = [] } = useAqlQuery<{
+      transaction_id: string | null;
+    }>(
+      () =>
+        q('receipts')
+          .filter({ transaction_id: { $ne: null } })
+          .select('transaction_id'),
+      [],
+    );
+    const receiptTransactionIds = useMemo(
+      () =>
+        new Set(
+          (receiptLinks ?? []).flatMap(receipt =>
+            receipt.transaction_id ? [receipt.transaction_id] : [],
+          ),
+        ),
+      [receiptLinks],
+    );
     const [newTransactions, setNewTransactions] = useState<TransactionEntity[]>(
       [],
     );
@@ -3594,6 +3626,7 @@ export const TransactionTable = forwardRef(
             transactionMap={transactionMap}
             transactionsByParent={transactionsByParent}
             transferAccountsByTransaction={transferAccountsByTransaction}
+            receiptTransactionIds={receiptTransactionIds}
             selectedItems={selectedItems}
             isExpanded={splitsExpanded.isExpanded}
             onSave={onSave}

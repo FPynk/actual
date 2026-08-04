@@ -831,4 +831,3 @@ test.describe('Native finance workflows', () => {
     await expect(accountPage.getNthTransaction(0).notes).toHaveText('');
   });
 });
-

@@ -441,6 +441,45 @@ describe('OpenAI finance categorization', () => {
     ).toBeNull();
   });
 
+  it('accepts only bounded reviewed receipt evidence', () => {
+    const receipt = {
+      merchant: 'Corner Shop',
+      line_items: [{ amount: 499, label: 'Apples' }],
+    };
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [{ ...request.candidates[0], receipt }],
+      }),
+    ).toMatchObject({ candidates: [{ receipt }] });
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [
+          {
+            ...request.candidates[0],
+            receipt: { ...receipt, transcript: 'do not send this' },
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [
+          {
+            ...request.candidates[0],
+            receipt: {
+              line_items: Array.from({ length: 41 }, () => ({
+                label: 'Item',
+              })),
+            },
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it('accepts a mixed inflow and outflow batch with directions that match signed amounts', () => {
     expect(
       validateCategorizationRequest({

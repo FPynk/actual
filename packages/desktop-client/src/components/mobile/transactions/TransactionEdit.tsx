@@ -1442,6 +1442,37 @@ const TransactionEditInner = memo<TransactionEditInnerProps>(
             <View style={{ alignItems: 'center' }}>
               <Button
                 variant="bare"
+                onPress={() =>
+                  navigate(
+                    `/receipts?transactionId=${encodeURIComponent(transaction.id)}`,
+                  )
+                }
+                style={{
+                  height: 40,
+                  borderWidth: 0,
+                  marginLeft: styles.mobileEditingPadding,
+                  marginRight: styles.mobileEditingPadding,
+                  marginTop: 10,
+                  backgroundColor: 'transparent',
+                }}
+              >
+                <SvgNotesPaper
+                  width={17}
+                  height={17}
+                  style={{ color: theme.formLabelText }}
+                />
+                <Text
+                  style={{
+                    color: theme.formLabelText,
+                    marginLeft: 5,
+                    userSelect: 'none',
+                  }}
+                >
+                  <Trans>Receipt</Trans>
+                </Text>
+              </Button>
+              <Button
+                variant="bare"
                 onPress={() => onDeleteInner(transaction.id)}
                 style={{
                   height: 40,

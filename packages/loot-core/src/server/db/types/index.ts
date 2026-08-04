@@ -362,3 +362,30 @@ export type DbTag = {
   tombstone: 1 | 0;
   hidden?: 1 | 0;
 };
+
+export type DbReceipt = {
+  id: string;
+  transaction_id: DbTransaction['id'] | null;
+  source_hash: string | null;
+  merchant: string | null;
+  purchase_date: string | null;
+  purchase_time: string | null;
+  currency: string | null;
+  total: number | null;
+  subtotal: number | null;
+  tax: number | null;
+  tip: number | null;
+  payment_hint: string | null;
+  line_items: JsonString;
+  transcript: string;
+  confidence: JsonString;
+  warnings: JsonString;
+  ocr_revision: string | null;
+  parser_revision: string | null;
+  transcript_revision: number;
+  fingerprint: string;
+  reviewed_at: string;
+  created_at: string;
+  updated_at: string;
+  tombstone: 1 | 0;
+};

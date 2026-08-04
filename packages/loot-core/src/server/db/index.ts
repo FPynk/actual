@@ -48,6 +48,7 @@ import type {
   DbClockMessage,
   DbPayee,
   DbPayeeMapping,
+  DbReceipt,
   DbTag,
   DbTransaction,
   DbViewTransaction,
@@ -997,4 +998,115 @@ export function findTags() {
     `,
     ['%#%'],
   );
+}
+
+export function getReceipt(id: DbReceipt['id']) {
+  return first<DbReceipt>('SELECT * FROM receipts WHERE id = ?', [id]);
+}
+
+export function getReceipts({
+  includeTombstones = false,
+}: {
+  includeTombstones?: boolean;
+} = {}) {
+  return all<DbReceipt>(
+    `SELECT * FROM receipts ${includeTombstones ? '' : 'WHERE tombstone = 0'} ORDER BY updated_at DESC, id`,
+  );
+}
+
+export function getActiveReceiptBySourceHash(sourceHash: string) {
+  return first<DbReceipt>(
+    `SELECT * FROM receipts
+     WHERE source_hash = ? AND tombstone = 0
+     ORDER BY updated_at DESC, id
+     LIMIT 1`,
+    [sourceHash],
+  );
+}
+
+export function getActiveReceiptsByTransactionId(transactionId: string) {
+  return all<DbReceipt>(
+    `SELECT * FROM receipts
+     WHERE transaction_id = ? AND tombstone = 0
+     ORDER BY updated_at DESC, id`,
+    [transactionId],
+  );
+}
+
+export type DbReceiptMatchTransaction = {
+  account: string;
+  account_payment_source: string | null;
+  amount: number;
+  date: number;
+  id: string;
+  imported_payee: string | null;
+  is_child: 1 | 0;
+  is_parent: 1 | 0;
+  parent_id: string | null;
+  payee: string | null;
+  starting_balance_flag: 1 | 0;
+  transfer_id: string | null;
+};
+
+export function getReceiptMatchTransactions() {
+  return all<DbReceiptMatchTransaction>(`
+    SELECT
+      transaction_rows.id,
+      transaction_rows.account,
+      accounts.name AS account_payment_source,
+      transaction_rows.amount,
+      transaction_rows.date,
+      transaction_rows.imported_payee,
+      transaction_rows.is_child,
+      transaction_rows.is_parent,
+      transaction_rows.parent_id,
+      transaction_rows.starting_balance_flag,
+      transaction_rows.transfer_id,
+      payees.name AS payee
+    FROM v_transactions_internal_alive AS transaction_rows
+    LEFT JOIN accounts ON accounts.id = transaction_rows.account
+    LEFT JOIN payees ON payees.id = transaction_rows.payee
+    ORDER BY transaction_rows.id
+  `);
+}
+
+export function getReceiptMatchTransaction(id: string) {
+  return first<DbReceiptMatchTransaction>(
+    `
+    SELECT
+      transaction_rows.id,
+      transaction_rows.account,
+      accounts.name AS account_payment_source,
+      transaction_rows.amount,
+      transaction_rows.date,
+      transaction_rows.imported_payee,
+      transaction_rows.is_child,
+      transaction_rows.is_parent,
+      transaction_rows.parent_id,
+      transaction_rows.starting_balance_flag,
+      transaction_rows.transfer_id,
+      payees.name AS payee
+    FROM v_transactions_internal_alive AS transaction_rows
+    LEFT JOIN accounts ON accounts.id = transaction_rows.account
+    LEFT JOIN payees ON payees.id = transaction_rows.payee
+    WHERE transaction_rows.id = ?
+  `,
+    [id],
+  );
+}
+
+export function insertReceipt(
+  receipt: Omit<DbReceipt, 'id' | 'tombstone'> & { id?: string },
+) {
+  return insertWithUUID('receipts', receipt);
+}
+
+export function updateReceipt(
+  receipt: Partial<DbReceipt> & Pick<DbReceipt, 'id'>,
+) {
+  return update('receipts', receipt);
+}
+
+export function deleteReceipt(id: DbReceipt['id']) {
+  return delete_('receipts', id);
 }

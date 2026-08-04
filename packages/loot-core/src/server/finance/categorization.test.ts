@@ -1,12 +1,16 @@
 import * as db from '#server/db';
 import { batchUpdateTransactions } from '#server/transactions';
-import { categorizationFingerprint } from '#shared/finance-categorization';
+import {
+  categorizationFingerprint,
+  createCategorizationReceiptEvidence,
+} from '#shared/finance-categorization';
 
 import { applyFinanceCategorization } from './categorization';
 
 vi.mock('#server/db', () => ({
   first: vi.fn(),
   getAccounts: vi.fn(),
+  getActiveReceiptsByTransactionId: vi.fn(),
   getCategoriesGrouped: vi.fn(),
   getPayees: vi.fn(),
   getTransaction: vi.fn(),
@@ -83,6 +87,7 @@ describe('applyFinanceCategorization', () => {
         tombstone: 0,
       },
     ]);
+    vi.mocked(db.getActiveReceiptsByTransactionId).mockResolvedValue([]);
   });
 
   it('revalidates and applies all accepted categories in one batch update', async () => {
@@ -189,6 +194,72 @@ describe('applyFinanceCategorization', () => {
     expect(result).toEqual({
       appliedTransactionIds: ['credit'],
       skipped: [],
+    });
+  });
+
+  it('skips a preview when the linked receipt changed before apply', async () => {
+    const transaction = {
+      id: 'receipt-transaction',
+      account: 'checking',
+      amount: -1_000,
+      category: null,
+      date: '2026-08-01',
+      imported_payee: 'MARKET',
+      payee: 'market',
+      is_child: false,
+      is_parent: false,
+      parent_id: null,
+      transfer_id: null,
+      reconciled: false,
+      tombstone: false,
+    };
+    vi.mocked(db.getTransaction).mockResolvedValue(transaction);
+    vi.mocked(db.getActiveReceiptsByTransactionId).mockResolvedValue([
+      {
+        fingerprint: 'changed-receipt',
+        id: 'receipt-id',
+        line_items: JSON.stringify([{ label: 'Milk', amount: 500 }]),
+        merchant: 'Market',
+        transcript_revision: 2,
+      } as never,
+    ]);
+    const originalEvidence = createCategorizationReceiptEvidence({
+      fingerprint: 'original-receipt',
+      id: 'receipt-id',
+      lineItems: [{ amount: 500, label: 'Milk' }],
+      merchant: 'Market',
+      transcriptRevision: 1,
+    });
+    if (!originalEvidence) throw new Error('Expected receipt evidence');
+
+    const result = await applyFinanceCategorization({
+      includeCategorized: false,
+      proposals: [
+        {
+          categoryId: 'groceries',
+          fingerprint: categorizationFingerprint(
+            {
+              accountId: transaction.account,
+              accountName: 'Checking',
+              amount: transaction.amount,
+              categoryId: transaction.category,
+              date: transaction.date,
+              importedPayee: transaction.imported_payee,
+              payeeId: transaction.payee,
+              payeeName: 'Market',
+              transactionId: transaction.id,
+            },
+            originalEvidence.fingerprint,
+          ),
+          transactionId: transaction.id,
+        },
+      ],
+    });
+
+    expect(batchUpdateTransactions).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      appliedTransactionIds: [],
+      skipped: [{ reason: 'stale', transactionId: 'receipt-transaction' }],
     });
   });
 });

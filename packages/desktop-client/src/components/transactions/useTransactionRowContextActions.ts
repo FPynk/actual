@@ -12,6 +12,7 @@ import type { TransactionEntity } from '@actual-app/core/types/models';
 
 import type { ContextMenuItem } from '#contextmenu/types';
 import { useContextMenu } from '#hooks/useContextMenu';
+import { useNavigate } from '#hooks/useNavigate';
 import { useSchedules } from '#hooks/useSchedules';
 import { useSelectedItems } from '#hooks/useSelected';
 import { pushModal } from '#modals/modalsSlice';
@@ -31,6 +32,7 @@ type TransactionRowContextMenuProps = {
     ids: TransactionEntity['id'][],
   ) => void;
   onMakeAsNonSplitTransactions: (ids: string[]) => void;
+  hasReceipt: boolean;
 };
 
 export function useTransactionRowContextActions({
@@ -44,8 +46,10 @@ export function useTransactionRowContextActions({
   onCreateRule,
   onScheduleAction,
   onMakeAsNonSplitTransactions,
+  hasReceipt,
 }: TransactionRowContextMenuProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const dispatch = useDispatch();
   const selectedItems = useSelectedItems();
 
@@ -183,6 +187,15 @@ export function useTransactionRowContextActions({
   ];
 
   const transactionActions: ContextMenuItem[] = [
+    {
+      name: 'receipt',
+      text: hasReceipt ? t('View receipt') : t('Add receipt'),
+      onClick: () =>
+        navigate(
+          `/receipts?transactionId=${encodeURIComponent(selectedIds[0])}`,
+        ),
+      hidden: selectedIds.length !== 1,
+    },
     {
       name: 'duplicate',
       text: t('Duplicate'),

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from 'react';
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
 import { Trans, useTranslation } from 'react-i18next';
 
@@ -153,6 +159,10 @@ export function FinanceCategorizationSettings() {
   currentBudgetIdRef.current = budgetId;
   const guidanceExpandButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const guidanceFocusToRestore = useRef<string | null>(null);
+  const flushPendingSettingsSave = useEffectEvent(() => {
+    clearSettingsAutoSaveTimer();
+    requestSettingsSave();
+  });
 
   useEffect(() => {
     if (previousBudgetIdRef.current !== budgetId) {
@@ -204,9 +214,7 @@ export function FinanceCategorizationSettings() {
     isComponentMounted.current = true;
     return () => {
       isComponentMounted.current = false;
-      if (settingsAutoSaveTimer.current !== null) {
-        clearTimeout(settingsAutoSaveTimer.current);
-      }
+      flushPendingSettingsSave();
     };
   }, []);
 
@@ -235,17 +243,21 @@ export function FinanceCategorizationSettings() {
     }))
     .filter(group => group.categories.length > 0);
   const categories = categoryGroups.flatMap(group => group.categories);
+  const availableCategoryIds = categories.map(category => category.id);
+  const availableCategoriesFingerprint =
+    categoryData === undefined ? null : availableCategoryIds.join('\0');
 
   function createSettingsSaveCandidate(
     settings: FinanceCategorizationSettings,
     editVersion: number,
   ): SettingsSaveCandidate {
-    const availableCategoryIds = categories.map(category => category.id);
     return {
       budgetId,
       editVersion,
       isValid:
-        selectedModelCompatibilityRef.current !== false &&
+        budgetId !== undefined &&
+        categoryData !== undefined &&
+        selectedModelCompatibilityRef.current === true &&
         settings.model.trim().length > 0 &&
         settings.masterPrompt.trim().length > 0 &&
         settings.categoryIds.some(categoryId =>
@@ -315,7 +327,9 @@ export function FinanceCategorizationSettings() {
       candidate.serializedSettings,
       candidate.editVersion,
     );
-    setSettingsSaveStatus('pending');
+    if (isComponentMounted.current) {
+      setSettingsSaveStatus('pending');
+    }
     let didSave = false;
     try {
       const result = await dispatch(
@@ -341,8 +355,17 @@ export function FinanceCategorizationSettings() {
       submittedSettings.current.delete(candidate.serializedSettings);
     } finally {
       isSettingsSaveInFlight.current = false;
-      if (isComponentMounted.current) {
-        const latestCandidate = latestSaveCandidate.current;
+      const latestCandidate = latestSaveCandidate.current;
+      if (!isComponentMounted.current) {
+        if (
+          latestCandidate !== null &&
+          latestCandidate.isValid &&
+          latestCandidate.budgetId === candidate.budgetId &&
+          latestCandidate.editVersion > candidate.editVersion
+        ) {
+          void persistSettings(latestCandidate);
+        }
+      } else {
         const didBudgetChange =
           candidate.budgetId !== currentBudgetIdRef.current;
         const shouldSaveLatestBudget =
@@ -387,10 +410,10 @@ export function FinanceCategorizationSettings() {
     requestSettingsSave();
   }
 
-  function updateSelectedModelCompatibility(isCompatible: boolean) {
+  function updateSelectedModelCompatibility(isCompatible: boolean | null) {
     selectedModelCompatibilityRef.current = isCompatible;
     setIsSelectedModelCompatible(isCompatible);
-    if (!isCompatible && !isSettingsSaveInFlight.current) {
+    if (isCompatible !== true && !isSettingsSaveInFlight.current) {
       setSettingsSaveStatus('idle');
     }
     if (settingsEditVersion.current !== lastSettledEditVersion.current) {
@@ -402,6 +425,21 @@ export function FinanceCategorizationSettings() {
       );
     }
   }
+
+  const reEvaluateSettingsAfterCategoriesChange = useEffectEvent(() => {
+    if (settingsEditVersion.current !== lastSettledEditVersion.current) {
+      scheduleSettingsSave(
+        createSettingsSaveCandidate(
+          draftSettingsRef.current,
+          settingsEditVersion.current,
+        ),
+      );
+    }
+  });
+
+  useEffect(() => {
+    reEvaluateSettingsAfterCategoriesChange();
+  }, [availableCategoriesFingerprint]);
 
   const saveApiKey = async () => {
     if (!apiKey.trim()) return;
@@ -470,7 +508,9 @@ export function FinanceCategorizationSettings() {
   const isEnvironmentManaged = keyStatus?.source === 'environment';
   const isServerOffline = serverStatus === 'offline';
   const canSaveSettings =
-    isSelectedModelCompatible !== false &&
+    budgetId !== undefined &&
+    categoryData !== undefined &&
+    isSelectedModelCompatible === true &&
     draftSettings.model.trim().length > 0 &&
     draftSettings.masterPrompt.trim().length > 0 &&
     draftSettings.categoryIds.some(categoryId =>
@@ -544,7 +584,7 @@ export function FinanceCategorizationSettings() {
               ) : keyStatus ? (
                 <Trans>No OpenAI API key is configured.</Trans>
               ) : (
-                <Trans>Checking OpenAI API key statusâ€¦</Trans>
+                <Trans>Checking OpenAI API key status…</Trans>
               )}
             </Text>
             {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
@@ -555,9 +595,11 @@ export function FinanceCategorizationSettings() {
               isUnavailable={isServerOffline}
               onSelectionValidityChange={updateSelectedModelCompatibility}
               value={draftSettings.model}
-              onChange={model =>
-                updateDraftSettings({ ...draftSettings, model })
-              }
+              onChange={model => {
+                selectedModelCompatibilityRef.current = null;
+                setIsSelectedModelCompatible(null);
+                updateDraftSettings({ ...draftSettings, model });
+              }}
             />
             {isSelectedModelCompatible === false && (
               <Text role="alert" style={{ color: theme.warningText }}>
@@ -743,7 +785,7 @@ export function FinanceCategorizationSettings() {
             ))}
             {settingsSaveStatus === 'pending' && (
               <Text role="status">
-                <Trans>Savingâ€¦</Trans>
+                <Trans>Saving…</Trans>
               </Text>
             )}
             {settingsSaveStatus === 'saved' && (
@@ -901,4 +943,3 @@ export function FinanceCategorizationSettings() {
     </>
   );
 }
-

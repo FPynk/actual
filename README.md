@@ -148,6 +148,39 @@ restores the ledger. Review history remains explicit: use **Reopen review**
 before applying it again. This all happens in the normal Actual account view;
 it does not start or connect to another app.
 
+### Receipts
+
+Receipts live in this same Actual app. Open **More > Receipts**, or select a
+transaction and choose **Upload receipt**. You can select or drop up to 10
+JPEG, PNG, or non-animated WebP images (8 MiB each). They are processed one at
+a time; an individual failure can be retried, corrected manually, or removed
+without stopping the rest of the queue.
+
+Actual runs PaddleOCR locally in your browser using assets served by the same
+Actual URL. It accepts images no larger than 24 megapixels or 8192 pixels on
+either side and prepares a working copy no larger than 2400 pixels on its
+longest edge. If a photo is sideways, use **Rotate left** or **Rotate right**
+and rerun the same local OCR. No API key is needed for receipt OCR.
+
+Review and correct the merchant, date, total, line items, and transcript before
+choosing **Save receipt text**. Saving keeps only the reviewed text and fields
+with the budget, so they are included in the normal Actual backup and sync
+workflow. The original image, object URL, and OCR boxes are temporary: Actual
+does not save, sync, back up, log, or attach them to transaction Notes.
+
+After saving, review the ranked transaction matches and explicitly **Attach
+receipt**. You can later open the receipt to edit it, **Reassign**, **Unlink**,
+or **Delete** it. Actual never changes a transaction's financial values or
+Notes when you work with a receipt. An ambiguous match stays manual; only one
+active receipt can be attached to a transaction at a time.
+
+When you accept the existing OpenAI auto-categorization disclosure, a linked,
+reviewed receipt may contribute its merchant and up to 40 bounded line-item
+labels, quantities, and amounts. It never sends the receipt image, full
+transcript, payment hint, OCR boxes, or raw upload. Receipt evidence is used
+only when one allowed category clearly represents most of the attributable
+items; otherwise the usual transaction evidence is used.
+
 ### Expenditure reports
 
 Open **Reports**, then choose **New custom report**. Set the **Payment** view

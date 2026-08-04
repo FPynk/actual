@@ -21,6 +21,8 @@ import { build, defineConfig, loadEnv } from 'vite';
 import type { Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+import { stagePaddleOcrAssets } from './bin/stage-paddleocr-assets.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Compile every workspace package that ships React components. Workspace
 // imports resolve to their real paths under packages/<name>/src, so any
@@ -97,6 +99,8 @@ const pluginsServiceDistDir = path.resolve(
   '../plugins-service/dist',
 );
 const serviceWorkerDir = path.resolve(__dirname, 'service-worker');
+const paddleOcrJsepModulePath =
+  '/paddleocr/onnxruntime/ort-wasm-simd-threaded.jsep.mjs';
 
 const WORKER_FILENAME_RE = /^kcab\.worker\.(.+)\.js$/;
 
@@ -238,6 +242,24 @@ const pluginsServiceAssets = (): Plugin => ({
   },
 });
 
+const servePaddleOcrJsepModule = (): Plugin => ({
+  name: 'serve-paddleocr-jsep-module',
+  apply: 'serve',
+  configureServer(server) {
+    server.middlewares.use((request, _response, next) => {
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      if (
+        url.pathname === paddleOcrJsepModulePath &&
+        url.searchParams.has('import')
+      ) {
+        url.searchParams.delete('import');
+        request.url = `${url.pathname}${url.search}`;
+      }
+      next();
+    });
+  },
+});
+
 export default defineConfig(async ({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const isVitest = process.env.VITEST === 'true';
@@ -251,6 +273,8 @@ export default defineConfig(async ({ mode, command }) => {
     process.env.REACT_APP_REVIEW_ID = process.env.REVIEW_ID;
     process.env.REACT_APP_BRANCH = process.env.BRANCH;
   }
+
+  if (!isVitest) await stagePaddleOcrAssets();
 
   // Electron packaging (--mode=desktop) bundles loot-core directly, so skip
   // all browser-only staging there.
@@ -341,6 +365,7 @@ export default defineConfig(async ({ mode, command }) => {
       tsconfigPaths: true,
     },
     plugins: [
+      servePaddleOcrJsepModule(),
       // electron (desktop) builds do not support PWA
       mode === 'desktop'
         ? undefined
@@ -372,6 +397,12 @@ export default defineConfig(async ({ mode, command }) => {
             workbox: {
               globPatterns: [
                 '**/*.{js,css,html,txt,wasm,sql,sqlite,ico,png,woff2,webmanifest}',
+              ],
+              globIgnores: [
+                'paddleocr/**',
+                'static/js/dist.*.chunk.js',
+                'static/js/worker-entry-*.js',
+                'static/wasm/ort-wasm-simd-threaded.jsep.*.wasm',
               ],
               ignoreURLParametersMatching: [/^v$/],
               navigateFallback: '/index.html',

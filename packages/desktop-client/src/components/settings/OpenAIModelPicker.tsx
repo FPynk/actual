@@ -24,7 +24,7 @@ type OpenAIModelPickerProps = {
   isUnavailable?: boolean;
   loadModels?: (refresh?: boolean) => Promise<OpenAiCategorizationModelsResult>;
   onChange: (modelId: string) => void;
-  onSelectionValidityChange?: (isCompatible: boolean) => void;
+  onSelectionValidityChange?: (isCompatible: boolean | null) => void;
   value: string;
 };
 
@@ -113,17 +113,23 @@ export function OpenAIModelPicker({
   const [pickerState, setPickerState] = useState<PickerState>({
     status: 'loading',
   });
+  const loadRequestGeneration = useRef(0);
   const onSelectionValidityChangeRef = useRef(onSelectionValidityChange);
   onSelectionValidityChangeRef.current = onSelectionValidityChange;
 
   const load = useCallback(
     async (refresh = false) => {
+      const requestGeneration = ++loadRequestGeneration.current;
+      onSelectionValidityChangeRef.current?.(null);
       if (isUnavailable) {
         setPickerState({ status: 'error', reason: 'unavailable' });
         return;
       }
       setPickerState({ status: 'loading' });
       const result = await loadModels(refresh);
+      if (requestGeneration !== loadRequestGeneration.current) {
+        return;
+      }
       if ('error' in result) {
         setPickerState({ status: 'error', reason: result.error });
         return;
@@ -135,6 +141,9 @@ export function OpenAIModelPicker({
 
   useEffect(() => {
     void load();
+    return () => {
+      loadRequestGeneration.current += 1;
+    };
   }, [load]);
 
   const loadedModels = pickerState.status === 'ready' ? pickerState.models : [];
@@ -270,7 +279,7 @@ export function OpenAIModelPicker({
 
         {isLoading && (
           <Text role="status">
-            <Trans>Loading OpenAI modelsâ€¦</Trans>
+            <Trans>Loading OpenAI models…</Trans>
           </Text>
         )}
         {pickerState.status === 'error' && (
@@ -426,4 +435,3 @@ export function OpenAIModelPicker({
     </FormField>
   );
 }
-

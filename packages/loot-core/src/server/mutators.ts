@@ -50,12 +50,6 @@ export async function runHandler<T extends Handlers[keyof Handlers]>(
     _latestHandlerNames = _latestHandlerNames.slice(-5);
   }
 
-  if (mutatingMethods.has(handler)) {
-    return runMutator(() => handler(args), { undoTag }) as Promise<
-      ReturnType<T>
-    >;
-  }
-
   // When closing a file, it clears out all global state for the file. That
   // means any async workflows currently executed would be cut off. We handle
   // this by letting all async workflows finish executing before closing the
@@ -64,7 +58,9 @@ export async function runHandler<T extends Handlers[keyof Handlers]>(
     await flushRunningMethods();
   }
 
-  const promise = handler(args);
+  const promise = mutatingMethods.has(handler)
+    ? runMutator(() => handler(args), { undoTag })
+    : handler(args);
   runningMethods.add(promise);
   // Remove on rejection too — a stale promise poisons every later flush.
   const remove = () => runningMethods.delete(promise);
