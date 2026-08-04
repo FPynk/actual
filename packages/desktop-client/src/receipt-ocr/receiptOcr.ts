@@ -90,7 +90,15 @@ export function createReceiptOcrClient(): ReceiptOcrClient {
         if (requestId !== newestRequestId)
           throw new ReceiptOcrStaleResultError();
         if (!result) throw new Error('Receipt OCR returned no result.');
-        return createReceiptOcrDraft(result);
+        const draft = createReceiptOcrDraft(result, {
+          budgetCurrency: options.budgetCurrency,
+          dateOrder: options.dateOrder,
+        });
+        const sourceHash = await createReceiptSourceHash(file);
+        if (isDisposed) throw new ReceiptOcrDisposedError();
+        if (requestId !== newestRequestId)
+          throw new ReceiptOcrStaleResultError();
+        return { ...draft, sourceHash };
       } finally {
         isRequestActive = false;
         image.close();
@@ -109,6 +117,16 @@ export function createReceiptOcrClient(): ReceiptOcrClient {
       }
     },
   };
+}
+
+export async function createReceiptSourceHash(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    await file.arrayBuffer(),
+  );
+  return Array.from(new Uint8Array(digest), byte =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 }
 
 export async function extractReceiptText(

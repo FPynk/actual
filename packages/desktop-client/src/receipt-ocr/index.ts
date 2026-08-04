@@ -8,7 +8,6 @@ export {
 } from './receiptOcr';
 export type {
   ExtractReceiptTextOptions,
-  ReceiptAmount,
   ReceiptLineItem,
   ReceiptOcrClient,
   ReceiptOcrDraft,

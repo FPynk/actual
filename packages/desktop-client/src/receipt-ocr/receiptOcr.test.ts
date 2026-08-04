@@ -71,6 +71,7 @@ describe('createReceiptOcrClient', () => {
       ].every(url => new URL(url, location.origin).origin === location.origin),
     ).toBe(true);
     expect(draft.transcript).toBe('Shop');
+    expect(draft.sourceHash).toMatch(/^[a-f0-9]{64}$/);
     expect(image.close).toHaveBeenCalledOnce();
 
     await client.dispose();

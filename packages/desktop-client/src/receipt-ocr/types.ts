@@ -1,3 +1,9 @@
+import type {
+  ReceiptOcrBox,
+  ReceiptOcrDraft as PersistableReceiptOcrDraft,
+  ReceiptLineItem,
+} from '@actual-app/core/types/receipts';
+
 export type ReceiptOcrPoint = {
   x: number;
   y: number;
@@ -9,27 +15,26 @@ export type ReceiptOcrLine = {
   confidence: number;
 };
 
-export type ReceiptAmount = {
-  amount: string;
-  currency: string | null;
+export type ReceiptOcrCorrection = {
+  corrected: string;
+  lineIndex: number;
+  original: string;
+  reason: 'amount-digit' | 'known-label';
 };
 
-export type ReceiptLineItem = {
-  description: string;
-  total: ReceiptAmount | null;
-};
-
-export type ReceiptOcrDraft = {
-  merchant: string | null;
-  date: string | null;
-  total: ReceiptAmount | null;
-  lineItems: readonly ReceiptLineItem[];
+export type ReceiptOcrDraft = PersistableReceiptOcrDraft & {
+  corrections: readonly ReceiptOcrCorrection[];
   lines: readonly ReceiptOcrLine[];
-  transcript: string;
+  rawTranscript: string;
   redactedTranscript: string;
+  boxes: readonly ReceiptOcrBox[];
 };
+
+export type { ReceiptLineItem };
 
 export type ExtractReceiptTextOptions = {
+  budgetCurrency?: string | null;
+  dateOrder?: 'day-first' | 'month-first';
   rotationDegrees?: 0 | 90 | 180 | 270;
   signal?: AbortSignal;
 };

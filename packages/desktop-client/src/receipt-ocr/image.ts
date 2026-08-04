@@ -1,8 +1,9 @@
 const supportedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
-export const maxReceiptImageBytes = 12 * 1024 * 1024;
-export const maxReceiptImagePixels = 16_000_000;
-export const maxReceiptImageSide = 2_048;
+export const maxReceiptImageBytes = 8 * 1024 * 1024;
+export const maxReceiptImagePixels = 24_000_000;
+export const maxReceiptImageDecodedSide = 8_192;
+export const maxReceiptOcrImageSide = 2_400;
 
 type ImageMetadata = {
   width: number;
@@ -41,6 +42,8 @@ export async function validateReceiptImageFile(file: File): Promise<void> {
   if (
     metadata.width === 0 ||
     metadata.height === 0 ||
+    metadata.width > maxReceiptImageDecodedSide ||
+    metadata.height > maxReceiptImageDecodedSide ||
     metadata.width * metadata.height > maxReceiptImagePixels
   ) {
     throw new ReceiptImageValidationError(
@@ -73,7 +76,7 @@ export function flattenRotateAndResize(
   const rotatedHeight = isQuarterTurn ? source.width : source.height;
   const scale = Math.min(
     1,
-    maxReceiptImageSide / Math.max(rotatedWidth, rotatedHeight),
+    maxReceiptOcrImageSide / Math.max(rotatedWidth, rotatedHeight),
   );
   const width = Math.max(1, Math.round(rotatedWidth * scale));
   const height = Math.max(1, Math.round(rotatedHeight * scale));

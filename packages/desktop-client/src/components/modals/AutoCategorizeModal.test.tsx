@@ -293,17 +293,21 @@ describe('AutoCategorizeModal selected scope', () => {
     });
     mocks.send.mockImplementation(
       async (
-        _name: string,
-        payload: { candidates: Array<{ candidate_id: string }> },
-      ) => ({
-        proposals: payload.candidates.map(candidate => ({
-          candidate_id: candidate.candidate_id,
-          category_id: 'groceries',
-          confidence: 'high',
-          explanation:
-            'Merchant match supported by a deliberately long synthetic explanation that must remain readable without overlapping the category selector or confidence label.',
-        })),
-      }),
+        name: string,
+        payload?: { candidates: Array<{ candidate_id: string }> },
+      ) => {
+        if (name === 'receipts/list') return [];
+        if (!payload) return {};
+        return {
+          proposals: payload.candidates.map(candidate => ({
+            candidate_id: candidate.candidate_id,
+            category_id: 'groceries',
+            confidence: 'high',
+            explanation:
+              'Merchant match supported by a deliberately long synthetic explanation that must remain readable without overlapping the category selector or confidence label.',
+          })),
+        };
+      },
     );
   });
 
@@ -397,6 +401,82 @@ describe('AutoCategorizeModal selected scope', () => {
     expect(JSON.stringify(mocks.send.mock.calls)).not.toContain(
       'Unchecked merchant',
     );
+  });
+
+  it('loads reviewed receipt evidence only after disclosure acceptance', async () => {
+    const user = userEvent.setup();
+    mocks.send.mockImplementation(
+      async (
+        name: string,
+        payload?: { candidates: Array<{ candidate_id: string }> },
+      ) => {
+        if (name === 'receipts/list') {
+          return [
+            {
+              fingerprint: 'receipt-fingerprint',
+              id: 'receipt-id',
+              lineItems: [{ amount: 499, label: 'Apples' }],
+              merchant: 'Corner Shop',
+              paymentHint: 'Visa 1234',
+              transcriptRevision: 1,
+              transactionId: 'checked-expense',
+              transcript: 'This complete transcript must never leave Actual',
+            },
+          ];
+        }
+        if (!payload) return {};
+        return {
+          proposals: payload.candidates.map(candidate => ({
+            candidate_id: candidate.candidate_id,
+            category_id: 'groceries',
+            confidence: 'high',
+            explanation: 'Receipt supports groceries.',
+          })),
+        };
+      },
+    );
+    render(
+      <AutoCategorizeModal
+        currentQuery="{}"
+        initialScope="selected"
+        onApplied={vi.fn()}
+        onCreateRule={vi.fn()}
+        selectedTransactionIds={['checked-expense', 'checked-income']}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: 'Review eligible transactions' }),
+    );
+    expect(mocks.send).not.toHaveBeenCalledWith('receipts/list');
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: 'I understand and want to generate suggestions for this run',
+      }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Generate suggestions' }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.send).toHaveBeenCalledWith('finance-categorize', {
+        model: 'gpt-5.6-luna',
+        categorization_instruction: 'Choose a category.',
+        categories: expect.any(Array),
+        candidates: expect.arrayContaining([
+          expect.objectContaining({
+            receipt: {
+              line_items: [{ amount: 499, label: 'Apples' }],
+              merchant: 'Corner Shop',
+            },
+          }),
+        ]),
+      });
+    });
+    expect(JSON.stringify(mocks.send.mock.calls)).not.toContain(
+      'This complete transcript must never leave Actual',
+    );
+    expect(JSON.stringify(mocks.send.mock.calls)).not.toContain('Visa 1234');
   });
 
   it('explains zero-value rows that are skipped from a mixed selected scope', async () => {

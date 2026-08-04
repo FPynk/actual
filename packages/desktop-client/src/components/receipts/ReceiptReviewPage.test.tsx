@@ -18,6 +18,34 @@ vi.mock('../../receipt-ocr/receiptOcr', () => ({
   createReceiptOcrClient: vi.fn(() => testOcrClient),
 }));
 
+function createOcrDraft(overrides = {}) {
+  return {
+    boxes: [],
+    corrections: [],
+    currency: 'USD',
+    fieldConfidence: {},
+    lineItems: [],
+    lines: [],
+    merchant: '',
+    normalizedMerchant: null,
+    ocrRevision: 'paddleocr-js',
+    parserRevision: 'receipt-parser-v2',
+    paymentHint: null,
+    purchaseDate: null,
+    purchaseTime: null,
+    rawTranscript: '',
+    redactedTranscript: '',
+    sourceHash: null,
+    subtotal: null,
+    tax: null,
+    tip: null,
+    total: null,
+    transcript: '',
+    warnings: [],
+    ...overrides,
+  };
+}
+
 describe('ReceiptReviewPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -29,15 +57,16 @@ describe('ReceiptReviewPage', () => {
 
   it('reviews a locally selected receipt image without saving it', async () => {
     const user = userEvent.setup();
-    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue({
-      merchant: 'Neighborhood Market',
-      date: '2026-08-04',
-      total: { amount: '23.45', currency: 'USD' },
-      transcript: 'Neighborhood Market\\nTOTAL 23.45',
-      redactedTranscript: 'Neighborhood Market\\nTOTAL 23.45',
-      lineItems: [],
-      lines: [{ polygon: [], text: 'TOTAL 23.45', confidence: 0.91 }],
-    });
+    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue(
+      createOcrDraft({
+        merchant: 'Neighborhood Market',
+        purchaseDate: '2026-08-04',
+        total: 2345,
+        transcript: 'Neighborhood Market\\nTOTAL 23.45',
+        redactedTranscript: 'Neighborhood Market\\nTOTAL 23.45',
+        lines: [{ polygon: [], text: 'TOTAL 23.45', confidence: 0.91 }],
+      }),
+    );
     render(<ReceiptReviewPage />, { wrapper: TestProviders });
 
     const receipt = new File(['receipt'], 'market.png', { type: 'image/png' });
@@ -76,15 +105,9 @@ describe('ReceiptReviewPage', () => {
 
   it('reruns OCR with the adjusted rotation', async () => {
     const user = userEvent.setup();
-    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue({
-      merchant: '',
-      date: '',
-      total: null,
-      transcript: '',
-      redactedTranscript: '',
-      lineItems: [],
-      lines: [],
-    });
+    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue(
+      createOcrDraft(),
+    );
     render(<ReceiptReviewPage />, { wrapper: TestProviders });
 
     const receipt = new File(['receipt'], 'market.jpg', { type: 'image/jpeg' });
@@ -122,15 +145,9 @@ describe('ReceiptReviewPage', () => {
 
   it('disposes the OCR client when clearing a receipt', async () => {
     const user = userEvent.setup();
-    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue({
-      merchant: '',
-      date: '',
-      total: null,
-      transcript: '',
-      redactedTranscript: '',
-      lineItems: [],
-      lines: [],
-    });
+    vi.mocked(testOcrClient.extractReceiptText).mockResolvedValue(
+      createOcrDraft(),
+    );
     render(<ReceiptReviewPage />, { wrapper: TestProviders });
 
     fireEvent.change(screen.getByLabelText('Upload receipt image'), {
@@ -148,15 +165,7 @@ describe('ReceiptReviewPage', () => {
     const user = userEvent.setup();
     vi.mocked(testOcrClient.extractReceiptText)
       .mockRejectedValueOnce(new Error('OCR failed'))
-      .mockResolvedValueOnce({
-        merchant: '',
-        date: '',
-        total: null,
-        transcript: '',
-        redactedTranscript: '',
-        lineItems: [],
-        lines: [],
-      });
+      .mockResolvedValueOnce(createOcrDraft());
     render(<ReceiptReviewPage />, { wrapper: TestProviders });
 
     const receipt = new File(['receipt'], 'market.jpg', { type: 'image/jpeg' });

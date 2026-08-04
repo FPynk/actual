@@ -77,8 +77,8 @@ export function ReceiptReviewPage() {
 
       setReceiptDraft(draft);
       setMerchant(draft.merchant ?? '');
-      setPurchaseDate(draft.date ?? '');
-      setTotal(draft.total?.amount ?? '');
+      setPurchaseDate(draft.purchaseDate ?? '');
+      setTotal(draft.total === null ? '' : String(draft.total / 100));
     } catch {
       if (
         !abortController.signal.aborted &&
@@ -307,9 +307,9 @@ function ReceiptDetails({
       />
       <ReceiptField label={t('Total')} value={total} onChange={onTotalChange} />
 
-      {receiptDraft?.total?.currency && (
+      {receiptDraft?.currency && (
         <Text style={{ color: theme.pageTextSubdued }}>
-          <Trans>Currency: {{ currency: receiptDraft.total.currency }}</Trans>
+          <Trans>Currency: {{ currency: receiptDraft.currency }}</Trans>
         </Text>
       )}
 

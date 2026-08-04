@@ -50,6 +50,9 @@ vi.mock('../../hooks/useSyncedPref', () => ({
 vi.mock('../../hooks/useFeatureFlag', () => ({
   useFeatureFlag: vi.fn(() => false),
 }));
+vi.mock('#hooks/useNavigate', () => ({
+  useNavigate: () => vi.fn(),
+}));
 
 const accounts = [generateAccount('Bank of America')];
 vi.mock('../../hooks/useAccounts', () => ({
