@@ -32,6 +32,7 @@ describe('saveSyncedPrefs', () => {
 
     await vi.waitFor(() => {
       expect(mocks.send).toHaveBeenCalledWith('preferences/save', {
+        expectedBudgetId: 'budget-a',
         id: 'finance.openai-categorization',
         value: 'settings-for-budget-a',
       });

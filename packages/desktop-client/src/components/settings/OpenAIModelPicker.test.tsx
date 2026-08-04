@@ -118,6 +118,51 @@ describe('OpenAIModelPicker', () => {
     ).toHaveAttribute('role', 'alert');
   });
 
+  it('ignores an older model response after the provider becomes unavailable', async () => {
+    let resolveModels:
+      | ((result: { models: FinanceCategorizationModel[] }) => void)
+      | undefined;
+    const pendingModels = new Promise<{
+      models: FinanceCategorizationModel[];
+    }>(resolve => {
+      resolveModels = resolve;
+    });
+    const loadModels = vi.fn(() => pendingModels);
+    const { rerender } = render(
+      <OpenAIModelPicker
+        loadModels={loadModels}
+        onChange={vi.fn()}
+        value="gpt-5.6-terra"
+      />,
+      { wrapper: TestProviders },
+    );
+    await waitFor(() => expect(loadModels).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <OpenAIModelPicker
+        isUnavailable
+        loadModels={loadModels}
+        onChange={vi.fn()}
+        value="gpt-5.6-terra"
+      />,
+    );
+    expect(
+      await screen.findByText(
+        'OpenAI model selection is unavailable while the server is offline.',
+      ),
+    ).toHaveAttribute('role', 'alert');
+
+    resolveModels?.({ models });
+    await Promise.resolve();
+
+    expect(
+      screen.getByText(
+        'OpenAI model selection is unavailable while the server is offline.',
+      ),
+    ).toHaveAttribute('role', 'alert');
+    expect(screen.queryByText('Recommended')).toBeNull();
+  });
+
   it('groups recommended, compatible, and incompatible models', async () => {
     const user = userEvent.setup();
     renderPicker();

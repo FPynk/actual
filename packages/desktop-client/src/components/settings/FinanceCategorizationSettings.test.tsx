@@ -22,13 +22,61 @@ type PendingSave = {
 
 let pendingSaves: PendingSave[];
 
+function createCategoryData() {
+  return {
+    list: [
+      { id: 'groceries', name: 'Groceries', is_income: false },
+      { id: 'rent', name: 'Rent', is_income: false },
+      { id: 'income', name: 'Income', is_income: true },
+      { id: 'hidden', name: 'Hidden', hidden: true },
+      {
+        id: 'hidden-group-visible',
+        name: 'Hidden group visible',
+        is_income: false,
+      },
+    ],
+    grouped: [
+      {
+        id: 'expenses',
+        name: 'Expenses',
+        categories: [
+          { id: 'groceries', name: 'Groceries', is_income: false },
+          { id: 'rent', name: 'Rent', is_income: false },
+          { id: 'hidden', name: 'Hidden', hidden: true },
+        ],
+      },
+      {
+        id: 'hidden-group',
+        name: 'Hidden group',
+        hidden: true,
+        categories: [
+          {
+            id: 'hidden-group-visible',
+            name: 'Hidden group visible',
+            is_income: false,
+          },
+        ],
+      },
+      {
+        id: 'income-group',
+        name: 'Income',
+        is_income: true,
+        categories: [{ id: 'income', name: 'Income', is_income: true }],
+      },
+    ],
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   send: vi.fn(),
   state: {
     budgetId: 'budget-a',
+    categoryData: undefined as
+      | ReturnType<typeof createCategoryData>
+      | undefined,
     serializedSettings: undefined as string | undefined,
-    serverStatus: 'offline' as 'offline' | 'online',
+    serverStatus: 'online' as 'offline' | 'online',
   },
 }));
 
@@ -63,48 +111,7 @@ vi.mock('@actual-app/core/platform/client/connection', () => ({
 
 vi.mock('#hooks/useCategories', () => ({
   useCategories: () => ({
-    data: {
-      list: [
-        { id: 'groceries', name: 'Groceries', is_income: false },
-        { id: 'rent', name: 'Rent', is_income: false },
-        { id: 'income', name: 'Income', is_income: true },
-        { id: 'hidden', name: 'Hidden', hidden: true },
-        {
-          id: 'hidden-group-visible',
-          name: 'Hidden group visible',
-          is_income: false,
-        },
-      ],
-      grouped: [
-        {
-          id: 'expenses',
-          name: 'Expenses',
-          categories: [
-            { id: 'groceries', name: 'Groceries', is_income: false },
-            { id: 'rent', name: 'Rent', is_income: false },
-            { id: 'hidden', name: 'Hidden', hidden: true },
-          ],
-        },
-        {
-          id: 'hidden-group',
-          name: 'Hidden group',
-          hidden: true,
-          categories: [
-            {
-              id: 'hidden-group-visible',
-              name: 'Hidden group visible',
-              is_income: false,
-            },
-          ],
-        },
-        {
-          id: 'income-group',
-          name: 'Income',
-          is_income: true,
-          categories: [{ id: 'income', name: 'Income', is_income: true }],
-        },
-      ],
-    },
+    data: mocks.state.categoryData,
   }),
 }));
 
@@ -157,6 +164,19 @@ async function settleSave(save: PendingSave, outcome: 'resolve' | 'reject') {
   });
 }
 
+async function waitForCompatibleSettings() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(
+    screen.queryByText(
+      'Changes are not saved until you choose at least one category and provide a compatible model and categorization instructions.',
+    ),
+  ).toBeNull();
+}
+
 describe('FinanceCategorizationSettings', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -164,7 +184,8 @@ describe('FinanceCategorizationSettings', () => {
 
   beforeEach(() => {
     mocks.state.budgetId = 'budget-a';
-    mocks.state.serverStatus = 'offline';
+    mocks.state.categoryData = createCategoryData();
+    mocks.state.serverStatus = 'online';
     mocks.state.serializedSettings = JSON.stringify({
       categoryGuidance: {},
       categoryIds: ['groceries'],
@@ -179,12 +200,30 @@ describe('FinanceCategorizationSettings', () => {
       return { unwrap: () => pendingSave.promise };
     });
     mocks.send.mockReset();
-    mocks.send.mockResolvedValue({ configured: false, source: 'none' });
+    mocks.send.mockImplementation(async name => {
+      if (name === 'finance-categorization-status') {
+        return { configured: true, source: 'budget' };
+      }
+      if (name === 'finance-categorization-models') {
+        return {
+          models: [
+            {
+              compatibility: 'compatible',
+              id: 'gpt-5.6-luna',
+              isRecommended: true,
+              reason: null,
+            },
+          ],
+        };
+      }
+      return { error: 'unexpected-request' };
+    });
   });
 
   it('selects every eligible category and autosaves individual deselection', async () => {
     vi.useFakeTimers();
     render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
 
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
 
@@ -222,6 +261,7 @@ describe('FinanceCategorizationSettings', () => {
   it('keeps expanded guidance bound to the inline draft and flushes it on close', async () => {
     vi.useFakeTimers();
     const { unmount } = render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Expand guidance for Groceries' }),
@@ -264,6 +304,7 @@ describe('FinanceCategorizationSettings', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
     unmount();
     render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
 
     expect(
       screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
@@ -295,6 +336,7 @@ describe('FinanceCategorizationSettings', () => {
   it('flushes blur and exactly persists multiline categorization instructions', async () => {
     vi.useFakeTimers();
     render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
     const categorizationInstructions = screen.getByRole('textbox', {
       name: 'Categorization instructions',
     });
@@ -326,6 +368,7 @@ describe('FinanceCategorizationSettings', () => {
   it('debounces saves, coalesces newer edits, and ignores its own preference echo', async () => {
     vi.useFakeTimers();
     const { rerender } = render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
     const guidance = screen.getByRole('textbox', {
       name: 'Guidance for Groceries',
     });
@@ -364,6 +407,7 @@ describe('FinanceCategorizationSettings', () => {
   it('fences an in-flight save from a newly opened budget', async () => {
     vi.useFakeTimers();
     const { rerender } = render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
 
     fireEvent.change(
       screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
@@ -383,6 +427,7 @@ describe('FinanceCategorizationSettings', () => {
       model: 'gpt-5.6-luna',
     });
     rerender(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
     expect(
       screen.getByRole('textbox', { name: 'Categorization instructions' }),
     ).toHaveValue('New budget instructions.');
@@ -410,9 +455,130 @@ describe('FinanceCategorizationSettings', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
   });
 
+  it('waits for model compatibility before autosaving and retries when it becomes known', async () => {
+    vi.useFakeTimers();
+    let resolveModels:
+      | ((value: {
+          models: Array<{
+            compatibility: 'compatible';
+            id: string;
+            isRecommended: boolean;
+            reason: null;
+          }>;
+        }) => void)
+      | undefined;
+    const models = new Promise<{
+      models: Array<{
+        compatibility: 'compatible';
+        id: string;
+        isRecommended: boolean;
+        reason: null;
+      }>;
+    }>(resolve => {
+      resolveModels = resolve;
+    });
+    mocks.send.mockImplementation(async name => {
+      if (name === 'finance-categorization-status') {
+        return { configured: true, source: 'budget' };
+      }
+      if (name === 'finance-categorization-models') {
+        return models;
+      }
+      return { error: 'unexpected-request' };
+    });
+    render(<FinanceCategorizationSettings />);
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+      { target: { value: 'Wait for a verified model.' } },
+    );
+    await advanceAutosave();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveModels?.({
+        models: [
+          {
+            compatibility: 'compatible',
+            id: 'gpt-5.6-luna',
+            isRecommended: true,
+            reason: null,
+          },
+        ],
+      });
+      await Promise.resolve();
+    });
+    await waitForCompatibleSettings();
+    await advanceAutosave();
+
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'],
+    ).toContain('Wait for a verified model.');
+  });
+
+  it('re-evaluates edits made while categories are loading', async () => {
+    vi.useFakeTimers();
+    mocks.state.categoryData = undefined;
+    const { rerender } = render(<FinanceCategorizationSettings />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText('Recommended')).toBeVisible();
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+      { target: { value: 'Save after categories load.' } },
+    );
+    await advanceAutosave();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    mocks.state.categoryData = createCategoryData();
+    rerender(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
+    await advanceAutosave();
+
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'],
+    ).toContain('Save after categories load.');
+  });
+
+  it('flushes a pending valid debounced edit when navigating away', async () => {
+    vi.useFakeTimers();
+    const { unmount } = render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+      { target: { value: 'Flush before unmount.' } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(499);
+    });
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        expectedBudgetId: 'budget-a',
+        prefs: {
+          'finance.openai-categorization': expect.stringContaining(
+            'Flush before unmount.',
+          ),
+        },
+      }),
+    );
+  });
+
   it('does not autosave invalid settings and retries the latest failed save', async () => {
     vi.useFakeTimers();
     render(<FinanceCategorizationSettings />);
+    await waitForCompatibleSettings();
 
     const instructions = screen.getByRole('textbox', {
       name: 'Categorization instructions',
