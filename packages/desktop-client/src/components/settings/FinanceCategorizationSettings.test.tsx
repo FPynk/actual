@@ -381,7 +381,7 @@ describe('FinanceCategorizationSettings', () => {
     await advanceAutosave();
     const firstSavedSettings =
       mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'];
-    expect(screen.getByRole('status')).toHaveTextContent('Savingâ€¦');
+    expect(screen.getByRole('status')).toHaveTextContent('Saving…');
 
     fireEvent.change(guidance, { target: { value: 'Newer draft' } });
     await advanceAutosave();
@@ -398,7 +398,7 @@ describe('FinanceCategorizationSettings', () => {
     expect(
       mocks.dispatch.mock.calls[1][0].prefs['finance.openai-categorization'],
     ).toContain('Newer draft');
-    expect(screen.getByRole('status')).toHaveTextContent('Savingâ€¦');
+    expect(screen.getByRole('status')).toHaveTextContent('Saving…');
 
     await settleSave(pendingSaves[1], 'resolve');
     expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
@@ -699,4 +699,3 @@ describe('FinanceCategorizationSettings', () => {
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 });
-

@@ -249,4 +249,3 @@ export const {
   mergeSyncedPrefs,
   setPrefs,
 } = actions;
-

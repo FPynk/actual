@@ -584,7 +584,7 @@ export function FinanceCategorizationSettings() {
               ) : keyStatus ? (
                 <Trans>No OpenAI API key is configured.</Trans>
               ) : (
-                <Trans>Checking OpenAI API key statusâ€¦</Trans>
+                <Trans>Checking OpenAI API key status…</Trans>
               )}
             </Text>
             {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
@@ -785,7 +785,7 @@ export function FinanceCategorizationSettings() {
             ))}
             {settingsSaveStatus === 'pending' && (
               <Text role="status">
-                <Trans>Savingâ€¦</Trans>
+                <Trans>Saving…</Trans>
               </Text>
             )}
             {settingsSaveStatus === 'saved' && (
@@ -943,4 +943,3 @@ export function FinanceCategorizationSettings() {
     </>
   );
 }
-

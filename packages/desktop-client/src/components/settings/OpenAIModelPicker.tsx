@@ -279,7 +279,7 @@ export function OpenAIModelPicker({
 
         {isLoading && (
           <Text role="status">
-            <Trans>Loading OpenAI modelsâ€¦</Trans>
+            <Trans>Loading OpenAI models…</Trans>
           </Text>
         )}
         {pickerState.status === 'error' && (
@@ -435,4 +435,3 @@ export function OpenAIModelPicker({
     </FormField>
   );
 }
-

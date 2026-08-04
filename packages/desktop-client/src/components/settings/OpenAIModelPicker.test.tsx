@@ -398,4 +398,3 @@ describe('OpenAIModelPicker', () => {
     expect(screen.queryByText(/gpt-5.6-luna.*Unavailable/i)).toBeNull();
   });
 });
-
