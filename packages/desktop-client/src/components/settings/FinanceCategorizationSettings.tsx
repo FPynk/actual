@@ -17,6 +17,7 @@ import type { FinanceCategorizationSettings } from '@actual-app/core/types/finan
 import { Link } from '#components/common/Link';
 import { Checkbox, FormField, FormLabel } from '#components/forms';
 import { useCategories } from '#hooks/useCategories';
+import { useMetadataPref } from '#hooks/useMetadataPref';
 import { useSyncedPref } from '#hooks/useSyncedPref';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
 import { saveSyncedPrefs } from '#prefs/prefsSlice';
@@ -26,10 +27,42 @@ import { OpenAIModelPicker } from './OpenAIModelPicker';
 import { Setting } from './UI';
 
 const masterPromptEditorKey = 'master-prompt';
+const settingsAutoSaveDelay = 500;
 
 type ExpandedGuidanceEditor =
   | { type: 'master' }
   | { type: 'category'; categoryId: string };
+
+type SettingsSaveCandidate = {
+  budgetId: string | undefined;
+  editVersion: number;
+  isValid: boolean;
+  serializedSettings: string;
+};
+
+function serializeSettings(
+  settings: FinanceCategorizationSettings,
+  availableCategoryIds: string[],
+) {
+  const availableCategoryIdSet = new Set(availableCategoryIds);
+  const categoryIds = settings.categoryIds.filter(categoryId =>
+    availableCategoryIdSet.has(categoryId),
+  );
+  const categoryGuidance = Object.fromEntries(
+    categoryIds.map(categoryId => [
+      categoryId,
+      settings.categoryGuidance[categoryId] || '',
+    ]),
+  );
+
+  return JSON.stringify({
+    ...settings,
+    categoryGuidance,
+    categoryIds,
+    masterPrompt: settings.masterPrompt,
+    model: settings.model.trim(),
+  });
+}
 
 function parseSettings(
   value: string | undefined,
@@ -82,6 +115,7 @@ export function FinanceCategorizationSettings() {
   const { t } = useTranslation();
   const dispatch = useDispatch();
   const serverStatus = useSyncServerStatus();
+  const [budgetId] = useMetadataPref('id');
   const [serializedSettings] = useSyncedPref('finance.openai-categorization');
   const [draftSettings, setDraftSettings] = useState(() =>
     parseSettings(serializedSettings),
@@ -103,28 +137,78 @@ export function FinanceCategorizationSettings() {
   const [isSelectedModelCompatible, setIsSelectedModelCompatible] = useState<
     boolean | null
   >(null);
+  const draftSettingsRef = useRef(draftSettings);
   const settingsEditVersion = useRef(0);
+  const lastSettledEditVersion = useRef(0);
   const isSettingsSaveInFlight = useRef(false);
-  const lastSubmittedSettings = useRef<{
-    editVersion: number;
-    serializedSettings: string;
-  } | null>(null);
+  const settingsAutoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const latestSaveCandidate = useRef<SettingsSaveCandidate | null>(null);
+  const submittedSettings = useRef(new Map<string, number>());
+  const selectedModelCompatibilityRef = useRef<boolean | null>(null);
+  const isComponentMounted = useRef(true);
+  const currentBudgetIdRef = useRef(budgetId);
+  const previousBudgetIdRef = useRef(budgetId);
+  currentBudgetIdRef.current = budgetId;
   const guidanceExpandButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const guidanceFocusToRestore = useRef<string | null>(null);
 
   useEffect(() => {
-    const submittedSettings = lastSubmittedSettings.current;
-    if (
-      submittedSettings !== null &&
-      submittedSettings.serializedSettings === serializedSettings
-    ) {
-      lastSubmittedSettings.current = null;
-      if (settingsEditVersion.current !== submittedSettings.editVersion) {
-        return;
-      }
+    if (previousBudgetIdRef.current !== budgetId) {
+      previousBudgetIdRef.current = budgetId;
+      clearSettingsAutoSaveTimer();
+      settingsEditVersion.current = 0;
+      lastSettledEditVersion.current = 0;
+      latestSaveCandidate.current = null;
+      submittedSettings.current.clear();
+      selectedModelCompatibilityRef.current = null;
+      const nextSettings = parseSettings(serializedSettings);
+      draftSettingsRef.current = nextSettings;
+      setDraftSettings(nextSettings);
+      setIsSelectedModelCompatible(null);
+      setSettingsSaveStatus('idle');
+      return;
     }
-    setDraftSettings(parseSettings(serializedSettings));
-  }, [serializedSettings]);
+
+    const submittedEditVersion =
+      serializedSettings === undefined
+        ? undefined
+        : submittedSettings.current.get(serializedSettings);
+    if (
+      submittedEditVersion !== undefined &&
+      serializedSettings !== undefined
+    ) {
+      submittedSettings.current.delete(serializedSettings);
+      return;
+    }
+
+    const hasLocalChanges =
+      settingsEditVersion.current !== lastSettledEditVersion.current;
+    if (
+      hasLocalChanges ||
+      isSettingsSaveInFlight.current ||
+      settingsAutoSaveTimer.current !== null
+    ) {
+      return;
+    }
+
+    const nextSettings = parseSettings(serializedSettings);
+    draftSettingsRef.current = nextSettings;
+    latestSaveCandidate.current = null;
+    setDraftSettings(nextSettings);
+    setSettingsSaveStatus('idle');
+  }, [budgetId, serializedSettings]);
+
+  useEffect(() => {
+    isComponentMounted.current = true;
+    return () => {
+      isComponentMounted.current = false;
+      if (settingsAutoSaveTimer.current !== null) {
+        clearTimeout(settingsAutoSaveTimer.current);
+      }
+    };
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     const result = await send('finance-categorization-status');
@@ -141,70 +225,183 @@ export function FinanceCategorizationSettings() {
     if (serverStatus === 'online') {
       void refreshStatus();
     }
-  }, [refreshStatus, serverStatus]);
+  }, [budgetId, refreshStatus, serverStatus]);
 
-  const updateDraftSettings = (nextSettings: FinanceCategorizationSettings) => {
-    settingsEditVersion.current += 1;
-    setDraftSettings(nextSettings);
-    setSettingsSaveStatus(status => (status === 'pending' ? status : 'idle'));
-  };
+  const categoryGroups = (categoryData?.grouped ?? [])
+    .filter(group => !group.hidden)
+    .map(group => ({
+      ...group,
+      categories: (group.categories ?? []).filter(category => !category.hidden),
+    }))
+    .filter(group => group.categories.length > 0);
+  const categories = categoryGroups.flatMap(group => group.categories);
 
-  const saveSettings = async () => {
-    if (isSettingsSaveInFlight.current || isSelectedModelCompatible === false) {
+  function createSettingsSaveCandidate(
+    settings: FinanceCategorizationSettings,
+    editVersion: number,
+  ): SettingsSaveCandidate {
+    const availableCategoryIds = categories.map(category => category.id);
+    return {
+      budgetId,
+      editVersion,
+      isValid:
+        selectedModelCompatibilityRef.current !== false &&
+        settings.model.trim().length > 0 &&
+        settings.masterPrompt.trim().length > 0 &&
+        settings.categoryIds.some(categoryId =>
+          availableCategoryIds.includes(categoryId),
+        ),
+      serializedSettings: serializeSettings(settings, availableCategoryIds),
+    };
+  }
+
+  function clearSettingsAutoSaveTimer() {
+    if (settingsAutoSaveTimer.current !== null) {
+      clearTimeout(settingsAutoSaveTimer.current);
+      settingsAutoSaveTimer.current = null;
+    }
+  }
+
+  function scheduleSettingsSave(candidate: SettingsSaveCandidate) {
+    clearSettingsAutoSaveTimer();
+    latestSaveCandidate.current = candidate;
+    if (!candidate.isValid) {
+      if (!isSettingsSaveInFlight.current) {
+        setSettingsSaveStatus('idle');
+      }
       return;
     }
 
-    const saveVersion = settingsEditVersion.current;
-    const availableCategoryIds = new Set(
-      categories.map(category => category.id),
+    settingsAutoSaveTimer.current = setTimeout(() => {
+      settingsAutoSaveTimer.current = null;
+      requestSettingsSave();
+    }, settingsAutoSaveDelay);
+  }
+
+  function updateDraftSettings(nextSettings: FinanceCategorizationSettings) {
+    const editVersion = settingsEditVersion.current + 1;
+    settingsEditVersion.current = editVersion;
+    draftSettingsRef.current = nextSettings;
+    setDraftSettings(nextSettings);
+    setSettingsSaveStatus(status => (status === 'pending' ? status : 'idle'));
+    scheduleSettingsSave(
+      createSettingsSaveCandidate(nextSettings, editVersion),
     );
-    const categoryIds = draftSettings.categoryIds.filter(categoryId =>
-      availableCategoryIds.has(categoryId),
-    );
-    const categoryGuidance = Object.fromEntries(
-      categoryIds.map(categoryId => [
-        categoryId,
-        draftSettings.categoryGuidance[categoryId] || '',
-      ]),
-    );
-    const serializedSettingsToSave = JSON.stringify({
-      ...draftSettings,
-      categoryGuidance,
-      categoryIds,
-      masterPrompt: draftSettings.masterPrompt,
-      model: draftSettings.model.trim(),
-    });
+  }
+
+  function requestSettingsSave() {
+    clearSettingsAutoSaveTimer();
+    const candidate = latestSaveCandidate.current;
+    if (
+      !candidate ||
+      !candidate.isValid ||
+      candidate.editVersion === lastSettledEditVersion.current
+    ) {
+      return;
+    }
+    if (isSettingsSaveInFlight.current) {
+      return;
+    }
+    void persistSettings(candidate);
+  }
+
+  async function persistSettings(candidate: SettingsSaveCandidate) {
+    if (isSettingsSaveInFlight.current) {
+      return;
+    }
+
     isSettingsSaveInFlight.current = true;
-    lastSubmittedSettings.current = {
-      editVersion: saveVersion,
-      serializedSettings: serializedSettingsToSave,
-    };
+    submittedSettings.current.set(
+      candidate.serializedSettings,
+      candidate.editVersion,
+    );
     setSettingsSaveStatus('pending');
+    let didSave = false;
     try {
-      await dispatch(
+      const result = await dispatch(
         saveSyncedPrefs({
+          expectedBudgetId: candidate.budgetId,
           prefs: {
-            'finance.openai-categorization': serializedSettingsToSave,
+            'finance.openai-categorization': candidate.serializedSettings,
           },
         }),
       ).unwrap();
-      setSettingsSaveStatus(
-        settingsEditVersion.current === saveVersion ? 'saved' : 'idle',
-      );
-    } catch {
-      if (
-        lastSubmittedSettings.current?.serializedSettings ===
-        serializedSettingsToSave
-      ) {
-        lastSubmittedSettings.current = null;
+      if (result?.saved === false) {
+        submittedSettings.current.delete(candidate.serializedSettings);
+      } else {
+        didSave = true;
+        if (candidate.budgetId === currentBudgetIdRef.current) {
+          lastSettledEditVersion.current = Math.max(
+            lastSettledEditVersion.current,
+            candidate.editVersion,
+          );
+        }
       }
-      setSettingsSaveStatus(
-        settingsEditVersion.current === saveVersion ? 'failed' : 'idle',
-      );
+    } catch {
+      submittedSettings.current.delete(candidate.serializedSettings);
     } finally {
       isSettingsSaveInFlight.current = false;
+      if (isComponentMounted.current) {
+        const latestCandidate = latestSaveCandidate.current;
+        const didBudgetChange =
+          candidate.budgetId !== currentBudgetIdRef.current;
+        const shouldSaveLatestBudget =
+          latestCandidate !== null &&
+          latestCandidate.budgetId === currentBudgetIdRef.current &&
+          latestCandidate.isValid;
+
+        if (didBudgetChange && shouldSaveLatestBudget) {
+          clearSettingsAutoSaveTimer();
+          void persistSettings(latestCandidate);
+        } else if (didBudgetChange) {
+          setSettingsSaveStatus('idle');
+        } else if (
+          shouldSaveLatestBudget &&
+          latestCandidate.serializedSettings !== candidate.serializedSettings
+        ) {
+          clearSettingsAutoSaveTimer();
+          void persistSettings(latestCandidate);
+        } else if (
+          latestCandidate !== null &&
+          latestCandidate.serializedSettings === candidate.serializedSettings
+        ) {
+          if (didSave) {
+            lastSettledEditVersion.current = Math.max(
+              lastSettledEditVersion.current,
+              latestCandidate.editVersion,
+            );
+          }
+          setSettingsSaveStatus(
+            latestCandidate.isValid ? (didSave ? 'saved' : 'failed') : 'idle',
+          );
+        } else if (latestCandidate !== null) {
+          setSettingsSaveStatus('idle');
+        } else {
+          setSettingsSaveStatus(didSave ? 'saved' : 'failed');
+        }
+      }
     }
-  };
+  }
+
+  function flushSettingsSave() {
+    requestSettingsSave();
+  }
+
+  function updateSelectedModelCompatibility(isCompatible: boolean) {
+    selectedModelCompatibilityRef.current = isCompatible;
+    setIsSelectedModelCompatible(isCompatible);
+    if (!isCompatible && !isSettingsSaveInFlight.current) {
+      setSettingsSaveStatus('idle');
+    }
+    if (settingsEditVersion.current !== lastSettledEditVersion.current) {
+      scheduleSettingsSave(
+        createSettingsSaveCandidate(
+          draftSettingsRef.current,
+          settingsEditVersion.current,
+        ),
+      );
+    }
+  }
 
   const saveApiKey = async () => {
     if (!apiKey.trim()) return;
@@ -220,6 +417,7 @@ export function FinanceCategorizationSettings() {
     }
     setApiKey('');
     await refreshStatus();
+    selectedModelCompatibilityRef.current = null;
     setIsSelectedModelCompatible(null);
     setModelListRevision(revision => revision + 1);
   };
@@ -236,18 +434,11 @@ export function FinanceCategorizationSettings() {
       return;
     }
     await refreshStatus();
+    selectedModelCompatibilityRef.current = null;
     setIsSelectedModelCompatible(null);
     setModelListRevision(revision => revision + 1);
   };
 
-  const categoryGroups = (categoryData?.grouped ?? [])
-    .filter(group => !group.hidden)
-    .map(group => ({
-      ...group,
-      categories: (group.categories ?? []).filter(category => !category.hidden),
-    }))
-    .filter(group => group.categories.length > 0);
-  const categories = categoryGroups.flatMap(group => group.categories);
   const selectedCategoryIds = new Set(draftSettings.categoryIds);
   const areAllEligibleCategoriesSelected =
     categories.length > 0 &&
@@ -260,6 +451,7 @@ export function FinanceCategorizationSettings() {
       : undefined;
   const isMasterPromptExpanded = expandedGuidanceEditor?.type === 'master';
   const closeExpandedGuidance = () => {
+    flushSettingsSave();
     guidanceFocusToRestore.current = isMasterPromptExpanded
       ? masterPromptEditorKey
       : expandedCategory?.id || null;
@@ -352,20 +544,16 @@ export function FinanceCategorizationSettings() {
               ) : keyStatus ? (
                 <Trans>No OpenAI API key is configured.</Trans>
               ) : (
-                <Trans>Checking OpenAI API key status…</Trans>
+                <Trans>Checking OpenAI API key statusâ€¦</Trans>
               )}
             </Text>
             {error && <Text style={{ color: theme.errorText }}>{error}</Text>}
 
             <OpenAIModelPicker
-              key={`${keyStatus?.configured ?? 'loading'}-${keyStatus?.source ?? 'loading'}-${modelListRevision}`}
-              isDisabled={
-                isServerOffline ||
-                isSavingKey ||
-                settingsSaveStatus === 'pending'
-              }
+              key={`${budgetId ?? 'no-budget'}-${keyStatus?.configured ?? 'loading'}-${keyStatus?.source ?? 'loading'}-${modelListRevision}`}
+              isDisabled={isServerOffline || isSavingKey}
               isUnavailable={isServerOffline}
-              onSelectionValidityChange={setIsSelectedModelCompatible}
+              onSelectionValidityChange={updateSelectedModelCompatibility}
               value={draftSettings.model}
               onChange={model =>
                 updateDraftSettings({ ...draftSettings, model })
@@ -392,6 +580,7 @@ export function FinanceCategorizationSettings() {
                     masterPrompt: event.currentTarget.value,
                   })
                 }
+                onBlur={flushSettingsSave}
                 placeholder={t('Explain how to categorize your transactions')}
                 style={{
                   backgroundColor: theme.tableBackground,
@@ -466,19 +655,17 @@ export function FinanceCategorizationSettings() {
                               : draftSettings.categoryIds.filter(
                                   id => id !== category.id,
                                 );
-                            if (!event.currentTarget.checked) {
-                              if (
-                                expandedGuidanceEditor?.type === 'category' &&
-                                expandedGuidanceEditor.categoryId ===
-                                  category.id
-                              ) {
-                                closeExpandedGuidance();
-                              }
-                            }
                             updateDraftSettings({
                               ...draftSettings,
                               categoryIds,
                             });
+                            if (
+                              !event.currentTarget.checked &&
+                              expandedGuidanceEditor?.type === 'category' &&
+                              expandedGuidanceEditor.categoryId === category.id
+                            ) {
+                              closeExpandedGuidance();
+                            }
                           }}
                         />
                         <label htmlFor={`finance-category-${category.id}`}>
@@ -503,6 +690,7 @@ export function FinanceCategorizationSettings() {
                                 },
                               })
                             }
+                            onBlur={flushSettingsSave}
                             placeholder={t(
                               'Optional guidance for this category',
                             )}
@@ -553,28 +741,35 @@ export function FinanceCategorizationSettings() {
                 })}
               </View>
             ))}
-            <ButtonWithLoading
-              isDisabled={!canSaveSettings || settingsSaveStatus === 'pending'}
-              isLoading={settingsSaveStatus === 'pending'}
-              onPress={saveSettings}
-            >
-              <Trans>Save categorization settings</Trans>
-            </ButtonWithLoading>
+            {settingsSaveStatus === 'pending' && (
+              <Text role="status">
+                <Trans>Savingâ€¦</Trans>
+              </Text>
+            )}
             {settingsSaveStatus === 'saved' && (
               <Text role="status" style={{ color: theme.noticeText }}>
                 <Trans>Settings saved</Trans>
               </Text>
             )}
             {settingsSaveStatus === 'failed' && (
-              <Text role="alert" style={{ color: theme.errorText }}>
-                <Trans>Unable to save categorization settings.</Trans>
-              </Text>
+              <View style={{ alignItems: 'flex-start', gap: 8 }}>
+                <Text role="alert" style={{ color: theme.errorText }}>
+                  <Trans>Unable to save categorization settings.</Trans>
+                </Text>
+                <Button
+                  isDisabled={!canSaveSettings}
+                  onPress={flushSettingsSave}
+                >
+                  <Trans>Retry</Trans>
+                </Button>
+              </View>
             )}
             {!canSaveSettings && (
               <Text style={{ color: theme.warningText }}>
                 <Trans>
-                  Choose at least one category and provide a model and
-                  categorization instructions.
+                  Changes are not saved until you choose at least one category
+                  and provide a compatible model and categorization
+                  instructions.
                 </Trans>
               </Text>
             )}
@@ -677,6 +872,7 @@ export function FinanceCategorizationSettings() {
                       });
                     }
                   }}
+                  onBlur={flushSettingsSave}
                   placeholder={
                     isMasterPromptExpanded
                       ? t('Explain how to categorize your transactions')
@@ -705,3 +901,4 @@ export function FinanceCategorizationSettings() {
     </>
   );
 }
+

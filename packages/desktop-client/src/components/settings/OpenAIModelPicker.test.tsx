@@ -48,13 +48,81 @@ function renderPicker(
 }
 
 describe('OpenAIModelPicker', () => {
+  it('shows the current draft model while closed, even while models load', () => {
+    render(
+      <OpenAIModelPicker
+        loadModels={() => new Promise<never>(() => undefined)}
+        onChange={vi.fn()}
+        value="gpt-draft-model"
+      />,
+      { wrapper: TestProviders },
+    );
+
+    const picker = screen.getByRole('combobox', { name: 'Model' });
+    expect(picker).toHaveAttribute('aria-expanded', 'false');
+    expect(picker).toHaveValue('gpt-draft-model');
+  });
+
+  it('uses a clear placeholder when no model is selected', () => {
+    render(
+      <OpenAIModelPicker
+        loadModels={() => new Promise<never>(() => undefined)}
+        onChange={vi.fn()}
+        value=""
+      />,
+      { wrapper: TestProviders },
+    );
+
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveAttribute(
+      'placeholder',
+      'Choose a model',
+    );
+  });
+
+  it('shows a compact status for a recommended saved model', async () => {
+    renderPicker({ value: 'gpt-5.6-terra' });
+
+    expect(await screen.findByText('Recommended')).toHaveAttribute(
+      'id',
+      'openai-model-status',
+    );
+  });
+
+  it('shows an incompatible saved model status', async () => {
+    renderPicker({ value: 'unknown-model' });
+
+    expect(await screen.findByText('Incompatible')).toHaveAttribute(
+      'id',
+      'openai-model-status',
+    );
+  });
+
+  it('keeps the current draft model visible when the provider is unavailable', async () => {
+    render(
+      <OpenAIModelPicker
+        isUnavailable
+        loadModels={vi.fn()}
+        onChange={vi.fn()}
+        value="gpt-draft-model"
+      />,
+      { wrapper: TestProviders },
+    );
+
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue(
+      'gpt-draft-model',
+    );
+    expect(
+      await screen.findByText(
+        'OpenAI model selection is unavailable while the server is offline.',
+      ),
+    ).toHaveAttribute('role', 'alert');
+  });
+
   it('groups recommended, compatible, and incompatible models', async () => {
     const user = userEvent.setup();
     renderPicker();
 
-    await user.click(
-      screen.getByRole('combobox', { name: 'Search OpenAI models' }),
-    );
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
     await screen.findByRole('option', { name: /gpt-5.6-terra/i });
 
     expect(screen.getByRole('heading', { name: 'Recommended' })).toBeVisible();
@@ -98,7 +166,7 @@ describe('OpenAIModelPicker', () => {
     });
 
     const search = screen.getByRole('combobox', {
-      name: 'Search OpenAI models',
+      name: 'Model',
     });
     expect(search).toHaveStyle({ flex: '1 1 180px', minWidth: 0 });
     await user.click(search);
@@ -145,7 +213,7 @@ describe('OpenAIModelPicker', () => {
     const { onChange } = renderPicker();
 
     const search = await screen.findByRole('combobox', {
-      name: 'Search OpenAI models',
+      name: 'Model',
     });
     await user.type(search, '4.1');
 
@@ -157,13 +225,65 @@ describe('OpenAIModelPicker', () => {
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
+  it('restores the current draft model without changing focus when Escape closes the picker', async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderPicker({ value: 'gpt-5.6-luna' });
+    const search = await screen.findByRole('combobox', {
+      name: 'Model',
+    });
+
+    await user.click(search);
+    await screen.findByRole('listbox');
+    await user.type(search, '4.1');
+    await user.keyboard('{Escape}');
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue('gpt-5.6-luna');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('scrolls the selected model row into view when opening the picker', async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollIntoView',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      renderPicker({ value: 'gpt-4.1-mini' });
+      await user.click(screen.getByRole('combobox', { name: 'Model' }));
+
+      const selectedModel = await screen.findByRole('option', {
+        name: /gpt-4.1-mini/i,
+      });
+      await waitFor(() =>
+        expect(scrollIntoView.mock.contexts).toContain(selectedModel),
+      );
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          'scrollIntoView',
+          originalScrollIntoView,
+        );
+      } else {
+        delete (HTMLElement.prototype as { scrollIntoView?: unknown })
+          .scrollIntoView;
+      }
+    }
+  });
+
   it('refreshes the provider-backed list on demand', async () => {
     const user = userEvent.setup();
     const { loadModels } = renderPicker();
 
-    await user.click(
-      screen.getByRole('combobox', { name: 'Search OpenAI models' }),
-    );
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
     await screen.findByRole('option', { name: /gpt-5.6-terra/i });
     await user.click(screen.getByRole('button', { name: 'Refresh models' }));
 
@@ -184,9 +304,11 @@ describe('OpenAIModelPicker', () => {
       { wrapper: TestProviders },
     );
 
-    await user.click(
-      screen.getByRole('combobox', { name: 'Search OpenAI models' }),
+    expect(await screen.findByText('Unavailable')).toHaveAttribute(
+      'id',
+      'openai-model-status',
     );
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
     const unavailableModel = await screen.findByRole('option', {
       name: /gpt-legacy-saved.*unavailable/i,
     });
@@ -225,6 +347,10 @@ describe('OpenAIModelPicker', () => {
         'OpenAI is unavailable. Try refreshing the model list.',
       ),
     ).toHaveAttribute('role', 'alert');
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue(
+      'gpt-5.6-luna',
+    );
     expect(screen.queryByText(/gpt-5.6-luna.*Unavailable/i)).toBeNull();
   });
 });
+

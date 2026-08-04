@@ -30,7 +30,7 @@ async function expectModelPickerLayout(page: Page) {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error('expected a model-picker viewport');
 
-  const search = page.getByRole('combobox', { name: 'Search OpenAI models' });
+  const search = page.getByRole('combobox', { name: 'Model' });
   const refresh = page.getByRole('button', { name: 'Refresh models' });
   const listbox = page.getByRole('listbox', {
     name: 'Available OpenAI models',
@@ -101,6 +101,117 @@ async function expectModelPickerLayout(page: Page) {
   );
   await longIncompatibleOption.scrollIntoViewIfNeeded();
   await expect(longIncompatibleOption).toBeVisible();
+}
+
+const longCompatibleModelId =
+  'gpt-compatible-model-with-a-very-long-provider-generated-identifier';
+
+async function configureOpenAiCategorizationSettings(
+  page: Page,
+  selectedCategoryCount: number,
+) {
+  await page.route('**/validate', async route => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          displayName: 'E2E user',
+          loginMethod: 'password',
+          permission: 'ADMIN',
+          prefs: {},
+          userId: 'e2e-user',
+          userName: 'e2e-user',
+        },
+        status: 'ok',
+      }),
+    });
+  });
+  await page.route('**/finance/status', async route => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: { configured: true, source: 'budget' },
+        status: 'ok',
+      }),
+    });
+  });
+  await page.route('**/finance/models*', async route => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          models: [
+            {
+              compatibility: 'compatible',
+              id: 'gpt-5.6-terra',
+              isRecommended: true,
+              reason: null,
+            },
+            {
+              compatibility: 'compatible',
+              id: longCompatibleModelId,
+              isRecommended: false,
+              reason: null,
+            },
+            {
+              compatibility: 'incompatible',
+              id: 'gpt-incompatible-model-with-a-very-long-provider-generated-identifier',
+              isRecommended: false,
+              reason:
+                'This model cannot accept the text categorization request shape required by this feature and should remain readable on multiple lines.',
+            },
+          ],
+        },
+        status: 'ok',
+      }),
+    });
+  });
+  await page.evaluate(
+    async ({ serverUrl, selectedCategories }) => {
+      const categories = await window.$send('get-categories');
+      const categoryIds = categories.list
+        .slice(0, selectedCategories)
+        .map(category => category.id);
+      const settings = JSON.stringify({
+        categoryGuidance: {},
+        categoryIds,
+        masterPrompt: 'Choose the most suitable category.',
+        model:
+          'gpt-compatible-model-with-a-very-long-provider-generated-identifier',
+      });
+
+      await window.$send('set-server-url', {
+        url: serverUrl,
+        validate: false,
+      });
+      await window.$send('subscribe-set-token', { token: 'e2e-token' });
+      await window.$send('save-prefs', { cloudFileId: 'e2e-file-id' });
+      await window.$send('preferences/save', {
+        id: 'finance.openai-categorization',
+        value: settings,
+      });
+      window.__actionsForMenu.mergeSyncedPrefs({
+        'finance.openai-categorization': settings,
+      });
+    },
+    {
+      selectedCategories: selectedCategoryCount,
+      serverUrl: new URL('/', page.url()).origin,
+    },
+  );
+}
+
+async function reloadAndOpenCategorizationSettings(page: Page) {
+  await page.reload();
+  await page.waitForFunction(() => typeof window.__navigate === 'function');
+  await page.evaluate(() => window.__navigate?.('/settings'));
+  await expect(page.getByTestId('settings')).toBeVisible();
+  await expect(
+    page.getByText('An OpenAI API key is configured for this budget.'),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Refresh models' }),
+  ).toBeEnabled();
 }
 
 function boxesDoNotOverlap(
@@ -412,77 +523,27 @@ test.describe('Native finance workflows', () => {
   });
 
   test('keeps long model-picker rows readable at narrow widths and browser zoom', async () => {
-    await page.route('**/validate', async route => {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: {
-            displayName: 'E2E user',
-            loginMethod: 'password',
-            permission: 'ADMIN',
-            prefs: {},
-            userId: 'e2e-user',
-            userName: 'e2e-user',
-          },
-          status: 'ok',
-        }),
-      });
-    });
-    await page.route('**/finance/status', async route => {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: { configured: true, source: 'budget' },
-          status: 'ok',
-        }),
-      });
-    });
-    await page.route('**/finance/models*', async route => {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          data: {
-            models: [
-              {
-                compatibility: 'compatible',
-                id: 'gpt-5.6-terra',
-                isRecommended: true,
-                reason: null,
-              },
-              {
-                compatibility: 'compatible',
-                id: 'gpt-compatible-model-with-a-very-long-provider-generated-identifier',
-                isRecommended: false,
-                reason: null,
-              },
-              {
-                compatibility: 'incompatible',
-                id: 'gpt-incompatible-model-with-a-very-long-provider-generated-identifier',
-                isRecommended: false,
-                reason:
-                  'This model cannot accept the text categorization request shape required by this feature and should remain readable on multiple lines.',
-              },
-            ],
-          },
-          status: 'ok',
-        }),
-      });
-    });
-    await page.evaluate(async serverUrl => {
-      await window.$send('set-server-url', { url: serverUrl, validate: false });
-      await window.$send('subscribe-set-token', { token: 'e2e-token' });
-      await window.$send('save-prefs', { cloudFileId: 'e2e-file-id' });
-    }, new URL('/', page.url()).origin);
-    await page.reload();
-    await page.waitForFunction(() => typeof window.__navigate === 'function');
+    await configureOpenAiCategorizationSettings(page, 1);
 
     await page.setViewportSize({ width: 350, height: 800 });
-    await page.evaluate(() => window.__navigate?.('/settings'));
-    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    await reloadAndOpenCategorizationSettings(page);
     const search = page.getByRole('combobox', {
-      name: 'Search OpenAI models',
+      name: 'Model',
     });
     await search.scrollIntoViewIfNeeded();
+    await expect(search).toHaveAttribute('aria-expanded', 'false');
+    await expect(search).toHaveValue(longCompatibleModelId);
+    const [searchBox, documentWidth] = await Promise.all([
+      search.boundingBox(),
+      page.evaluate(() => document.documentElement.scrollWidth),
+    ]);
+    if (!searchBox) {
+      throw new Error('expected a visible closed model picker');
+    }
+    expect(searchBox.x).toBeGreaterThanOrEqual(0);
+    expect(searchBox.x + searchBox.width).toBeLessThanOrEqual(351);
+    expect(documentWidth).toBeLessThanOrEqual(351);
+
     await search.click();
     await expect(
       page.getByRole('option', {
@@ -498,6 +559,51 @@ test.describe('Native finance workflows', () => {
       document.body.style.zoom = '1.25';
     });
     await expectModelPickerLayout(page);
+  });
+
+  test('autosaves categorization settings and restores them after reload', async () => {
+    await configureOpenAiCategorizationSettings(page, 0);
+    await reloadAndOpenCategorizationSettings(page);
+
+    const modelSearch = page.getByRole('combobox', {
+      name: 'Model',
+    });
+    await modelSearch.scrollIntoViewIfNeeded();
+    await modelSearch.click();
+    const selectedModel = page.getByRole('option', {
+      name: /gpt-5\.6-terra/i,
+    });
+    await expect(selectedModel).toBeVisible();
+    await selectedModel.getByRole('button').click();
+
+    const instructions = page.getByRole('textbox', {
+      name: 'Categorization instructions',
+    });
+    const savedInstructions =
+      'Use the merchant name and transaction direction for this test.';
+    await instructions.fill(savedInstructions);
+    await page.getByRole('button', { name: 'Select all' }).click();
+
+    await expect(page.getByRole('status')).toHaveText('Settings saved');
+
+    const persistedSettings = await page.evaluate(async () => {
+      const preferences = await window.$send('preferences/get');
+      const serializedSettings = preferences['finance.openai-categorization'];
+      if (typeof serializedSettings !== 'string') {
+        throw new Error('expected persisted categorization settings');
+      }
+      return serializedSettings;
+    });
+    expect(persistedSettings).toContain('"model":"gpt-5.6-terra"');
+    expect(persistedSettings).toContain(savedInstructions);
+    expect(JSON.parse(persistedSettings).categoryIds.length).toBeGreaterThan(0);
+
+    await reloadAndOpenCategorizationSettings(page);
+    await expect(modelSearch).toHaveValue('gpt-5.6-terra');
+    await expect(instructions).toHaveValue(savedInstructions);
+    await expect(
+      page.getByRole('button', { name: 'Select all' }),
+    ).toBeDisabled();
   });
 
   test('keeps review controls separate and labeled at desktop and narrow widths', async () => {
@@ -725,3 +831,4 @@ test.describe('Native finance workflows', () => {
     await expect(accountPage.getNthTransaction(0).notes).toHaveText('');
   });
 });
+

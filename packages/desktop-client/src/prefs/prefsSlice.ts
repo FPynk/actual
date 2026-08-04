@@ -114,12 +114,22 @@ export const saveGlobalPrefs = createAppAsyncThunk(
 );
 
 type SaveSyncedPrefsPayload = {
+  expectedBudgetId?: string;
   prefs: SyncedPrefs;
 };
 
 export const saveSyncedPrefs = createAppAsyncThunk(
   `${sliceName}/saveSyncedPrefs`,
-  async ({ prefs }: SaveSyncedPrefsPayload, { dispatch }) => {
+  async (
+    { expectedBudgetId, prefs }: SaveSyncedPrefsPayload,
+    { dispatch, getState },
+  ) => {
+    if (
+      expectedBudgetId !== undefined &&
+      getState().prefs.local.id !== expectedBudgetId
+    ) {
+      return { saved: false };
+    }
     await Promise.all(
       Object.entries(prefs).map(([prefName, value]) =>
         send('preferences/save', {
@@ -128,7 +138,14 @@ export const saveSyncedPrefs = createAppAsyncThunk(
         }),
       ),
     );
+    if (
+      expectedBudgetId !== undefined &&
+      getState().prefs.local.id !== expectedBudgetId
+    ) {
+      return { saved: false };
+    }
     dispatch(mergeSyncedPrefs(prefs));
+    return { saved: true };
   },
 );
 
@@ -228,3 +245,4 @@ export const {
   mergeSyncedPrefs,
   setPrefs,
 } = actions;
+

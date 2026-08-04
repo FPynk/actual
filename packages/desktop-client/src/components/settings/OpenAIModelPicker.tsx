@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
 import { Button } from '@actual-app/components/button';
@@ -107,6 +113,8 @@ export function OpenAIModelPicker({
   const [pickerState, setPickerState] = useState<PickerState>({
     status: 'loading',
   });
+  const onSelectionValidityChangeRef = useRef(onSelectionValidityChange);
+  onSelectionValidityChangeRef.current = onSelectionValidityChange;
 
   const load = useCallback(
     async (refresh = false) => {
@@ -134,6 +142,14 @@ export function OpenAIModelPicker({
     pickerState.status === 'ready' &&
     Boolean(value) &&
     !loadedModels.some(model => model.id === value);
+  const selectedModel = loadedModels.find(model => model.id === value);
+  const selectedModelStatus = hasUnavailableSavedModel
+    ? t('Unavailable')
+    : selectedModel?.isRecommended
+      ? t('Recommended')
+      : selectedModel?.compatibility === 'incompatible'
+        ? t('Incompatible')
+        : null;
   const models =
     pickerState.status === 'ready'
       ? sortModels(addUnavailableSavedModel(loadedModels, value))
@@ -151,18 +167,19 @@ export function OpenAIModelPicker({
 
   useEffect(() => {
     if (pickerState.status !== 'ready') return;
-    onSelectionValidityChange?.(
+    onSelectionValidityChangeRef.current?.(
       pickerState.models.find(model => model.id === value)?.compatibility ===
         'compatible',
     );
-  }, [onSelectionValidityChange, pickerState, value]);
+  }, [pickerState, value]);
 
   useEffect(() => {
-    if (!activeModelId) return;
+    const modelIdToScrollIntoView = activeModelId ?? (isOpen ? value : null);
+    if (!modelIdToScrollIntoView) return;
     document
-      .getElementById(getModelOptionId(activeModelId))
+      .getElementById(getModelOptionId(modelIdToScrollIntoView))
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeModelId]);
+  }, [activeModelId, isOpen, pickerState, value]);
 
   const moveActiveModel = (direction: 1 | -1) => {
     if (selectableVisibleModels.length === 0) return;
@@ -193,7 +210,10 @@ export function OpenAIModelPicker({
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           <Input
             id="openai-model-search"
-            aria-label={t('Search OpenAI models')}
+            aria-describedby={
+              selectedModelStatus ? 'openai-model-status' : undefined
+            }
+            aria-label={t('Model')}
             aria-activedescendant={
               activeModelId ? getModelOptionId(activeModelId) : undefined
             }
@@ -206,7 +226,10 @@ export function OpenAIModelPicker({
               setActiveModelId(null);
               setIsOpen(true);
             }}
-            onFocus={() => setIsOpen(true)}
+            onFocus={() => {
+              setSearch('');
+              setIsOpen(true);
+            }}
             onKeyDown={event => {
               if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault();
@@ -217,13 +240,16 @@ export function OpenAIModelPicker({
                 selectModel(activeModelId);
               } else if (event.key === 'Escape') {
                 setActiveModelId(null);
+                setSearch('');
                 setIsOpen(false);
               }
             }}
-            placeholder={t('Search available OpenAI models')}
+            placeholder={
+              isOpen ? t('Search available OpenAI models') : t('Choose a model')
+            }
             role="combobox"
             style={{ flex: '1 1 180px', minWidth: 0 }}
-            value={search}
+            value={isOpen ? search : value}
           />
           <Button
             isDisabled={isDisabled || isUnavailable || isLoading}
@@ -233,9 +259,18 @@ export function OpenAIModelPicker({
           </Button>
         </View>
 
+        {!isOpen && selectedModelStatus && (
+          <Text
+            id="openai-model-status"
+            style={{ color: theme.pageTextSubdued }}
+          >
+            {selectedModelStatus}
+          </Text>
+        )}
+
         {isLoading && (
           <Text role="status">
-            <Trans>Loading OpenAI models…</Trans>
+            <Trans>Loading OpenAI modelsâ€¦</Trans>
           </Text>
         )}
         {pickerState.status === 'error' && (
@@ -391,3 +426,4 @@ export function OpenAIModelPicker({
     </FormField>
   );
 }
+
