@@ -121,6 +121,7 @@
     "watch": "cross-env BROWSER=none yarn start",
     "build": "vite build",
     "build:browser": "vite build --mode=browser",
+    "stage:paddleocr-assets": "node bin/stage-paddleocr-assets.mjs",
     "generate:i18n": "i18next",
     "test": "vitest --run",
     "validate:theme-catalog": "node --experimental-strip-types bin/validate-theme-catalog.mts",
@@ -128,6 +129,9 @@
     "vrt": "cross-env VRT=true npx playwright test --browser=chromium",
     "playwright": "playwright",
     "typecheck": "tsgo -b && tsc-strict"
+  },
+  "dependencies": {
+    "@paddleocr/paddleocr-js": "0.4.2"
   },
   "devDependencies": {
     "@actual-app/components": "workspace:*",

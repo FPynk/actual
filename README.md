@@ -148,6 +148,20 @@ restores the ledger. Review history remains explicit: use **Reopen review**
 before applying it again. This all happens in the normal Actual account view;
 it does not start or connect to another app.
 
+Open **More > Receipt review** to test local receipt transcription. Choose a
+JPEG, PNG, or WebP image up to 12 MB; Actual shows the image beside editable
+merchant, date, total, and transcript fields. Use **Rotate left** or **Rotate
+right** and rerun OCR when a photo is sideways. The first source-based launch
+downloads and verifies the generic PaddleOCR model/runtime assets, then serves
+them from the local Actual app; packaged desktop builds include those verified
+assets. Receipt images and recognized text are not sent to PaddleOCR, OpenAI,
+or another external service.
+
+This review slice is deliberately non-destructive: its fields are not saved,
+matched, or attached to a transaction yet. Correcting the transcript lets you
+assess OCR quality before the later receipt persistence and matching tickets
+are implemented.
+
 ### Expenditure reports
 
 Open **Reports**, then choose **New custom report**. Set the **Payment** view

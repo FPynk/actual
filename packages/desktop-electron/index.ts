@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import type { Server } from 'http';
 import { cp, mkdir, rm } from 'node:fs/promises';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 import type { GlobalPrefsJson } from '@actual-app/core/types/prefs';
 import {
@@ -25,6 +26,7 @@ import type {
   UtilityProcess,
 } from 'electron';
 
+import { resolveClientBuildAssetPath } from './app-protocol';
 import { getMenu } from './menu';
 import { retry as promiseRetry } from './retry';
 import {
@@ -45,7 +47,10 @@ process.env.lootCoreScript = isDev
 // This allows relative URLs to be resolved to app:// which makes
 // local assets load correctly
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'app', privileges: { standard: true, secure: true } },
+  {
+    scheme: 'app',
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  },
 ]);
 
 if (isPlaywrightTest) {
@@ -490,26 +495,29 @@ app.on('ready', async () => {
       });
     }
 
-    const pathname = parsedUrl.pathname;
+    const clientBuildPath = path.resolve(BUILD_ROOT, 'client-build');
+    const assetPath = resolveClientBuildAssetPath(
+      clientBuildPath,
+      parsedUrl.pathname,
+    );
 
-    let filePath = path.normalize(`${BUILD_ROOT}/client-build/index.html`); // default web path
-
-    if (pathname.startsWith('/static')) {
-      // static assets
-      filePath = path.normalize(`${BUILD_ROOT}/client-build${pathname}`);
-      const resolvedPath = path.resolve(filePath);
-      const clientBuildPath = path.resolve(BUILD_ROOT, 'client-build');
-
-      // Ensure filePath is within client-build directory - prevents directory traversal vulnerability
-      if (!resolvedPath.startsWith(clientBuildPath)) {
+    if (
+      parsedUrl.pathname.startsWith('/static/') ||
+      parsedUrl.pathname.startsWith('/paddleocr/')
+    ) {
+      if (!assetPath) {
         return new Response(null, {
           status: 403,
           statusText: 'Forbidden',
         });
       }
+
+      return net.fetch(pathToFileURL(assetPath).toString());
     }
 
-    return net.fetch(`file:///${filePath}`);
+    return net.fetch(
+      pathToFileURL(path.join(clientBuildPath, 'index.html')).toString(),
+    );
   });
 
   if (process.argv[1] !== '--server') {

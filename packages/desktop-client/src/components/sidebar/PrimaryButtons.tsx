@@ -7,6 +7,7 @@ import {
   SvgCheveronRight,
   SvgCog,
   SvgCreditCard,
+  SvgDocument,
   SvgReports,
   SvgStoreFront,
   SvgTag,
@@ -37,6 +38,7 @@ export function PrimaryButtons() {
     '/rules',
     '/bank-sync',
     '/settings',
+    '/receipts',
     '/tools',
   ].some(route => location.pathname.startsWith(route));
 
@@ -84,6 +86,12 @@ export function PrimaryButtons() {
             title={t('Tags')}
             Icon={SvgTag}
             to="/tags"
+            indent={15}
+          />
+          <SecondaryItem
+            title={t('Receipt review')}
+            Icon={SvgDocument}
+            to="/receipts"
             indent={15}
           />
           <SecondaryItem
