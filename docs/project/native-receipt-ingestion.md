@@ -3,6 +3,7 @@
 Status: implementation contract for FIN-83 through FIN-90  
 Design owner: FIN-84  
 Target: the single native Actual application
+Revision: 2026-08-04, one local PaddleOCR path
 
 ## 1. Outcome and non-negotiable behavior
 
@@ -12,23 +13,27 @@ transactions, and link a receipt only after explicit confirmation. A linked, rev
 receipt can provide bounded evidence to the existing preview-first OpenAI categorization
 workflow.
 
-The default OCR path never uploads the image. Raw image bytes are temporary and are never
-stored in the budget, backups, sync messages, browser storage, logs, analytics, or the
-transaction Notes field. Receipt OCR works without an API key, companion process, second
-database, login, or URL.
+The OCR operation never uploads the image or OCR text. Raw image bytes are temporary and
+are never stored in the budget, backups, sync messages, browser storage, logs, analytics,
+or the transaction Notes field. Receipt OCR works without an API key, companion process,
+second database, login, or URL. The existing auto-categorization workflow may later send
+only the bounded reviewed receipt evidence defined in section 13.
 
 ## 2. Decisions
 
-1. **Primary OCR:** use the official
+1. **OCR:** use the official
    [`@paddleocr/paddleocr-js`](https://github.com/PaddlePaddle/PaddleOCR/tree/main/paddleocr-js)
-   SDK in a dedicated browser Web Worker. Pin the SDK and its mobile English PP-OCRv5
-   detection, direction, and recognition models.
-2. **Local fallback:** use [Tesseract.js](https://github.com/naptha/tesseract.js) with
-   pinned English language data only when PaddleOCR cannot initialize or the user chooses
-   **Retry with alternate local OCR**. Do not merge two engines' output automatically.
-3. **Optional online fallback:** show **Try OpenAI Vision** only after local OCR fails or
-   produces a visibly low-confidence draft. Require per-receipt disclosure and consent.
-   Use the existing server-owned key and `store: false`; do not retain the image.
+   in its built-in worker mode. Pin the SDK and PP-OCRv5 mobile detection and
+   recognition models. PaddleOCR is the only OCR engine in v1; there is no alternate local
+   engine or cloud-image transcription path.
+2. **Integration:** call `PaddleOCR.create({ worker: true })` behind one thin
+   receipt-specific module. Do not create a vendor-neutral engine framework or a second
+   application-owned inference worker.
+3. **Input preparation:** Actual validates and decodes the image, honors EXIF orientation,
+   downsizes it once, and flattens transparency onto white. PaddleOCR.js owns its
+   model-specific OpenCV preprocessing, text detection, text-region rectification, and
+   recognition. V1 does not add automatic enhancement, orientation classification,
+   unwarping, or deskewing.
 4. **Parsing:** derive merchant, date, total, currency, payment hints, and line items from
    local OCR word boxes with deterministic code. An LLM is not required for the draft.
 5. **Review:** OCR output is always editable. Nothing persists or links until the user
@@ -42,14 +47,30 @@ database, login, or URL.
 8. **Categorization:** send only bounded, reviewed receipt fields to OpenAI, never the
    image, complete transcript, payment hints, OCR boxes, or provider metadata.
 
+### Why PaddleOCR
+
+PaddleOCR was chosen because PaddlePaddle publishes an official browser SDK that:
+
+- runs detection and recognition locally through ONNX Runtime Web and OpenCV.js;
+- has a supported dedicated-worker mode and accepts browser-native image inputs;
+- returns polygon coordinates, text, and confidence scores needed for receipt review and
+  deterministic field parsing; and
+- avoids a Python OCR service, a second application, and receipt-image uploads.
+
+This choice is based on its simple browser integration and privacy fit, not an assumption
+that it is universally the most accurate OCR engine. FIN-86 must benchmark the pinned SDK
+and model pair against synthetic receipt fixtures before the feature is accepted. The
+current browser SDK implements detection and recognition; unlike PaddleOCR's Python
+pipeline, it does not currently implement document orientation classification, document
+unwarping, or text-line direction classification.
+
 ## 3. End-to-end architecture
 
 ```text
 local image
   -> UI validation and decode
-  -> receipt OCR Web Worker
-  -> local preprocessing
-  -> PaddleOCR.js (or explicit Tesseract.js retry)
+  -> bounded browser preparation
+  -> PaddleOCR.js built-in worker
   -> word boxes and confidence
   -> deterministic parser and sensitive-number redaction
   -> editable unsaved draft
@@ -60,22 +81,22 @@ local image
   -> optional bounded receipt evidence in auto-categorization preview
 ```
 
-OpenAI Vision is a separate explicit fallback from an error or low-confidence state, not
-part of the normal flow.
+There is no alternate OCR path. Low-confidence output remains an editable draft; the user
+can rotate the preview in 90-degree steps and rerun the same PaddleOCR pipeline, choose a
+clearer image, enter or correct text manually, or remove the image.
 
 ## 4. Input contract
 
-| Limit | v1 contract |
-| --- | --- |
-| Formats | JPEG, PNG, non-animated WebP |
-| Per-image source size | 8 MiB maximum |
-| Decoded size | 24 megapixels; neither dimension over 8192 pixels |
-| OCR working image | Downscale to 2400-pixel longest edge; never upscale |
-| Batch | 10 images maximum, processed sequentially |
-| Concurrency | One active OCR job per Actual tab |
-| OCR timeout | 30 seconds after models are ready |
-| Local retry | One enhanced pass, then user-directed alternate engine |
-| Online fallback | One request; retry once only for timeout, 429, or 5xx |
+| Limit                 | v1 contract                                                                     |
+| --------------------- | ------------------------------------------------------------------------------- |
+| Formats               | JPEG, PNG, non-animated WebP                                                    |
+| Per-image source size | 8 MiB maximum                                                                   |
+| Decoded size          | 24 megapixels; neither dimension over 8192 pixels                               |
+| OCR working image     | Downscale to 2400-pixel longest edge; never upscale                             |
+| Batch                 | 10 images maximum, processed sequentially                                       |
+| Concurrency           | One active OCR job per Actual tab                                               |
+| OCR timeout           | 30 seconds after models are ready                                               |
+| Retry                 | Same pinned PaddleOCR pipeline after manual rotation or worker reinitialization |
 
 The UI verifies the declared MIME type, magic bytes, decoded frame count, dimensions, and
 pixel count before inference. Decode failure, animation, unsupported data, or a limit
@@ -85,43 +106,42 @@ Compute SHA-256 over source bytes for duplicate detection. A temporary object UR
 used for preview and must be revoked on removal, navigation, successful save, cancellation,
 or failure cleanup.
 
-## 5. Local worker and engine boundary
+## 5. PaddleOCR worker integration
 
-Create `packages/desktop-client/src/receipt-ocr/receiptOcr.worker.ts` as a Vite module
-worker. Transfer the `ImageBitmap` or source buffer when supported. The worker returns
-plain structured-cloneable values and never calls Actual's backend RPC.
-
-```ts
-type ReceiptOcrWorkerRequest =
-  | { type: 'initialize'; engine: 'paddle' | 'tesseract' }
-  | { type: 'extract'; jobId: string; image: ImageBitmap; options: ReceiptOcrOptions }
-  | { type: 'cancel'; jobId: string }
-  | { type: 'dispose' };
-```
-
-Responses are `ready`, `progress`, `draft`, `cancelled`, or `error`, with `jobId` where
-applicable. Errors contain a bounded code and safe message, never image or OCR content.
-
-Define the vendor-neutral interface in
-`packages/desktop-client/src/receipt-ocr/receiptOcrEngine.ts`:
+Create `packages/desktop-client/src/receipt-ocr/receiptOcr.ts` as a thin receipt-specific
+wrapper around the SDK. Use PaddleOCR.js's built-in worker mode rather than layering an
+additional inference worker:
 
 ```ts
-type ReceiptOcrEngine = {
-  initialize(signal: AbortSignal): Promise<ReceiptOcrEngineRevision>;
-  recognize(image: ImageBitmap, signal: AbortSignal): Promise<ReceiptOcrPage>;
-  dispose(): Promise<void>;
-};
+const paddleOcr = await PaddleOCR.create({
+  textDetectionModelName: 'PP-OCRv5_mobile_det',
+  textDetectionModelAsset: { url: '/ocr/models/pp-ocrv5-mobile-det.tar' },
+  textRecognitionModelName: 'PP-OCRv5_mobile_rec',
+  textRecognitionModelAsset: { url: '/ocr/models/pp-ocrv5-mobile-rec.tar' },
+  worker: true,
+  ortOptions: { backend: 'wasm', wasmPaths: '/ocr/ort/' },
+});
 ```
 
-`PaddleReceiptOcrEngine` and `TesseractReceiptOcrEngine` implement it. The parser, UI,
-persistence, matching, and categorization layers do not import either vendor SDK.
+The wrapper owns initialization, one `predict` call at a time, conversion of SDK results
+to Actual's bounded draft type, stale-job rejection, and `dispose`. PaddleOCR.js returns
+pixel polygons, text, and confidence; Actual normalizes polygon coordinates before using
+them. Errors contain a bounded code and safe message, never image or OCR content.
+
+The SDK has no documented `AbortSignal` extraction API. Cancellation therefore marks the
+job stale, disposes the SDK worker/runtime, releases the image, and lazily initializes a
+fresh instance for the next job.
 
 ### Self-hosted assets
 
-All JavaScript, WASM, model, and language files are pinned and served from the same Actual
+All JavaScript, WASM, and model files are pinned and served from the same Actual
 origin under `/ocr/`. Runtime CDN URLs are forbidden. Add a focused staging step to
 `packages/desktop-client/vite.config.mts` that copies assets into browser and desktop
-builds and emits a manifest containing path, size, engine revision, and SHA-256.
+builds and emits a manifest containing path, size, SDK/model revision, and SHA-256.
+Explicit same-origin model URLs and `ortOptions.wasmPaths` are mandatory because the SDK's
+defaults may otherwise download models or worker WASM from third-party hosts. Model archives
+remain in the SDK's documented uncompressed tar format and contain `inference.onnx` and
+`inference.yml`.
 
 Load assets lazily on first receipt use. Cache same-origin model responses only after
 integrity verification. Do not add large `.onnx` files to the current PWA precache until
@@ -133,21 +153,21 @@ GitHub, jsDelivr, unpkg, or another third party.
 
 ## 6. Preprocessing and parsing
 
-Preprocessing is deterministic and local:
+Actual performs only conventional, bounded preparation before OCR:
 
-1. apply EXIF orientation during decode;
-2. downscale with high-quality canvas resampling;
-3. normalize transparency onto white;
-4. run the primary engine on the color image;
-5. if coverage or mean confidence is low, retry once with grayscale, contrast
-   normalization, and conservative sharpening; and
-6. correct only clear 90/180/270-degree orientation or deskew up to 10 degrees.
+1. validate and decode with browser APIs while honoring EXIF orientation;
+2. downscale once to the working-image limit with high-quality canvas resampling; and
+3. flatten transparency onto a white background.
 
-The enhanced result replaces the first only when coverage improves without weakening
-total/date evidence. Otherwise retain the first result and show a warning.
+PaddleOCR.js then performs the model-required OpenCV color conversion, resizing and
+normalization, detects text polygons, rectifies detected text regions, and recognizes
+their contents. It returns polygon coordinates, text, confidence, and page dimensions.
+Actual does not add automatic grayscale/contrast/sharpen passes, orientation inference,
+unwarping, or deskewing in v1. A simple **Rotate left**/**Rotate right** action applies a
+90-degree canvas transform and reruns the same PaddleOCR pipeline when EXIF orientation is
+missing or wrong. Low-confidence text is warned and remains editable.
 
-The OCR engine returns short text spans with normalized boxes, recognition confidence,
-line direction, and page dimensions. Boxes exist only in the draft and are never persisted.
+Boxes exist only in the draft and are never persisted.
 
 `packages/desktop-client/src/receipt-ocr/parseReceiptOcr.ts`:
 
@@ -178,16 +198,16 @@ optional time; ISO currency; integer minor-unit total/subtotal/tax/tip; payment 
 items; redacted transcript; field confidence/warnings; OCR/model/parser revisions; and
 temporary boxes.
 
-| Field | Bound after normalization |
-| --- | --- |
-| Merchant | 256 Unicode code points |
-| Transcript | 32,000 Unicode code points |
-| Line items | 200 |
-| Line-item label | 256 Unicode code points |
-| Warnings | 32 entries of 256 code points |
-| Payment/source hint | 128 Unicode code points |
-| Integer amount | absolute value at most 10^12 minor units |
-| Confidence | finite number from 0 through 1 |
+| Field               | Bound after normalization                |
+| ------------------- | ---------------------------------------- |
+| Merchant            | 256 Unicode code points                  |
+| Transcript          | 32,000 Unicode code points               |
+| Line items          | 200                                      |
+| Line-item label     | 256 Unicode code points                  |
+| Warnings            | 32 entries of 256 code points            |
+| Payment/source hint | 128 Unicode code points                  |
+| Integer amount      | absolute value at most 10^12 minor units |
+| Confidence          | finite number from 0 through 1           |
 
 Mask sequences resembling payment-card or bank identifiers before saving. Last four digits
 may remain only in the bounded source hint. Redaction cannot be disabled in v1.
@@ -203,7 +223,7 @@ FIN-85 adds an idempotent migration for one `receipts` row per reviewed receipt:
 ```text
 id, transaction_id, source_hash, merchant, purchase_date, purchase_time,
 currency, total, subtotal, tax, tip, payment_hint, line_items, transcript,
-confidence, warnings, ocr_engine, ocr_revision, parser_revision,
+confidence, warnings, ocr_revision, parser_revision,
 transcript_revision, fingerprint, reviewed_at, created_at, updated_at, tombstone
 ```
 
@@ -236,8 +256,8 @@ neither may enrich categorization until resolved.
 selected -> validating -> queued -> initializing -> extracting -> review
 review -> saving -> saved-unmatched -> matching -> linked
 any transient state -> cancelled
-validation/initialization/extraction/save/match -> error -> retry or remove
-review/error -> optional-consent -> online-fallback -> review or error
+validation/initialization/extraction -> error -> retry same pipeline, replace image, manual entry, or remove
+save/match -> error -> retry or remove
 linked -> editing -> linked
 linked -> unlinking -> saved-unmatched
 ```
@@ -245,26 +265,24 @@ linked -> unlinking -> saved-unmatched
 Only `saving` creates a row. Only explicit link/reassign/unlink actions change association.
 Reloading during OCR loses the unsaved draft by design and leaves no partial record.
 
-Cancellation aborts inference when supported and terminates/recreates the worker otherwise.
+Cancellation rejects stale results and disposes/recreates the PaddleOCR worker/runtime.
 Every terminal path closes `ImageBitmap`, clears canvas/buffers, revokes object URLs, and
-disposes an unsafe engine instance.
+disposes an unsafe runtime instance.
 
-## 10. Optional OpenAI Vision fallback
+## 10. OCR failure and low-confidence behavior
 
-Show the fallback only after local failure or low confidence. Before every upload show:
+There is no alternate OCR engine and no cloud-image transcription. An initialization,
+timeout, extraction, or low-confidence result leaves the temporary image preview available
+and presents four bounded choices:
 
-> This fallback sends this receipt image to OpenAI for transcription. It may contain
-> merchant, purchase, and partial payment information and may incur API charges. Actual
-> does not retain the image; the request uses OpenAI `store: false`.
+- retry the same pinned PaddleOCR pipeline after worker reinitialization;
+- rotate the image left or right by 90 degrees and rerun PaddleOCR;
+- choose a clearer image; or
+- continue with an empty or partial editable draft and enter/correct the text manually.
 
-Consent is per receipt and not remembered globally. Both browser and server validate MIME
-signature, size, dimensions, and decoded pixels. The existing authenticated finance
-gateway uses strict structured output, treats receipt text as untrusted data, redacts logs,
-and records no provider IDs. Success returns an editable draft only.
-
-Timeout, refusal, malformed output, cancellation, or exhausted retry releases buffers and
-leaves any local draft intact. Provider output passes through the same validator and
-redactor as local OCR.
+Retry never changes the engine, model pair, or privacy boundary. Nothing is persisted until
+the user reviews and explicitly saves the draft. Removing the image or leaving the page
+releases all temporary image and worker resources.
 
 ## 11. Deterministic transaction matching
 
@@ -274,16 +292,16 @@ most 25 candidates. First filter by currency, positive receipt total versus Actu
 expense amount, and a seven-day date window. A near total differs by at most the greater of
 100 minor units or 2% of the receipt total.
 
-| Evidence | Score |
-| --- | ---: |
-| Exact total and currency | +50 |
-| Same date | +20 |
-| One day apart | +12 |
-| Two or three days apart | +6 |
-| Four through seven days apart | +2 |
-| Normalized merchant/payee similarity | up to +20 |
-| Account/payment-source agreement | up to +10 |
-| Near rather than exact total | amount contribution capped at +20 |
+| Evidence                             |                             Score |
+| ------------------------------------ | --------------------------------: |
+| Exact total and currency             |                               +50 |
+| Same date                            |                               +20 |
+| One day apart                        |                               +12 |
+| Two or three days apart              |                                +6 |
+| Four through seven days apart        |                                +2 |
+| Normalized merchant/payee similarity |                         up to +20 |
+| Account/payment-source agreement     |                         up to +10 |
+| Near rather than exact total         | amount contribution capped at +20 |
 
 Preselect only a unique candidate with exact total/currency, date within one day,
 non-conflicting merchant evidence, score at least 80, and margin at least 15. Preselection
@@ -300,7 +318,7 @@ from transaction surfaces, and a receipt indicator/viewer.
 The page supports multi-image selection/drag-drop, sequential progress/cancellation, local
 processing without an API key, editable structured fields and transcript, field-level
 confidence/warnings, an in-memory image preview, ranked candidates/manual search, explicit
-save/attach/reassign/unlink/delete, and optional fallback disclosure only when applicable.
+save/attach/reassign/unlink/delete, manual 90-degree rotation, and same-Paddle retry.
 
 The review is keyboard and screen-reader usable, restores focus after progress/errors, has
 a scrollable transcript editor, and remains readable at 350 pixels and 125% zoom. Failed
@@ -316,7 +334,7 @@ and the existing OpenAI disclosure is accepted. At most send:
 - 40 line items with 120-code-point labels, optional quantity, and integer amount.
 
 Exclude image, boxes, full transcript, warnings, payment hints, dates, card fragments, and
-OCR/provider metadata. Cap evidence at 8 KiB per transaction and delimit receipt strings
+OCR model/runtime metadata. Cap evidence at 8 KiB per transaction and delimit receipt strings
 as untrusted data.
 
 Propose one allowed category only when it represents more than half of attributable item
@@ -333,21 +351,22 @@ stale. Existing preview, selection, apply, and undo behavior remains unchanged.
 - Local mode makes no third-party request. Network tests fail if it contacts anything
   except same-origin `/ocr/` assets.
 - Assets are pinned and self-hosted; arbitrary model/runtime URLs are rejected.
-- Image and OCR text are untrusted input and cannot instruct the parser, matcher, fallback,
-  or categorizer.
-- Logs contain event names, engine revision, duration buckets, and error codes only. Never
-  log image/base64, transcript, merchant, amounts, hashes, keys, or provider IDs.
+- Image and OCR text are untrusted input and cannot instruct the parser, matcher, or
+  categorizer.
+- Logs contain event names, OCR revision, duration buckets, and error codes only. Never log
+  image/base64, transcript, merchant, amounts, hashes, or keys.
 - Receipt handlers verify expected budget identity and current fingerprints before writes.
 - Receipt CRUD never overwrites transaction Notes or financial values.
 - Tests use synthetic receipt images and synthetic transactions only.
 
 ## 15. Quality and performance gates
 
-FIN-86 benchmarks both local engines behind the same adapter using at least 30 deterministic
-synthetic receipts: narrow/wide layouts, multiple fonts, rotation, perspective, low
-contrast, shadows/noise, tax/tip, discounts, ambiguous totals, and missing fields.
+FIN-86 benchmarks the pinned PaddleOCR.js SDK and model pair using at least 30
+deterministic synthetic receipts: narrow/wide layouts, multiple fonts, rotation,
+perspective, low contrast, shadows/noise, tax/tip, discounts, ambiguous totals, and
+missing fields.
 
-PaddleOCR remains primary when the pinned browser build achieves:
+The pinned browser build must achieve:
 
 - exact total on at least 95% of clear/medium fixtures;
 - exact unambiguous date on at least 90%;
@@ -358,13 +377,15 @@ PaddleOCR remains primary when the pinned browser build achieves:
 - cancellation that releases worker and image resources.
 
 Poor fixtures may require correction; they must warn rather than emit false high-confidence
-fields. If PaddleOCR fails a gate and Tesseract passes, swap the adapter selection without
-redesigning persistence, UI, matching, or categorization.
+fields. If PaddleOCR fails a gate, FIN-86 must tune the pinned model/configuration and rerun
+the benchmark or return to FIN-84 for an explicit design change. It must not silently add a
+second OCR engine or cloud-image path.
 
 ## 16. Verification
 
-Unit/integration coverage includes input validation; orientation/preprocessing; worker
-initialization, integrity, progress, timeout, cancellation, and disposal; parser date and
+Unit/integration coverage includes input validation; EXIF orientation, resize,
+white-background preparation, and manual rotation; worker initialization, integrity,
+progress, timeout, cancellation, and disposal; parser date and
 amount locales; totals/tax/tip/change; redaction/bounds; fingerprints/revisions; migration,
 CRUD, duplicates, restart, backup/restore, CRDT sync, tombstone, undo, and link conflicts;
 matcher exact/near/tie/stale cases; and categorization majority, truncation, injection-like
@@ -373,7 +394,7 @@ text, disclosure, staleness, apply, and undo.
 Browser E2E uses synthetic images through the normal Actual URL to upload, OCR, correct,
 save unmatched, rank/attach, manually resolve ambiguity, close/reopen, view/edit/reassign/
 unlink/delete, categorize with and without receipt evidence, cancel, recover from local
-failure, and mock optional Vision success/refusal/malformed/timeout/retry.
+failure, rotate and rerun, replace the image, and continue with manual correction.
 
 Network and log assertions prove local OCR does not upload images and sensitive fields are
 absent. Production browser/server builds must contain the documented assets and start with
@@ -381,15 +402,15 @@ the existing Actual command and no companion process.
 
 ## 17. Ticket ownership and parallel execution
 
-| Ticket | Ownership |
-| --- | --- |
-| FIN-84 | This contract and downstream assumption updates |
-| FIN-85 | Migration/schema, CRDT receipt CRUD/link handlers, backup/sync tests |
-| FIN-86 | Assets, worker, engine adapters, preprocessing/parser, optional Vision, benchmarks |
-| FIN-87 | Matcher, scores/reasons, candidate query, stale confirmation |
-| FIN-88 | Route/navigation, queue, review, matching UI, indicator/viewer |
-| FIN-89 | Bounded evidence, disclosure, prompt/types, staleness, apply/undo |
-| FIN-90 | Cross-ticket E2E, privacy/log audit, builds, README/user guide |
+| Ticket | Ownership                                                                    |
+| ------ | ---------------------------------------------------------------------------- |
+| FIN-84 | This contract and downstream assumption updates                              |
+| FIN-85 | Migration/schema, CRDT receipt CRUD/link handlers, backup/sync tests         |
+| FIN-86 | Assets, PaddleOCR worker integration, bounded preparation/parser, benchmarks |
+| FIN-87 | Matcher, scores/reasons, candidate query, stale confirmation                 |
+| FIN-88 | Route/navigation, queue, review, matching UI, indicator/viewer               |
+| FIN-89 | Bounded evidence, disclosure, prompt/types, staleness, apply/undo            |
+| FIN-90 | Cross-ticket E2E, privacy/log audit, builds, README/user guide               |
 
 After FIN-84, FIN-85, FIN-86, and FIN-87 can run in parallel. FIN-88 integrates after
 their contracts stabilize. FIN-89 starts from FIN-85's record contract. FIN-90 runs after
@@ -426,7 +447,8 @@ FIN-85 through FIN-89 merge.
 - PDF, HEIC, email, or camera-specific ingestion;
 - automatic linking;
 - split-tender or many-to-one receipt linking;
-- cloud OCR as the default;
+- alternate OCR engines or cloud-image transcription;
+- automatic contrast enhancement, orientation inference, unwarping, or deskewing;
 - model training/fine-tuning;
 - a generic attachment framework; or
 - a separate Finance Companion service.
