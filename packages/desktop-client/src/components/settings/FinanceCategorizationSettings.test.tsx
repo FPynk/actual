@@ -1,20 +1,32 @@
 import { isValidElement } from 'react';
 import type { ReactNode } from 'react';
 
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
 import { FinanceCategorizationSettings } from './FinanceCategorizationSettings';
 
-let saveSettingsPromise: Promise<void>;
-let resolveSaveSettings: (() => void) | undefined;
-let rejectSaveSettings: ((error: Error) => void) | undefined;
+type PendingSave = {
+  promise: Promise<void>;
+  reject: (error: Error) => void;
+  resolve: () => void;
+};
+
+let pendingSaves: PendingSave[];
 
 const mocks = vi.hoisted(() => ({
   dispatch: vi.fn(),
   send: vi.fn(),
   state: {
+    budgetId: 'budget-a',
     serializedSettings: undefined as string | undefined,
     serverStatus: 'offline' as 'offline' | 'online',
   },
@@ -34,15 +46,16 @@ function mockTransChildren(children: ReactNode): ReactNode {
   return children;
 }
 
-vi.mock('react-i18next', () => ({
-  Trans: ({ children }: { children: ReactNode }) => (
-    <>{mockTransChildren(children)}</>
-  ),
-  useTranslation: () => ({
-    t: (value: string, options?: { categoryName?: string }) =>
-      value.replace('{{categoryName}}', options?.categoryName ?? ''),
-  }),
-}));
+vi.mock('react-i18next', () => {
+  const t = (value: string, options?: { categoryName?: string }) =>
+    value.replace('{{categoryName}}', options?.categoryName ?? '');
+  return {
+    Trans: ({ children }: { children: ReactNode }) => (
+      <>{mockTransChildren(children)}</>
+    ),
+    useTranslation: () => ({ t }),
+  };
+});
 
 vi.mock('@actual-app/core/platform/client/connection', () => ({
   send: mocks.send,
@@ -95,6 +108,10 @@ vi.mock('#hooks/useCategories', () => ({
   }),
 }));
 
+vi.mock('#hooks/useMetadataPref', () => ({
+  useMetadataPref: () => [mocks.state.budgetId],
+}));
+
 vi.mock('#hooks/useSyncedPref', () => ({
   useSyncedPref: () => [mocks.state.serializedSettings],
 }));
@@ -109,15 +126,44 @@ vi.mock('#prefs/prefsSlice', () => ({
 
 vi.mock('#redux', () => ({ useDispatch: () => mocks.dispatch }));
 
-function createPendingSave() {
-  saveSettingsPromise = new Promise<void>((resolve, reject) => {
-    resolveSaveSettings = resolve;
-    rejectSaveSettings = reject;
+function createPendingSave(): PendingSave {
+  let resolve: (() => void) | undefined;
+  let reject: ((error: Error) => void) | undefined;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return {
+    promise,
+    reject: error => reject?.(error),
+    resolve: () => resolve?.(),
+  };
+}
+
+async function advanceAutosave() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(500);
+  });
+}
+
+async function settleSave(save: PendingSave, outcome: 'resolve' | 'reject') {
+  await act(async () => {
+    if (outcome === 'resolve') {
+      save.resolve();
+    } else {
+      save.reject(new Error('save failed'));
+    }
+    await Promise.resolve();
   });
 }
 
 describe('FinanceCategorizationSettings', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
+    mocks.state.budgetId = 'budget-a';
     mocks.state.serverStatus = 'offline';
     mocks.state.serializedSettings = JSON.stringify({
       categoryGuidance: {},
@@ -125,18 +171,22 @@ describe('FinanceCategorizationSettings', () => {
       masterPrompt: 'Choose a category.',
       model: 'gpt-5.6-luna',
     });
-    createPendingSave();
+    pendingSaves = [];
     mocks.dispatch.mockReset();
-    mocks.dispatch.mockReturnValue({ unwrap: () => saveSettingsPromise });
+    mocks.dispatch.mockImplementation(() => {
+      const pendingSave = createPendingSave();
+      pendingSaves.push(pendingSave);
+      return { unwrap: () => pendingSave.promise };
+    });
     mocks.send.mockReset();
     mocks.send.mockResolvedValue({ configured: false, source: 'none' });
   });
 
-  it('selects every eligible category and persists individual deselection', async () => {
-    const user = userEvent.setup();
+  it('selects every eligible category and autosaves individual deselection', async () => {
+    vi.useFakeTimers();
     render(<FinanceCategorizationSettings />);
 
-    await user.click(screen.getByRole('button', { name: 'Select all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
 
     expect(screen.getByRole('checkbox', { name: 'Groceries' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Rent' })).toBeChecked();
@@ -153,12 +203,10 @@ describe('FinanceCategorizationSettings', () => {
       ),
     ).toHaveLength(1);
 
-    await user.click(screen.getByRole('checkbox', { name: 'Rent' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Rent' }));
     expect(screen.getByRole('checkbox', { name: 'Rent' })).not.toBeChecked();
 
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    await advanceAutosave();
 
     expect(mocks.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -171,11 +219,11 @@ describe('FinanceCategorizationSettings', () => {
     );
   });
 
-  it('keeps expanded guidance bound to the unsaved inline draft', async () => {
-    const user = userEvent.setup();
+  it('keeps expanded guidance bound to the inline draft and flushes it on close', async () => {
+    vi.useFakeTimers();
     const { unmount } = render(<FinanceCategorizationSettings />);
 
-    await user.click(
+    fireEvent.click(
       screen.getByRole('button', { name: 'Expand guidance for Groceries' }),
     );
 
@@ -193,19 +241,18 @@ describe('FinanceCategorizationSettings', () => {
       ),
     ).toBeNull();
     const expandedGuidance = within(dialog).getByRole('textbox');
-    await user.type(
-      expandedGuidance,
-      'Use for supermarket purchases.\nInclude pantry staples.',
-    );
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.change(expandedGuidance, {
+      target: {
+        value: 'Use for supermarket purchases.\nInclude pantry staples.',
+      },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
 
     expect(
       screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
     ).toHaveValue('Use for supermarket purchases.\nInclude pantry staples.');
 
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
     const savedSettings =
       mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'];
     expect(savedSettings).toContain(
@@ -213,8 +260,8 @@ describe('FinanceCategorizationSettings', () => {
     );
 
     mocks.state.serializedSettings = savedSettings;
-    act(() => resolveSaveSettings?.());
-    await screen.findByRole('status');
+    await settleSave(pendingSaves[0], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
     unmount();
     render(<FinanceCategorizationSettings />);
 
@@ -245,9 +292,9 @@ describe('FinanceCategorizationSettings', () => {
     expect(expandButton).toHaveFocus();
   });
 
-  it('expands and exactly persists multiline categorization instructions', async () => {
-    const user = userEvent.setup();
-    const { unmount } = render(<FinanceCategorizationSettings />);
+  it('flushes blur and exactly persists multiline categorization instructions', async () => {
+    vi.useFakeTimers();
+    render(<FinanceCategorizationSettings />);
     const categorizationInstructions = screen.getByRole('textbox', {
       name: 'Categorization instructions',
     });
@@ -255,134 +302,147 @@ describe('FinanceCategorizationSettings', () => {
       '\nFirst paragraph.\n\nSecond paragraph with more detail.\n';
 
     expect(categorizationInstructions.tagName).toBe('TEXTAREA');
-    await user.clear(categorizationInstructions);
-    await user.type(categorizationInstructions, multilineInstructions);
-
-    const expandButton = screen.getByRole('button', {
-      name: 'Expand categorization instructions',
+    fireEvent.change(categorizationInstructions, {
+      target: { value: multilineInstructions },
     });
-    await user.click(expandButton);
-    const dialog = screen.getByRole('dialog', {
-      name: 'Categorization instructions',
-    });
-    expect(within(dialog).getByRole('textbox')).toHaveValue(
-      multilineInstructions,
-    );
 
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(expandButton).toHaveFocus());
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    fireEvent.blur(categorizationInstructions);
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
 
     const savedSettings =
       mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'];
     expect(JSON.parse(savedSettings).masterPrompt).toBe(multilineInstructions);
 
     mocks.state.serializedSettings = savedSettings;
-    act(() => resolveSaveSettings?.());
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Settings saved',
-    );
-    await user.type(
+    await settleSave(pendingSaves[0], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
+    fireEvent.change(
       screen.getByRole('textbox', { name: 'Categorization instructions' }),
-      'Edited after save',
-    );
-    expect(screen.queryByRole('status')).toBeNull();
-    unmount();
-    render(<FinanceCategorizationSettings />);
-    expect(
-      screen.getByRole('textbox', { name: 'Categorization instructions' }),
-    ).toHaveValue(multilineInstructions);
-  });
-
-  it('shows Settings saved only after persistence succeeds and clears it on edits', async () => {
-    const user = userEvent.setup();
-    render(<FinanceCategorizationSettings />);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
-    expect(screen.queryByRole('status')).toBeNull();
-
-    act(() => resolveSaveSettings?.());
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Settings saved',
-    );
-
-    await user.type(
-      screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
-      'Food only',
+      { target: { value: 'Edited after save' } },
     );
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  it('does not show Settings saved when persistence fails', async () => {
-    const user = userEvent.setup();
-    render(<FinanceCategorizationSettings />);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
-    act(() => rejectSaveSettings?.(new Error('save failed')));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText('Unable to save categorization settings.'),
-      ).toHaveAttribute('role', 'alert');
-    });
-    expect(screen.queryByRole('status')).toBeNull();
-  });
-
-  it('keeps newer edits while a save is pending and serializes repeated saves', async () => {
-    const user = userEvent.setup();
+  it('debounces saves, coalesces newer edits, and ignores its own preference echo', async () => {
+    vi.useFakeTimers();
     const { rerender } = render(<FinanceCategorizationSettings />);
     const guidance = screen.getByRole('textbox', {
       name: 'Guidance for Groceries',
     });
 
-    await user.type(guidance, 'First draft');
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    fireEvent.change(guidance, { target: { value: 'First draft' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(499);
+    });
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+    await advanceAutosave();
     const firstSavedSettings =
       mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'];
+    expect(screen.getByRole('status')).toHaveTextContent('Savingâ€¦');
 
-    await user.clear(guidance);
-    await user.type(guidance, 'Newer draft');
-    expect(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    ).toBeDisabled();
+    fireEvent.change(guidance, { target: { value: 'Newer draft' } });
+    await advanceAutosave();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
 
     mocks.state.serializedSettings = firstSavedSettings;
     rerender(<FinanceCategorizationSettings />);
-    expect(guidance).toHaveValue('Newer draft');
+    expect(
+      screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
+    ).toHaveValue('Newer draft');
 
-    act(() => resolveSaveSettings?.());
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: 'Save categorization settings' }),
-      ).toBeEnabled();
-    });
-    expect(screen.queryByRole('status')).toBeNull();
-
-    createPendingSave();
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    await settleSave(pendingSaves[0], 'resolve');
     expect(mocks.dispatch).toHaveBeenCalledTimes(2);
     expect(
       mocks.dispatch.mock.calls[1][0].prefs['finance.openai-categorization'],
     ).toContain('Newer draft');
+    expect(screen.getByRole('status')).toHaveTextContent('Savingâ€¦');
 
-    act(() => resolveSaveSettings?.());
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Settings saved',
+    await settleSave(pendingSaves[1], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
+  });
+
+  it('fences an in-flight save from a newly opened budget', async () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<FinanceCategorizationSettings />);
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
+      { target: { value: 'Old budget draft' } },
     );
+    await advanceAutosave();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    expect(mocks.dispatch.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ expectedBudgetId: 'budget-a' }),
+    );
+
+    mocks.state.budgetId = 'budget-b';
+    mocks.state.serializedSettings = JSON.stringify({
+      categoryGuidance: {},
+      categoryIds: ['groceries'],
+      masterPrompt: 'New budget instructions.',
+      model: 'gpt-5.6-luna',
+    });
+    rerender(<FinanceCategorizationSettings />);
+    expect(
+      screen.getByRole('textbox', { name: 'Categorization instructions' }),
+    ).toHaveValue('New budget instructions.');
+
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
+      { target: { value: 'New budget draft' } },
+    );
+    await advanceAutosave();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+
+    await settleSave(pendingSaves[0], 'resolve');
+    expect(mocks.dispatch).toHaveBeenCalledTimes(2);
+    expect(mocks.dispatch.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        expectedBudgetId: 'budget-b',
+        prefs: {
+          'finance.openai-categorization':
+            expect.stringContaining('New budget draft'),
+        },
+      }),
+    );
+
+    await settleSave(pendingSaves[1], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
+  });
+
+  it('does not autosave invalid settings and retries the latest failed save', async () => {
+    vi.useFakeTimers();
+    render(<FinanceCategorizationSettings />);
+
+    const instructions = screen.getByRole('textbox', {
+      name: 'Categorization instructions',
+    });
+    fireEvent.change(instructions, { target: { value: '' } });
+    await advanceAutosave();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+
+    fireEvent.change(instructions, {
+      target: { value: 'Retry this setting.' },
+    });
+    await advanceAutosave();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+    await settleSave(pendingSaves[0], 'reject');
+
+    expect(
+      screen.getByText('Unable to save categorization settings.'),
+    ).toHaveAttribute('role', 'alert');
+    expect(screen.queryByRole('status')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(mocks.dispatch).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.dispatch.mock.calls[1][0].prefs['finance.openai-categorization'],
+    ).toContain('Retry this setting.');
+
+    await settleSave(pendingSaves[1], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
   });
 
   it('persists a compatible model chosen from the provider-backed picker', async () => {
-    const user = userEvent.setup();
     mocks.state.serverStatus = 'online';
     mocks.send.mockImplementation(async name => {
       if (name === 'finance-categorization-status') {
@@ -412,24 +472,22 @@ describe('FinanceCategorizationSettings', () => {
 
     await screen.findByText('An OpenAI API key is configured for this budget.');
     const search = screen.getByRole('combobox', {
-      name: 'Search OpenAI models',
+      name: 'Model',
     });
-    await user.click(search);
+    fireEvent.focus(search);
     const selectedOption = await screen.findByRole('option', {
       name: 'gpt-4.1-mini',
     });
-    await user.click(within(selectedOption).getByRole('button'));
-    await user.click(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    );
+    fireEvent.click(within(selectedOption).getByRole('button'));
+    await waitFor(() => expect(mocks.dispatch).toHaveBeenCalledTimes(1), {
+      timeout: 2000,
+    });
 
     expect(
       mocks.dispatch.mock.calls[0][0].prefs['finance.openai-categorization'],
     ).toContain('"model":"gpt-4.1-mini"');
-    act(() => resolveSaveSettings?.());
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Settings saved',
-    );
+    await settleSave(pendingSaves[0], 'resolve');
+    expect(screen.getByRole('status')).toHaveTextContent('Settings saved');
   });
 
   it('does not save a model that the compatibility policy rejects', async () => {
@@ -465,9 +523,14 @@ describe('FinanceCategorizationSettings', () => {
         'Choose a compatible OpenAI model before saving.',
       ),
     ).toHaveAttribute('role', 'alert');
-    expect(
-      screen.getByRole('button', { name: 'Save categorization settings' }),
-    ).toBeDisabled();
+    fireEvent.change(
+      screen.getByRole('textbox', { name: 'Guidance for Groceries' }),
+      { target: { value: 'Do not save this invalid model.' } },
+    );
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 600));
+    });
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });
 });
+
