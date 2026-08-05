@@ -162,7 +162,7 @@ either side and prepares a working copy no larger than 2400 pixels on its
 longest edge. If a photo is sideways, use **Rotate left** or **Rotate right**
 and rerun the same local OCR. No API key is needed for receipt OCR.
 
-Review and correct the merchant, date, total, line items, and transcript before
+Review and correct the merchant, date, total, and transcript before
 choosing **Save receipt**. Saving keeps only the reviewed text and fields
 with the budget, so they are included in the normal Actual backup and sync
 workflow. The original image, object URL, and OCR boxes are temporary: Actual
@@ -175,11 +175,11 @@ Notes when you work with a receipt. An ambiguous match stays manual; only one
 active receipt can be attached to a transaction at a time.
 
 When you accept the existing OpenAI auto-categorization disclosure, a linked,
-reviewed receipt may contribute its merchant and up to 40 bounded line-item
-labels, quantities, and amounts. It never sends the receipt image, full
-transcript, payment hint, OCR boxes, or raw upload. Receipt evidence is used
-only when one allowed category clearly represents most of the attributable
-items; otherwise the usual transaction evidence is used.
+reviewed receipt may contribute its merchant and a bounded portion of its
+reviewed transcript (at most 4,000 code points and 8 KiB). It never sends the
+receipt image, payment hint, OCR boxes, or raw upload. Receipt evidence is used
+only when it clearly supports one allowed category; otherwise the usual
+transaction evidence is used.
 
 ### Expenditure reports
 

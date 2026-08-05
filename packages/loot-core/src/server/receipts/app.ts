@@ -117,13 +117,17 @@ async function saveReviewedReceipt({
     }
 
     const currentReceipt = toReceipt(current, false);
+    const receiptWithStoredLegacyFields = mergeStoredLegacyReceiptFields(
+      reviewedReceipt,
+      currentReceipt,
+    );
     const isEdited =
       canonicalizeReceiptReviewedFields(currentReceipt) !==
-      canonicalizeReceiptReviewedFields(reviewedReceipt);
-    const fingerprint = await fingerprintReceipt(reviewedReceipt);
+      canonicalizeReceiptReviewedFields(receiptWithStoredLegacyFields);
+    const fingerprint = await fingerprintReceipt(receiptWithStoredLegacyFields);
     const transcriptRevision = current.transcript_revision + (isEdited ? 1 : 0);
     await db.updateReceipt({
-      ...receiptToDatabaseFields(reviewedReceipt),
+      ...receiptToDatabaseFields(receiptWithStoredLegacyFields),
       fingerprint,
       id: current.id,
       reviewed_at: now,
@@ -132,7 +136,7 @@ async function saveReviewedReceipt({
     });
     return {
       receipt: {
-        ...reviewedReceipt,
+        ...receiptWithStoredLegacyFields,
         createdAt: current.created_at,
         fingerprint,
         id: current.id,
@@ -152,7 +156,7 @@ async function saveReviewedReceipt({
 
   const fingerprint = await fingerprintReceipt(reviewedReceipt);
   const id = await db.insertReceipt({
-    ...receiptToDatabaseFields(reviewedReceipt),
+    ...receiptToDatabaseInsertFields(reviewedReceipt),
     created_at: now,
     fingerprint,
     reviewed_at: now,
@@ -358,20 +362,61 @@ function receiptToDatabaseFields(receipt: ReceiptReviewedDraft) {
   return {
     confidence: JSON.stringify(receipt.fieldConfidence),
     currency: receipt.currency,
-    line_items: JSON.stringify(receipt.lineItems),
     merchant: receipt.merchant,
     ocr_revision: receipt.ocrRevision,
     parser_revision: receipt.parserRevision,
     payment_hint: receipt.paymentHint,
     purchase_date: receipt.purchaseDate,
-    purchase_time: receipt.purchaseTime,
     source_hash: receipt.sourceHash,
-    subtotal: receipt.subtotal,
-    tax: receipt.tax,
-    tip: receipt.tip,
     total: receipt.total,
     transcript: receipt.transcript,
     warnings: JSON.stringify(receipt.warnings),
+  };
+}
+
+function receiptToDatabaseInsertFields(receipt: ReceiptReviewedDraft) {
+  return {
+    ...receiptToDatabaseFields(receipt),
+    line_items: JSON.stringify(receipt.lineItems),
+    purchase_time: receipt.purchaseTime,
+    subtotal: receipt.subtotal,
+    tax: receipt.tax,
+    tip: receipt.tip,
+  };
+}
+
+function mergeStoredLegacyReceiptFields(
+  receipt: ReceiptReviewedDraft,
+  storedReceipt: Receipt,
+): ReceiptReviewedDraft {
+  const fieldConfidence = { ...receipt.fieldConfidence };
+  for (const field of [
+    'lineItems',
+    'purchaseTime',
+    'subtotal',
+    'tax',
+    'tip',
+  ] as const) {
+    const confidence = storedReceipt.fieldConfidence[field];
+    if (confidence !== undefined) fieldConfidence[field] = confidence;
+  }
+  const storedLegacyWarnings = storedReceipt.warnings.filter(warning =>
+    /(?:line[- ]?items?|purchase[ -]?time|subtotal|tax|tip)/i.test(warning),
+  );
+  return {
+    ...receipt,
+    fieldConfidence,
+    lineItems: storedReceipt.lineItems,
+    purchaseTime: storedReceipt.purchaseTime,
+    subtotal: storedReceipt.subtotal,
+    tax: storedReceipt.tax,
+    tip: storedReceipt.tip,
+    warnings: [
+      ...receipt.warnings,
+      ...storedLegacyWarnings.filter(
+        warning => !receipt.warnings.includes(warning),
+      ),
+    ],
   };
 }
 

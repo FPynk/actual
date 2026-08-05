@@ -158,44 +158,14 @@ async function readReceiptEvidenceByTransactionId(
   for (const [transactionId, receipts] of receiptLists) {
     if (receipts.length !== 1) continue;
     const receipt = receipts[0];
-    const lineItems = parseReceiptLineItems(receipt.line_items);
-    if (!lineItems) continue;
     const evidence = createCategorizationReceiptEvidence({
       fingerprint: receipt.fingerprint,
       id: receipt.id,
-      lineItems,
       merchant: receipt.merchant,
+      transcript: receipt.transcript,
       transcriptRevision: receipt.transcript_revision,
     });
     if (evidence) receiptEvidenceByTransactionId.set(transactionId, evidence);
   }
   return receiptEvidenceByTransactionId;
-}
-
-function parseReceiptLineItems(
-  serializedLineItems: string,
-): Array<{ amount?: number; label: string; quantity?: number }> | null {
-  try {
-    const parsed: unknown = JSON.parse(serializedLineItems);
-    if (!Array.isArray(parsed)) return null;
-    const lineItems = parsed.flatMap(item => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-      const { amount, label, quantity } = item as Record<string, unknown>;
-      if (typeof label !== 'string') return [];
-      return [
-        {
-          label,
-          ...(typeof amount === 'number' && Number.isSafeInteger(amount)
-            ? { amount }
-            : {}),
-          ...(typeof quantity === 'number' && Number.isFinite(quantity)
-            ? { quantity }
-            : {}),
-        },
-      ];
-    });
-    return lineItems.length === parsed.length ? lineItems : null;
-  } catch {
-    return null;
-  }
 }

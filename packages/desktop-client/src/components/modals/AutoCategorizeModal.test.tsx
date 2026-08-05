@@ -420,7 +420,7 @@ describe('AutoCategorizeModal selected scope', () => {
               paymentHint: 'Visa 1234',
               transcriptRevision: 1,
               transactionId: 'checked-expense',
-              transcript: 'This complete transcript must never leave Actual',
+              transcript: 'Reviewed apples and milk receipt transcript',
             },
           ];
         }
@@ -449,6 +449,9 @@ describe('AutoCategorizeModal selected scope', () => {
       screen.getByRole('button', { name: 'Review eligible transactions' }),
     );
     expect(mocks.send).not.toHaveBeenCalledWith('receipts/list');
+    expect(
+      screen.getByText(/up to 4,000 characters of the reviewed OCR transcript/),
+    ).toBeVisible();
     await user.click(
       screen.getByRole('checkbox', {
         name: 'I understand and want to generate suggestions for this run',
@@ -466,16 +469,14 @@ describe('AutoCategorizeModal selected scope', () => {
         candidates: expect.arrayContaining([
           expect.objectContaining({
             receipt: {
-              line_items: [{ amount: 499, label: 'Apples' }],
               merchant: 'Corner Shop',
+              transcript: 'Reviewed apples and milk receipt transcript',
             },
           }),
         ]),
       });
     });
-    expect(JSON.stringify(mocks.send.mock.calls)).not.toContain(
-      'This complete transcript must never leave Actual',
-    );
+    expect(JSON.stringify(mocks.send.mock.calls)).not.toContain('line_items');
     expect(JSON.stringify(mocks.send.mock.calls)).not.toContain('Visa 1234');
   });
 

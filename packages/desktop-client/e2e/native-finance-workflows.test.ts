@@ -140,13 +140,8 @@ async function openManualReceiptReview(page: Page, fileName: string) {
   }
   await expect(merchant).toBeVisible();
   await merchant.fill('Manual layout market');
+  await page.getByLabel('Total').fill('4.50');
   await page.getByLabel('OCR transcript').fill('Synthetic receipt transcript');
-  await page.getByRole('button', { name: 'Add line item' }).click();
-  await page.getByLabel('Description 1').fill('First synthetic item');
-  await page.getByLabel('Quantity').fill('1');
-  await page.getByLabel('Amount').fill('2.50');
-  await page.getByRole('button', { name: 'Add line item' }).click();
-  await page.getByLabel('Description 2').fill('Second synthetic item');
 }
 
 async function expectReceiptReviewLayout(page: Page, viewportWidth: number) {
@@ -180,20 +175,14 @@ async function expectReceiptReviewLayout(page: Page, viewportWidth: number) {
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(viewportWidth + 1);
 
-  const [descriptionBox, quantityBox] = await Promise.all([
-    page.getByLabel('Description 1').boundingBox(),
-    page.getByLabel('Quantity').first().boundingBox(),
-  ]);
-  if (!descriptionBox || !quantityBox) {
-    throw new Error('expected first line-item controls to have layout boxes');
-  }
-  if (viewportWidth < 700) {
-    expect(quantityBox.y).toBeGreaterThanOrEqual(
-      descriptionBox.y + descriptionBox.height,
-    );
-  } else {
-    expect(Math.abs(quantityBox.y - descriptionBox.y)).toBeLessThanOrEqual(2);
-  }
+  await expect(page.getByLabel('Total')).toBeVisible();
+  await expect(page.getByLabel('Time')).toHaveCount(0);
+  await expect(page.getByLabel('Subtotal')).toHaveCount(0);
+  await expect(page.getByLabel('Tax')).toHaveCount(0);
+  await expect(page.getByLabel('Tip')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add line item' })).toHaveCount(
+    0,
+  );
 
   const transcript = page.getByLabel('OCR transcript');
   await transcript.scrollIntoViewIfNeeded();

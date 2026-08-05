@@ -48,7 +48,11 @@ describe('createReceiptOcrDraft', () => {
     expect(draft.purchaseDate).toBe('2026-08-04');
     expect(draft.total).toBe(325);
     expect(draft.currency).toBe('USD');
-    expect(draft.lineItems).toEqual([{ label: 'Milk', amount: 325 }]);
+    expect(draft.lineItems).toEqual([]);
+    expect(draft.purchaseTime).toBeNull();
+    expect(draft.subtotal).toBeNull();
+    expect(draft.tax).toBeNull();
+    expect(draft.tip).toBeNull();
     expect(draft.lines[0]?.polygon).toEqual([
       { x: 0, y: 0 },
       { x: 20, y: 0 },
@@ -63,21 +67,13 @@ describe('createReceiptOcrDraft', () => {
             [0, 0],
             [20, 0],
           ],
-          text: 'TOTAL:$12.34',
+          text: 'TOTAL $56.78*',
           score: 0.99,
         },
         {
           poly: [
             [0, 20],
             [20, 20],
-          ],
-          text: 'TOTAL $56.78*',
-          score: 0.99,
-        },
-        {
-          poly: [
-            [0, 40],
-            [20, 40],
           ],
           text: 'TOTAL 123.456',
           score: 0.99,
@@ -235,7 +231,10 @@ const syntheticParserFixtures = [
   ['low confidence', ['Shop', '2026-01-01', 'TOTAL $9.00'], 900, '2026-01-01'],
 ] as const;
 
-function syntheticReceipt(lines: readonly string[], score = 0.98) {
+function syntheticReceipt(
+  lines: readonly string[],
+  score: number | readonly number[] = 0.98,
+) {
   return {
     items: lines.map((text, index) => ({
       poly: [
@@ -243,7 +242,7 @@ function syntheticReceipt(lines: readonly string[], score = 0.98) {
         [100, index * 20],
       ] as [number, number][],
       text,
-      score,
+      score: typeof score === 'number' ? score : (score[index] ?? 0),
     })),
   };
 }
@@ -267,7 +266,107 @@ describe.each(syntheticParserFixtures)(
 );
 
 describe('parser ambiguity and bounds', () => {
-  it('warns about ambiguous dates, conflicting totals, and preserves raw corrections', () => {
+  it('selects a real labeled total while ignoring loyalty points', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt([
+        'Shop',
+        '2026-01-01',
+        'TOTAL $12.34',
+        'Total July Points: 173',
+      ]),
+    );
+
+    expect(draft.total).toBe(1234);
+    expect(draft.currency).toBe('USD');
+  });
+
+  it.each([
+    ['loyalty total', ['Shop', '2026-01-01', 'Total July Points: 173']],
+    ['reward balance', ['Shop', '2026-01-01', 'Rewards Balance $42.00']],
+    ['fuel savings', ['Shop', '2026-01-01', 'Fuel Savings Total $8.50']],
+    ['coupon total', ['Shop', '2026-01-01', 'Coupon Total $5.00']],
+    ['item count', ['Shop', '2026-01-01', 'Total Items: 12']],
+    [
+      'dates and phone numbers',
+      ['Shop', '2026-01-01', '312-555-0100', 'Items: 12'],
+    ],
+  ])('does not treat %s as a purchase total', (_name, lines) => {
+    const draft = createReceiptOcrDraft(syntheticReceipt(lines));
+
+    expect(draft.total).toBeNull();
+    expect(draft.warnings).toContain('missing-total');
+  });
+
+  it('accepts a money-shaped value immediately after a total label', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(['Shop', '2026-01-01', 'TOTAL', '$12.34']),
+    );
+
+    expect(draft.total).toBe(1234);
+  });
+
+  it('accepts a standalone balance label with an immediately following amount', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(['Shop', '2026-01-01', 'BALANCE', '$9.50']),
+    );
+
+    expect(draft.total).toBe(950);
+  });
+
+  it.each([
+    ['subtotal', 'SUBTOTAL $12.34'],
+    ['tax', 'TAX $12.34'],
+    ['tip', 'TIP $12.34'],
+    ['change', 'CHANGE $12.34'],
+    ['cash', 'CASH $12.34'],
+    ['discount', 'DISCOUNT $12.34'],
+    ['payment', 'PAYMENT $12.34'],
+    ['tender', 'TENDER $12.34'],
+    ['loyalty points', 'LOYALTY POINTS $12.34'],
+  ])('does not borrow a %s amount below a total label', (_name, amountLine) => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(['Shop', '2026-01-01', 'TOTAL', amountLine]),
+    );
+
+    expect(draft.total).toBeNull();
+    expect(draft.warnings).toContain('missing-total');
+  });
+
+  it('rejects conflicting equally-labeled totals instead of guessing', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(['Shop', '2026-01-01', 'TOTAL $10.00', 'TOTAL $12.00']),
+    );
+
+    expect(draft.total).toBeNull();
+    expect(draft.warnings).toContain('ambiguous-total');
+    expect(draft.warnings).toContain('missing-total');
+  });
+
+  it('rejects low-confidence totals instead of guessing', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(['Shop', '2026-01-01', 'TOTAL $12.00'], 0.5),
+    );
+
+    expect(draft.total).toBeNull();
+    expect(draft.warnings).toContain('low-confidence-total');
+    expect(draft.warnings).toContain('missing-total');
+  });
+
+  it('rejects a next-line total when its amount OCR confidence is low', () => {
+    const draft = createReceiptOcrDraft(
+      syntheticReceipt(
+        ['Shop', '2026-01-01', 'TOTAL', '$12.00'],
+        [0.98, 0.98, 0.99, 0.5],
+      ),
+    );
+
+    expect(draft.total).toBeNull();
+    expect(draft.fieldConfidence.total).toBeUndefined();
+    expect(draft.warnings).toContain('low-confidence-total');
+    expect(draft.warnings).toContain('missing-total');
+  });
+
+  it('warns about ambiguous dates and preserves raw corrections', () => {
     const draft = createReceiptOcrDraft(
       syntheticReceipt([
         'Shop',
@@ -277,9 +376,9 @@ describe('parser ambiguity and bounds', () => {
       ]),
     );
 
-    expect(draft.purchaseTime).toBe('19:53');
+    expect(draft.purchaseTime).toBeNull();
     expect(draft.warnings).toContain('ambiguous-date');
-    expect(draft.warnings).toContain('conflicting-total-candidates');
+    expect(draft.total).toBe(1200);
     expect(draft.rawTranscript).toContain('07/10/202607:53PM');
   });
 
@@ -293,7 +392,7 @@ describe('parser ambiguity and bounds', () => {
     expect(draft.warnings).toContain('assumed-currency');
   });
 
-  it('uses the largest plausible decimal amount only as a reviewable fallback', () => {
+  it('does not guess a total from bare monetary-looking values', () => {
     const draft = createReceiptOcrDraft(
       syntheticReceipt([
         'Corner Shop',
@@ -305,10 +404,9 @@ describe('parser ambiguity and bounds', () => {
       { budgetCurrency: 'USD' },
     );
 
-    expect(draft.total).toBe(1975);
-    expect(draft.fieldConfidence.total).toBeLessThan(0.7);
-    expect(draft.warnings).toContain('largest-amount-total-needs-review');
-    expect(draft.warnings).toContain('low-confidence-total');
+    expect(draft.total).toBeNull();
+    expect(draft.fieldConfidence.total).toBeUndefined();
+    expect(draft.warnings).toContain('missing-total');
   });
 
   it('keeps raw OCR text while recording only conservative local corrections', () => {

@@ -164,12 +164,8 @@ export type FinanceCategorizationCandidate = {
   direction: 'inflow' | 'outflow';
   payee?: string;
   receipt?: {
-    line_items: Array<{
-      amount?: number;
-      label: string;
-      quantity?: number;
-    }>;
     merchant?: string;
+    transcript: string;
     truncated?: true;
   };
 };

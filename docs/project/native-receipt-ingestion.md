@@ -34,7 +34,7 @@ only the bounded reviewed receipt evidence defined in section 13.
    model-specific OpenCV preprocessing, text detection, text-region rectification, and
    recognition. V1 does not add automatic enhancement, orientation classification,
    unwarping, or deskewing.
-4. **Parsing:** derive merchant, date, total, currency, payment hints, and line items from
+4. **Parsing:** derive merchant, date, total, currency, and payment hints from
    local OCR word boxes with deterministic code. An LLM is not required for the draft.
 5. **Review:** OCR output is always editable. Nothing persists or links until the user
    explicitly saves or attaches it.
@@ -179,9 +179,7 @@ Boxes exist only in the draft and are never persisted.
    `CHANGE`, `CASH`, and savings lines from the primary total;
 6. derives currency from explicit codes/symbols and otherwise uses budget currency with an
    `assumed-currency` warning;
-7. identifies line items from description text followed by a right-aligned amount while
-   excluding header, total, payment, loyalty, and footer regions; and
-8. extracts only bounded source hints such as card brand and last four digits.
+7. extracts only bounded source hints such as card brand and last four digits.
 
 Ambiguous dates/decimals, conflicting totals, missing fields, low confidence, and truncated
 items produce visible warnings and prevent automatic candidate preselection. The user may
@@ -193,17 +191,16 @@ still correct and save the draft.
 `packages/loot-core/src/shared/receipts.ts` owns normalization, validation, redaction,
 canonical serialization, and fingerprint helpers.
 
-The draft contains source hash; normalized and original merchant; purchase date and
-optional time; ISO currency; integer minor-unit total/subtotal/tax/tip; payment hint; line
-items; redacted transcript; field confidence/warnings; OCR/model/parser revisions; and
-temporary boxes.
+The draft contains source hash; normalized and original merchant; purchase date; ISO currency;
+integer minor-unit total; payment hint; redacted transcript; field confidence/warnings;
+OCR/model/parser revisions; and temporary boxes. Legacy optional time, subtotal, tax, tip,
+and line-item values remain readable from existing rows but are not produced by current
+receipt review flows.
 
 | Field               | Bound after normalization                |
 | ------------------- | ---------------------------------------- |
 | Merchant            | 256 Unicode code points                  |
 | Transcript          | 32,000 Unicode code points               |
-| Line items          | 200                                      |
-| Line-item label     | 256 Unicode code points                  |
 | Warnings            | 32 entries of 256 code points            |
 | Payment/source hint | 128 Unicode code points                  |
 | Integer amount      | absolute value at most 10^12 minor units |
@@ -227,8 +224,11 @@ confidence, warnings, ocr_revision, parser_revision,
 transcript_revision, fingerprint, reviewed_at, created_at, updated_at, tombstone
 ```
 
-Store bounded line items and warnings as validated JSON. Add the table to AQL/schema and
-database types. Use `db.insert`, `db.update`, and `db.delete_` so CRDT messages are emitted.
+Keep legacy `purchase_time`, `subtotal`, `tax`, `tip`, and `line_items` columns for compatible
+reads; do not migrate or clear them. Current review flows supply neutral values for new inserts,
+and updates preserve existing stored values. Store warnings as validated JSON. Add the table to
+AQL/schema and database types. Use `db.insert`, `db.update`, and `db.delete_` so CRDT messages
+are emitted.
 Do not add foreign-key or unique constraints: concurrent device changes must never make
 sync fail. Add non-unique indexes for active source hash and transaction lookups. Handlers
 re-read current rows to enforce duplicate and link rules.
@@ -326,20 +326,17 @@ images remain recoverable until removed or the page is left.
 
 ## 13. Auto-categorization enrichment
 
-FIN-89 adds receipt evidence only when the receipt is reviewed, linked, non-conflicted,
+FIN-111 adds receipt evidence only when the receipt is reviewed, linked, non-conflicted,
 and the existing OpenAI disclosure is accepted. At most send:
 
-- receipt ID and revision/fingerprint for staleness;
 - normalized merchant capped at 128 code points; and
-- 40 line items with 120-code-point labels, optional quantity, and integer amount.
+- a reviewed transcript capped at 4,000 code points and 8 KiB.
 
-Exclude image, boxes, full transcript, warnings, payment hints, dates, card fragments, and
-OCR model/runtime metadata. Cap evidence at 8 KiB per transaction and delimit receipt strings
-as untrusted data.
+Exclude receipt IDs, revision/fingerprint, image, boxes, payment hints, dates, card fragments,
+and OCR model/runtime metadata. Delimit receipt strings as untrusted data.
 
-Propose one allowed category only when it represents more than half of attributable item
-spend; use item count only when reliable amounts are unavailable. Mixed, truncated,
-low-confidence, or unclear baskets produce no receipt-driven category. Explain when receipt
+Propose one allowed category only when the transcript clearly supports it. Mixed, truncated,
+low-confidence, or unclear receipts produce no receipt-driven category. Explain when receipt
 evidence mattered.
 
 Include receipt ID/revision/fingerprint in the preview fingerprint. Apply re-reads current
@@ -386,10 +383,10 @@ second OCR engine or cloud-image path.
 Unit/integration coverage includes input validation; EXIF orientation, resize,
 white-background preparation, and manual rotation; worker initialization, integrity,
 progress, timeout, cancellation, and disposal; parser date and
-amount locales; totals/tax/tip/change; redaction/bounds; fingerprints/revisions; migration,
+amount locales and total selection; redaction/bounds; fingerprints/revisions; migration,
 CRUD, duplicates, restart, backup/restore, CRDT sync, tombstone, undo, and link conflicts;
-matcher exact/near/tie/stale cases; and categorization majority, truncation, injection-like
-text, disclosure, staleness, apply, and undo.
+matcher exact/near/tie/stale cases; and categorization bounded reviewed-transcript,
+truncation, injection-like text, disclosure, staleness, apply, and undo.
 
 Browser E2E uses synthetic images through the normal Actual URL to upload, OCR, correct,
 save unmatched, rank/attach, manually resolve ambiguity, close/reopen, view/edit/reassign/
