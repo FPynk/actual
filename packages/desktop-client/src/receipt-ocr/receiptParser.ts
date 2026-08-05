@@ -1,16 +1,11 @@
 import type {
   PaddleOcrResult,
-  ReceiptLineItem,
   ReceiptOcrCorrection,
   ReceiptOcrDraft,
   ReceiptOcrLine,
   ReceiptOcrPoint,
 } from './types';
 
-const amountPattern =
-  /(?<![A-Za-z0-9.,])([$€£])?\s*((?:\d{1,3}(?:,\d{3})*|\d+)\.\d{2})(?=$|[^A-Za-z0-9.,])/;
-const datePattern =
-  /\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b/;
 const excludedLineItemPattern =
   /\b(?:subtotal|total|tax|change|cash|visa|mastercard|debit|credit|balance)\b/i;
 const localeAmountPattern =
@@ -18,9 +13,13 @@ const localeAmountPattern =
 const compactDatePattern =
   /(?<!\d)(\d{4}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})(?=$|[^\d]|\d{1,2}:)/g;
 const maxTranscriptCodePoints = 32_000;
-const maxLineItems = 200;
 const maxWarnings = 32;
 const maxMinorUnits = 1_000_000_000_000;
+const totalLabelPattern =
+  /\b(?:grand\s+total|total|amount\s+due|balance\s+due|balance)\b/gi;
+const nonPurchaseTotalContextPattern =
+  /\b(?:loyalty|points?|rewards?|fuel|savings?|coupons?|items?)\b/i;
+const minimumTotalConfidence = 0.7;
 
 type ReceiptParserOptions = {
   budgetCurrency?: string | null;
@@ -75,28 +74,11 @@ export function createReceiptOcrDraft(
     options.budgetCurrency,
     warnings,
   );
-  const subtotal = findLabeledAmount(
-    preparedLines,
-    /\bsubtotal\b/i,
-    options.budgetCurrency,
-  );
-  const tax = findLabeledAmount(
-    preparedLines,
-    /\btax\b/i,
-    options.budgetCurrency,
-  );
-  const tip = findLabeledAmount(
-    preparedLines,
-    /\b(?:tip|gratuity)\b/i,
-    options.budgetCurrency,
-  );
-  const parsedItems = findParsedLineItems(preparedLines, warnings);
   const transcript = redactReceiptText(rawTranscript);
   const transcriptConfidence = average(lines.map(line => line.confidence));
   if (!merchant.value) warnings.add('missing-merchant');
   if (!date.purchaseDate) warnings.add('missing-date');
   if (!total) warnings.add('missing-total');
-  if (total && total.confidence < 0.7) warnings.add('low-confidence-total');
   if (lines.length > 0 && transcriptConfidence < 0.7)
     warnings.add('low-confidence-ocr');
   return {
@@ -108,35 +90,28 @@ export function createReceiptOcrDraft(
       text: line.text,
     })),
     corrections,
-    currency: total?.currency ?? findAnyCurrency(preparedLines),
+    currency: total?.currency ?? null,
     fieldConfidence: compactConfidence({
       merchant: merchant.confidence,
       purchaseDate: date.confidence,
-      purchaseTime: date.purchaseTime ? date.confidence : undefined,
       currency: total?.currency ? total.confidence : undefined,
       total: total?.confidence,
-      subtotal: subtotal?.confidence,
-      tax: tax?.confidence,
-      tip: tip?.confidence,
-      lineItems: parsedItems.length
-        ? average(parsedItems.map(item => item.confidence))
-        : undefined,
       transcript: lines.length ? transcriptConfidence : undefined,
     }),
-    lineItems: parsedItems.map(({ confidence: _confidence, ...item }) => item),
+    lineItems: [],
     lines,
     merchant: merchant.value,
     normalizedMerchant: merchant.value?.toLocaleLowerCase() ?? null,
     ocrRevision: 'paddleocr-js',
-    parserRevision: 'receipt-parser-v2',
+    parserRevision: 'receipt-parser-v3',
     paymentHint: findPaymentHint(preparedLines.map(value => value.corrected)),
     purchaseDate: date.purchaseDate,
-    purchaseTime: date.purchaseTime,
+    purchaseTime: null,
     rawTranscript,
     sourceHash: null,
-    subtotal: subtotal?.amount ?? null,
-    tax: tax?.amount ?? null,
-    tip: tip?.amount ?? null,
+    subtotal: null,
+    tax: null,
+    tip: null,
     total: total?.amount ?? null,
     transcript,
     redactedTranscript: transcript,
@@ -217,23 +192,18 @@ function findParsedDate(
 ): {
   confidence: number | undefined;
   purchaseDate: string | null;
-  purchaseTime: string | null;
 } {
   for (const value of lines) {
     for (const match of value.corrected.matchAll(compactDatePattern)) {
       const purchaseDate = parseDate(match[1] ?? '', dateOrder, warnings);
       if (!purchaseDate) continue;
-      const textAfterDate = value.corrected.slice(
-        (match.index ?? 0) + match[0].length,
-      );
       return {
         confidence: value.line.confidence,
         purchaseDate,
-        purchaseTime: parseTime(textAfterDate) ?? parseTime(value.corrected),
       };
     }
   }
-  return { confidence: undefined, purchaseDate: null, purchaseTime: null };
+  return { confidence: undefined, purchaseDate: null };
 }
 
 function findParsedTotal(
@@ -246,159 +216,129 @@ function findParsedTotal(
   const candidates: Array<
     ParsedAmount & { confidence: number; lineIndex: number; score: number }
   > = [];
-  for (const value of lines) {
-    if (
-      /\b(?:subtotal|tax|tip|change|cash|savings?|discount|coupon|payment|tender)\b/i.test(
-        value.corrected,
-      )
-    )
-      continue;
-    const labelScore = /\bgrand\s+total\b/i.test(value.corrected)
-      ? 100
-      : /\btotal\b/i.test(value.corrected)
-        ? 90
-        : /\b(?:amount|balance)\s+due\b/i.test(value.corrected)
-          ? 85
-          : 0;
-    const amount = findAmounts(value.amountText).at(-1);
-    if (!labelScore || !amount) continue;
-    if (amount.ambiguous) {
-      warnings.add('ambiguous-decimal');
-      continue;
-    }
-    const currency = amount.currency ?? normalizeCurrency(budgetCurrency);
-    if (!amount.currency && currency) warnings.add('assumed-currency');
-    candidates.push({
-      ...amount,
-      currency,
-      confidence: value.line.confidence,
-      lineIndex: value.lineIndex,
-      score:
-        labelScore +
-        Math.round(value.line.confidence * 10) +
-        (currency ? 2 : 0),
-    });
+  for (const [lineIndex, value] of lines.entries()) {
+    const totalCandidate = findTotalCandidate(
+      value,
+      lines[lineIndex + 1],
+      budgetCurrency,
+      warnings,
+    );
+    if (totalCandidate) candidates.push(totalCandidate);
   }
   candidates.sort(
     (left, right) =>
       right.score - left.score || right.lineIndex - left.lineIndex,
   );
-  const selected =
-    candidates[0] ?? findLargestPlausibleTotal(lines, budgetCurrency, warnings);
+  const selected = candidates[0] ?? null;
+  if (!selected) return null;
   if (
-    selected &&
     candidates.some(
       candidate =>
         candidate !== selected &&
         candidate.amount !== selected.amount &&
-        candidate.score >= selected.score - 10,
+        candidate.score === selected.score,
     )
-  )
-    warnings.add('conflicting-total-candidates');
+  ) {
+    warnings.add('ambiguous-total');
+    return null;
+  }
   return selected;
 }
 
-function findLargestPlausibleTotal(
-  lines: readonly PreparedLine[],
+function findTotalCandidate(
+  value: PreparedLine,
+  nextLine: PreparedLine | undefined,
   budgetCurrency: string | null | undefined,
   warnings: WarningCollector,
 ):
   | (ParsedAmount & { confidence: number; lineIndex: number; score: number })
   | null {
-  const candidates = lines.flatMap(value => {
+  if (hasExcludedTotalContext(value.corrected)) return null;
+  totalLabelPattern.lastIndex = 0;
+  const label = totalLabelPattern.exec(value.corrected);
+  if (!label) return null;
+  const nearbyAmounts = findMoneyShapedAmounts(value.amountText).filter(
+    amount => {
+      const distance = Math.max(
+        label.index - (amount.start + amount.source.length),
+        amount.start - (label.index + label[0].length),
+        0,
+      );
+      return distance <= 16;
+    },
+  );
+  const followingLineAmounts =
+    nearbyAmounts.length === 0 &&
+    nextLine &&
+    !hasExcludedTotalContext(nextLine.corrected)
+      ? findMoneyShapedAmounts(nextLine.amountText)
+      : [];
+  const candidateAmounts = nearbyAmounts.length
+    ? nearbyAmounts
+    : followingLineAmounts;
+  if (candidateAmounts.length !== 1) {
+    if (candidateAmounts.length > 1) warnings.add('ambiguous-total');
+    return null;
+  }
+  const confidence = Math.min(
+    value.line.confidence,
+    nearbyAmounts.length > 0
+      ? value.line.confidence
+      : (nextLine?.line.confidence ?? value.line.confidence),
+  );
+  if (confidence < minimumTotalConfidence) {
+    warnings.add('low-confidence-total');
+    return null;
+  }
+  const amount = candidateAmounts[0];
+  const currency = amount.currency ?? normalizeCurrency(budgetCurrency);
+  if (!amount.currency && currency) warnings.add('assumed-currency');
+  return {
+    ...amount,
+    currency,
+    confidence,
+    lineIndex: value.lineIndex,
+    score: totalLabelScore(label[0]),
+  };
+}
+
+function hasExcludedTotalContext(value: string): boolean {
+  return (
+    nonPurchaseTotalContextPattern.test(value) ||
+    /\b(?:subtotal|tax|tip|change|cash|discount|payment|tender)\b/i.test(value)
+  );
+}
+
+function findMoneyShapedAmounts(
+  text: string,
+): Array<ParsedAmount & { start: number }> {
+  return [...text.matchAll(localeAmountPattern)].flatMap(match => {
+    const amount = parseAmount(match[3] ?? '');
+    const source = match[0];
     if (
-      hasDate(value.corrected) ||
-      /\b(?:subtotal|tax|tip|change|cash|savings?|discount|coupon|payment|tender)\b/i.test(
-        value.corrected,
-      )
+      !amount ||
+      amount.ambiguous ||
+      amount.amount <= 0 ||
+      (currencyFromToken(match[1] ?? match[2] ?? null) === null &&
+        !/[.,]\d{2}(?!\d)/.test(source))
     ) {
       return [];
     }
-    return findAmounts(value.amountText).flatMap(amount => {
-      const hasExplicitMoneyShape =
-        /[.,]\d{1,2}(?!\d)/.test(amount.source) || amount.currency !== null;
-      if (amount.ambiguous || !hasExplicitMoneyShape || amount.amount <= 0) {
-        return [];
-      }
-      const currency = amount.currency ?? normalizeCurrency(budgetCurrency);
-      if (!amount.currency && currency) warnings.add('assumed-currency');
-      return [
-        {
-          ...amount,
-          currency,
-          confidence: Math.min(0.65, value.line.confidence * 0.7),
-          lineIndex: value.lineIndex,
-          score:
-            Math.round(value.line.confidence * 10) +
-            Math.round((value.lineIndex / Math.max(1, lines.length - 1)) * 5),
-        },
-      ];
-    });
-  });
-  candidates.sort(
-    (left, right) =>
-      right.amount - left.amount ||
-      right.score - left.score ||
-      right.lineIndex - left.lineIndex,
-  );
-  const selected = candidates[0] ?? null;
-  if (selected) {
-    warnings.add('largest-amount-total-needs-review');
-    if (
-      candidates.some(
-        candidate =>
-          candidate !== selected && candidate.amount === selected.amount,
-      )
-    ) {
-      warnings.add('conflicting-total-candidates');
-    }
-  }
-  return selected;
-}
-
-function findLabeledAmount(
-  lines: readonly PreparedLine[],
-  label: RegExp,
-  budgetCurrency: string | null | undefined,
-): (ParsedAmount & { confidence: number }) | null {
-  for (const value of [...lines].reverse()) {
-    if (!label.test(value.corrected)) continue;
-    const amount = findAmounts(value.amountText).at(-1);
-    if (amount && !amount.ambiguous)
-      return {
+    return [
+      {
         ...amount,
-        currency: amount.currency ?? normalizeCurrency(budgetCurrency),
-        confidence: value.line.confidence,
-      };
-  }
-  return null;
+        currency: currencyFromToken(match[1] ?? match[2] ?? null),
+        source,
+        start: match.index ?? 0,
+      },
+    ];
+  });
 }
 
-function findParsedLineItems(
-  lines: readonly PreparedLine[],
-  warnings: WarningCollector,
-): Array<ReceiptLineItem & { confidence: number }> {
-  const items: Array<ReceiptLineItem & { confidence: number }> = [];
-  for (const value of lines) {
-    if (items.length === maxLineItems) {
-      warnings.add('line-items-truncated');
-      break;
-    }
-    if (excludedLineItemPattern.test(value.corrected)) continue;
-    const amount = findAmounts(value.amountText).at(-1);
-    if (!amount || amount.ambiguous) continue;
-    const label = value.corrected
-      .slice(0, value.amountText.lastIndexOf(amount.source))
-      .replace(/[-:.]+\s*$/, '')
-      .trim();
-    if (!label || !/[\p{L}]/u.test(label)) continue;
-    items.push({
-      amount: amount.amount,
-      confidence: value.line.confidence,
-      label: truncateText(label, 256),
-    });
-  }
-  return items;
+function totalLabelScore(label: string): number {
+  if (/^grand\s+total$/i.test(label)) return 3;
+  if (/^(?:amount|balance)\s+due$/i.test(label)) return 2;
+  return 1;
 }
 
 function findAmounts(text: string): ParsedAmount[] {
@@ -480,26 +420,6 @@ function parseDate(
   return `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
 }
 
-function parseTime(value: string): string | null {
-  const match = value.match(
-    /(?<!\d)(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?\b/i,
-  );
-  if (!match) return null;
-  let hour = Number(match[1]);
-  const minute = Number(match[2]);
-  const second = match[3] === undefined ? undefined : Number(match[3]);
-  if (
-    hour > 23 ||
-    minute > 59 ||
-    (second !== undefined && second > 59) ||
-    (hour === 0 && match[4])
-  )
-    return null;
-  if (match[4]?.toUpperCase() === 'PM' && hour < 12) hour += 12;
-  if (match[4]?.toUpperCase() === 'AM' && hour === 12) hour = 0;
-  return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}${second === undefined ? '' : `:${second.toString().padStart(2, '0')}`}`;
-}
-
 function correctReceiptLabels(value: string): string {
   return value
     .replace(/\bGRAND\s+T[O0]TAL\b/gi, 'GRAND TOTAL')
@@ -525,14 +445,6 @@ function findPaymentHint(lines: readonly string[]): string | null {
       ? `${match[1]?.toUpperCase()} •••• ${match[2]}`
       : (match[1]?.toUpperCase() ?? null)
     : null;
-}
-
-function findAnyCurrency(lines: readonly PreparedLine[]): string | null {
-  return (
-    lines
-      .flatMap(line => findAmounts(line.amountText))
-      .find(amount => amount.currency)?.currency ?? null
-  );
 }
 
 function currencyFromToken(value: string | null): string | null {

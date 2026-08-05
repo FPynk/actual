@@ -444,7 +444,7 @@ describe('OpenAI finance categorization', () => {
   it('accepts only bounded reviewed receipt evidence', () => {
     const receipt = {
       merchant: 'Corner Shop',
-      line_items: [{ amount: 499, label: 'Apples' }],
+      transcript: 'Reviewed apples and milk receipt transcript',
     };
     expect(
       validateCategorizationRequest({
@@ -458,7 +458,7 @@ describe('OpenAI finance categorization', () => {
         candidates: [
           {
             ...request.candidates[0],
-            receipt: { ...receipt, transcript: 'do not send this' },
+            receipt: { ...receipt, line_items: [{ label: 'Apples' }] },
           },
         ],
       }),
@@ -470,10 +470,19 @@ describe('OpenAI finance categorization', () => {
           {
             ...request.candidates[0],
             receipt: {
-              line_items: Array.from({ length: 41 }, () => ({
-                label: 'Item',
-              })),
+              transcript: 'x'.repeat(4_001),
             },
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      validateCategorizationRequest({
+        ...request,
+        candidates: [
+          {
+            ...request.candidates[0],
+            receipt: { transcript: '😀'.repeat(3_000) },
           },
         ],
       }),

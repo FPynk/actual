@@ -102,4 +102,103 @@ describe('receipt handlers', () => {
     ).resolves.toEqual({ status: 'stale' });
     expect(await app.handlers['receipts/list']()).toEqual([]);
   });
+
+  test('preserves legacy fields on existing receipt updates', async () => {
+    const legacyDraft = {
+      ...draft,
+      fieldConfidence: {
+        ...draft.fieldConfidence,
+        lineItems: 0.8,
+        subtotal: 0.7,
+      },
+      warnings: ['line-items-truncated'],
+    } satisfies ReceiptReviewedDraft;
+    const saved = await app.handlers['receipts/save-reviewed']({
+      expectedBudgetId: 'test',
+      receipt: legacyDraft,
+    });
+    if (saved.status !== 'saved') {
+      throw new Error('Expected a saved receipt.');
+    }
+
+    const updated = await app.handlers['receipts/save-reviewed']({
+      expectedBudgetId: 'test',
+      expectedFingerprint: saved.receipt.fingerprint,
+      receipt: {
+        ...draft,
+        lineItems: [],
+        merchant: 'Updated Corner Shop',
+        purchaseTime: null,
+        subtotal: null,
+        tax: null,
+        tip: null,
+      },
+      receiptId: saved.receipt.id,
+    });
+    expect(updated.status).toBe('saved');
+    if (updated.status !== 'saved') {
+      throw new Error('Expected a saved receipt.');
+    }
+    expect(updated.receipt).toMatchObject({
+      fieldConfidence: { lineItems: 0.8, subtotal: 0.7 },
+      lineItems: legacyDraft.lineItems,
+      purchaseTime: legacyDraft.purchaseTime,
+      subtotal: legacyDraft.subtotal,
+      tax: legacyDraft.tax,
+      tip: legacyDraft.tip,
+      warnings: ['line-items-truncated'],
+    });
+
+    const stored = await db.getReceipt(saved.receipt.id);
+    expect(stored).toMatchObject({
+      purchase_time: legacyDraft.purchaseTime,
+      subtotal: legacyDraft.subtotal,
+      tax: legacyDraft.tax,
+      tip: legacyDraft.tip,
+    });
+    expect(JSON.parse(stored?.line_items ?? 'null')).toEqual(
+      legacyDraft.lineItems,
+    );
+    expect(stored?.fingerprint).toBe(updated.receipt.fingerprint);
+    await expect(
+      app.handlers['receipts/get']({ id: saved.receipt.id }),
+    ).resolves.toMatchObject({
+      fieldConfidence: { lineItems: 0.8, subtotal: 0.7 },
+      lineItems: legacyDraft.lineItems,
+      purchaseTime: legacyDraft.purchaseTime,
+      subtotal: legacyDraft.subtotal,
+      tax: legacyDraft.tax,
+      tip: legacyDraft.tip,
+      warnings: ['line-items-truncated'],
+    });
+
+    const unchanged = await app.handlers['receipts/save-reviewed']({
+      expectedBudgetId: 'test',
+      expectedFingerprint: updated.receipt.fingerprint,
+      receipt: {
+        ...draft,
+        lineItems: [],
+        merchant: 'Updated Corner Shop',
+        purchaseTime: null,
+        subtotal: null,
+        tax: null,
+        tip: null,
+      },
+      receiptId: saved.receipt.id,
+    });
+    expect(unchanged).toMatchObject({
+      receipt: {
+        fingerprint: updated.receipt.fingerprint,
+        fieldConfidence: { lineItems: 0.8, subtotal: 0.7 },
+        lineItems: legacyDraft.lineItems,
+        purchaseTime: legacyDraft.purchaseTime,
+        subtotal: legacyDraft.subtotal,
+        tax: legacyDraft.tax,
+        tip: legacyDraft.tip,
+        transcriptRevision: updated.receipt.transcriptRevision,
+        warnings: ['line-items-truncated'],
+      },
+      status: 'saved',
+    });
+  });
 });

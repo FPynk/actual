@@ -14,7 +14,6 @@ import { amountToInteger, integerToAmount } from '@actual-app/core/shared/util';
 import type {
   Receipt,
   ReceiptFieldConfidence,
-  ReceiptLineItem,
   ReceiptMatchCandidate,
   ReceiptReviewedDraft,
 } from '@actual-app/core/types/receipts';
@@ -40,26 +39,15 @@ type QueueStatus =
   | 'queued'
   | 'saved';
 
-type EditableLineItem = {
-  amount: string;
-  label: string;
-  quantity: string;
-};
-
 type ReceiptForm = {
   currency: string;
   fieldConfidence: ReceiptFieldConfidence;
-  lineItems: EditableLineItem[];
   merchant: string;
   ocrRevision: string | null;
   parserRevision: string | null;
   paymentHint: string;
   purchaseDate: string;
-  purchaseTime: string;
   sourceHash: string | null;
-  subtotal: string;
-  tax: string;
-  tip: string;
   total: string;
   transcript: string;
   warnings: readonly string[];
@@ -1061,7 +1049,6 @@ function ReceiptDetailsEditor({
   onChange: (form: ReceiptForm) => void;
 }) {
   const { t } = useTranslation();
-  const { isNarrowWidth } = useResponsive();
   const update = <Field extends keyof ReceiptForm>(
     field: Field,
     value: ReceiptForm[Field],
@@ -1117,24 +1104,11 @@ function ReceiptDetailsEditor({
           />
           <ReceiptField
             containerStyle={receiptMetadataFieldStyle}
-            hint={receiptFieldHint(
+            hint={receiptTotalHint(
               form.fieldConfidence,
-              'purchaseTime',
-              isInvalidReceiptField('purchaseTime', form.purchaseTime),
-              t,
-            )}
-            isInvalid={isInvalidReceiptField('purchaseTime', form.purchaseTime)}
-            label={t('Time')}
-            placeholder="HH:MM"
-            value={form.purchaseTime}
-            onChange={value => update('purchaseTime', value)}
-          />
-          <ReceiptField
-            containerStyle={receiptMetadataFieldStyle}
-            hint={receiptFieldHint(
-              form.fieldConfidence,
-              'total',
               isInvalidReceiptField('total', form.total),
+              form.total,
+              form.warnings,
               t,
             )}
             label={t('Total')}
@@ -1156,48 +1130,6 @@ function ReceiptDetailsEditor({
             placeholder="USD"
             value={form.currency}
             onChange={value => update('currency', value.toUpperCase())}
-          />
-          <ReceiptField
-            containerStyle={receiptMetadataFieldStyle}
-            hint={receiptFieldHint(
-              form.fieldConfidence,
-              'subtotal',
-              isInvalidReceiptField('subtotal', form.subtotal),
-              t,
-            )}
-            label={t('Subtotal')}
-            inputMode="decimal"
-            isInvalid={isInvalidReceiptField('subtotal', form.subtotal)}
-            value={form.subtotal}
-            onChange={value => update('subtotal', value)}
-          />
-          <ReceiptField
-            containerStyle={receiptMetadataFieldStyle}
-            hint={receiptFieldHint(
-              form.fieldConfidence,
-              'tax',
-              isInvalidReceiptField('tax', form.tax),
-              t,
-            )}
-            label={t('Tax')}
-            inputMode="decimal"
-            isInvalid={isInvalidReceiptField('tax', form.tax)}
-            value={form.tax}
-            onChange={value => update('tax', value)}
-          />
-          <ReceiptField
-            containerStyle={receiptMetadataFieldStyle}
-            hint={receiptFieldHint(
-              form.fieldConfidence,
-              'tip',
-              isInvalidReceiptField('tip', form.tip),
-              t,
-            )}
-            label={t('Tip')}
-            inputMode="decimal"
-            isInvalid={isInvalidReceiptField('tip', form.tip)}
-            value={form.tip}
-            onChange={value => update('tip', value)}
           />
           <ReceiptField
             containerStyle={receiptMetadataFieldStyle}
@@ -1275,159 +1207,6 @@ function ReceiptDetailsEditor({
             />
           </details>
         )}
-
-      <View style={{ alignItems: 'stretch', gap: 8 }}>
-        <View
-          style={{
-            alignItems: 'center',
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            gap: 8,
-          }}
-        >
-          <Text style={{ flex: 1, fontWeight: 600 }}>
-            <Trans>Line items</Trans>
-          </Text>
-          <Button
-            variant="bare"
-            style={{ minHeight: 44 }}
-            onPress={() =>
-              update('lineItems', [
-                ...form.lineItems,
-                { amount: '', label: '', quantity: '' },
-              ])
-            }
-          >
-            <Trans>Add line item</Trans>
-          </Button>
-        </View>
-        {form.lineItems.length === 0 && (
-          <Text style={{ color: theme.pageTextSubdued }}>
-            <Trans>No line items were detected.</Trans>
-          </Text>
-        )}
-        {form.lineItems.length > 0 && !isNarrowWidth && (
-          <View
-            data-testid="receipt-line-item-header"
-            aria-hidden="true"
-            style={{
-              alignItems: 'center',
-              color: theme.pageTextSubdued,
-              flexDirection: 'row',
-              fontSize: 12,
-              fontWeight: 600,
-              gap: 8,
-              minHeight: 20,
-              pointerEvents: 'none',
-            }}
-          >
-            <Text style={{ flex: '1 1 180px', minWidth: 0 }}>
-              <Trans>Description</Trans>
-            </Text>
-            <Text style={{ minWidth: 80, width: 100 }}>
-              <Trans>Quantity</Trans>
-            </Text>
-            <Text style={{ minWidth: 96, width: 120 }}>
-              <Trans>Amount</Trans>
-            </Text>
-            <Text style={{ minWidth: 60 }}>
-              <Trans>Actions</Trans>
-            </Text>
-          </View>
-        )}
-        {form.lineItems.map((lineItem, index) => (
-          <View
-            key={index}
-            style={{
-              alignItems: 'stretch',
-              flexDirection: isNarrowWidth ? 'column' : 'row',
-              flexShrink: 0,
-              flexWrap: isNarrowWidth ? undefined : 'wrap',
-              gap: 8,
-              minHeight: isNarrowWidth ? 180 : 60,
-              padding: '8px 0',
-            }}
-          >
-            <ReceiptField
-              containerStyle={{
-                flex: isNarrowWidth ? undefined : '1 1 180px',
-                minWidth: 0,
-              }}
-              id={`receipt-line-item-${index}-label`}
-              label={t('Description {{number}}', { number: index + 1 })}
-              isLabelVisuallyHidden={!isNarrowWidth}
-              value={lineItem.label}
-              onChange={value =>
-                update(
-                  'lineItems',
-                  replaceLineItem(form.lineItems, index, {
-                    ...lineItem,
-                    label: value,
-                  }),
-                )
-              }
-            />
-            <ReceiptField
-              containerStyle={{
-                flex: isNarrowWidth ? undefined : '0 1 100px',
-                minWidth: isNarrowWidth ? 0 : 80,
-              }}
-              id={`receipt-line-item-${index}-quantity`}
-              label={t('Quantity')}
-              inputMode="decimal"
-              isLabelVisuallyHidden={!isNarrowWidth}
-              value={lineItem.quantity}
-              onChange={value =>
-                update(
-                  'lineItems',
-                  replaceLineItem(form.lineItems, index, {
-                    ...lineItem,
-                    quantity: value,
-                  }),
-                )
-              }
-            />
-            <ReceiptField
-              containerStyle={{
-                flex: isNarrowWidth ? undefined : '0 1 120px',
-                minWidth: isNarrowWidth ? 0 : 96,
-              }}
-              id={`receipt-line-item-${index}-amount`}
-              label={t('Amount')}
-              inputMode="decimal"
-              isLabelVisuallyHidden={!isNarrowWidth}
-              value={lineItem.amount}
-              onChange={value =>
-                update(
-                  'lineItems',
-                  replaceLineItem(form.lineItems, index, {
-                    ...lineItem,
-                    amount: value,
-                  }),
-                )
-              }
-            />
-            <Button
-              variant="bare"
-              aria-label={t('Remove line item {{number}}', {
-                number: index + 1,
-              })}
-              style={{
-                alignSelf: isNarrowWidth ? 'stretch' : 'flex-end',
-                minHeight: 44,
-              }}
-              onPress={() =>
-                update(
-                  'lineItems',
-                  form.lineItems.filter((_, itemIndex) => itemIndex !== index),
-                )
-              }
-            >
-              <Trans>Remove</Trans>
-            </Button>
-          </View>
-        ))}
-      </View>
 
       <label htmlFor="receipt-transcript">
         <Text style={{ fontWeight: 600 }}>
@@ -1666,14 +1445,31 @@ function receiptFieldHint(
   return undefined;
 }
 
+function receiptTotalHint(
+  fieldConfidence: ReceiptFieldConfidence,
+  isInvalid: boolean,
+  value: string,
+  warnings: readonly string[],
+  t: (value: string) => string,
+): string | undefined {
+  if (isInvalid) return t('Enter a valid value before saving.');
+  if (!value.trim()) {
+    if (warnings.includes('low-confidence-total')) {
+      return t('OCR is uncertain about the total. Verify the receipt total.');
+    }
+    return t('OCR did not find a total. Enter and verify the receipt total.');
+  }
+  if ((fieldConfidence.total ?? 1) < 0.8) {
+    return t('OCR is uncertain about the total. Verify the receipt total.');
+  }
+  return undefined;
+}
+
 function isInvalidReceiptField(field: string, value: string): boolean {
   const trimmedValue = value.trim();
   if (!trimmedValue) return false;
   if (field === 'currency') return !/^[A-Za-z]{3}$/.test(trimmedValue);
-  if (field === 'purchaseTime') {
-    return !/^\d{2}:\d{2}(?::\d{2})?$/.test(trimmedValue);
-  }
-  if (['total', 'subtotal', 'tax', 'tip'].includes(field)) {
+  if (field === 'total') {
     const amount = Number(trimmedValue.replace(',', '.'));
     return !Number.isFinite(amount) || amount < 0;
   }
@@ -1684,17 +1480,12 @@ function createEmptyReceiptForm(currency: string): ReceiptForm {
   return {
     currency,
     fieldConfidence: {},
-    lineItems: [],
     merchant: '',
     ocrRevision: null,
     parserRevision: null,
     paymentHint: '',
     purchaseDate: '',
-    purchaseTime: '',
     sourceHash: null,
-    subtotal: '',
-    tax: '',
-    tip: '',
     total: '',
     transcript: '',
     warnings: [],
@@ -1710,17 +1501,17 @@ function draftToReceiptForm(
     {
       currency: draft.currency,
       fieldConfidence: draft.fieldConfidence,
-      lineItems: draft.lineItems,
+      lineItems: [],
       merchant: draft.merchant,
       ocrRevision: draft.ocrRevision,
       parserRevision: draft.parserRevision,
       paymentHint: draft.paymentHint,
       purchaseDate: draft.purchaseDate,
-      purchaseTime: draft.purchaseTime,
+      purchaseTime: null,
       sourceHash: draft.sourceHash,
-      subtotal: draft.subtotal,
-      tax: draft.tax,
-      tip: draft.tip,
+      subtotal: null,
+      tax: null,
+      tip: null,
       total: draft.total,
       transcript: draft.redactedTranscript,
       warnings: draft.warnings,
@@ -1737,25 +1528,16 @@ function reviewedDraftToReceiptForm(
 ): ReceiptForm {
   return {
     currency: draft.currency ?? '',
-    fieldConfidence: draft.fieldConfidence,
-    lineItems: draft.lineItems.map(item => ({
-      amount: minorUnitsToInput(item.amount, decimalPlaces),
-      label: item.label,
-      quantity: item.quantity === undefined ? '' : String(item.quantity),
-    })),
+    fieldConfidence: supportedReceiptFieldConfidence(draft.fieldConfidence),
     merchant: draft.merchant ?? '',
     ocrRevision: draft.ocrRevision,
     parserRevision: draft.parserRevision,
     paymentHint: draft.paymentHint ?? '',
     purchaseDate: receiptDateToInput(draft.purchaseDate, dateFormat),
-    purchaseTime: draft.purchaseTime ?? '',
     sourceHash: draft.sourceHash,
-    subtotal: minorUnitsToInput(draft.subtotal, decimalPlaces),
-    tax: minorUnitsToInput(draft.tax, decimalPlaces),
-    tip: minorUnitsToInput(draft.tip, decimalPlaces),
     total: minorUnitsToInput(draft.total, decimalPlaces),
     transcript: draft.transcript,
-    warnings: draft.warnings,
+    warnings: filterObsoleteReceiptWarnings(draft.warnings),
   };
 }
 
@@ -1769,38 +1551,20 @@ function receiptFormToReviewedDraft(
   if (currency && !/^[A-Z]{3}$/.test(currency)) {
     throw new Error('Currency must be a three-letter code such as USD.');
   }
-  if (
-    form.purchaseTime &&
-    !/^\d{2}:\d{2}(?::\d{2})?$/.test(form.purchaseTime)
-  ) {
-    throw new Error('Time must use HH:MM or HH:MM:SS.');
-  }
   return {
     currency: currency || null,
-    fieldConfidence: form.fieldConfidence,
-    lineItems: form.lineItems.flatMap((item): ReceiptLineItem[] => {
-      const label = item.label.trim();
-      if (!label) return [];
-      const quantity = item.quantity.trim() ? Number(item.quantity) : undefined;
-      if (
-        quantity !== undefined &&
-        (!Number.isFinite(quantity) || quantity < 0)
-      ) {
-        throw new Error('Line-item quantities must be positive numbers.');
-      }
-      const amount = inputToMinorUnits(item.amount, decimalPlaces);
-      return [{ amount: amount ?? undefined, label, quantity }];
-    }),
+    fieldConfidence: supportedReceiptFieldConfidence(form.fieldConfidence),
+    lineItems: [],
     merchant: form.merchant.trim() || null,
     ocrRevision: form.ocrRevision,
     parserRevision: form.parserRevision,
     paymentHint: form.paymentHint.trim() || null,
     purchaseDate,
-    purchaseTime: form.purchaseTime.trim() || null,
+    purchaseTime: null,
     sourceHash: form.sourceHash,
-    subtotal: inputToMinorUnits(form.subtotal, decimalPlaces),
-    tax: inputToMinorUnits(form.tax, decimalPlaces),
-    tip: inputToMinorUnits(form.tip, decimalPlaces),
+    subtotal: null,
+    tax: null,
+    tip: null,
     total: inputToMinorUnits(form.total, decimalPlaces),
     transcript: form.transcript,
     warnings: form.warnings,
@@ -1847,13 +1611,27 @@ function inputToMinorUnits(
   return amountToInteger(amount, decimalPlaces);
 }
 
-function replaceLineItem(
-  lineItems: EditableLineItem[],
-  index: number,
-  nextItem: EditableLineItem,
-): EditableLineItem[] {
-  return lineItems.map((item, itemIndex) =>
-    itemIndex === index ? nextItem : item,
+function supportedReceiptFieldConfidence(
+  fieldConfidence: ReceiptFieldConfidence,
+): ReceiptFieldConfidence {
+  const { currency, merchant, paymentHint, purchaseDate, total, transcript } =
+    fieldConfidence;
+  return {
+    currency,
+    merchant,
+    paymentHint,
+    purchaseDate,
+    total,
+    transcript,
+  };
+}
+
+function filterObsoleteReceiptWarnings(
+  warnings: readonly string[],
+): readonly string[] {
+  return warnings.filter(
+    warning =>
+      !/(?:line[- ]?items?|purchase[ -]?time|subtotal|tax|tip)/i.test(warning),
   );
 }
 

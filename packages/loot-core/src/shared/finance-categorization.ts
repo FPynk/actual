@@ -1,9 +1,8 @@
 export const maximumCategorizationCandidates = 5_000;
 export const maximumCategorizationProviderBatchSize = 25;
 export const maximumCategorizationReceiptEvidenceBytes = 8 * 1024;
-export const maximumCategorizationReceiptLineItems = 40;
-export const maximumCategorizationReceiptLineItemLabelLength = 120;
 export const maximumCategorizationReceiptMerchantLength = 128;
+export const maximumCategorizationReceiptTranscriptLength = 4_000;
 
 export type CategorizationConfidence = 'high' | 'medium' | 'low';
 
@@ -60,24 +59,16 @@ export type PreparedCategorizationCandidate = {
 
 export type CategorizationReceiptEvidence = {
   fingerprint: string;
-  lineItems: Array<{
-    amount?: number;
-    label: string;
-    quantity?: number;
-  }>;
   merchant?: string;
+  transcript: string;
   truncated: boolean;
 };
 
 export type CategorizationReceiptSource = {
   fingerprint: string;
   id: string;
-  lineItems: ReadonlyArray<{
-    amount?: number;
-    label: string;
-    quantity?: number;
-  }>;
   merchant: string | null;
+  transcript: string;
   transcriptRevision: number;
 };
 
@@ -91,12 +82,8 @@ export type CategorizationGatewayCandidate = {
   direction: CategorizationTransactionDirection;
   payee?: string;
   receipt?: {
-    line_items: Array<{
-      amount?: number;
-      label: string;
-      quantity?: number;
-    }>;
     merchant?: string;
+    transcript: string;
     truncated?: true;
   };
 };
@@ -167,29 +154,14 @@ export function createCategorizationReceiptEvidence(
     receipt.merchant ?? '',
     maximumCategorizationReceiptMerchantLength,
   );
-  const sourceLineItems = receipt.lineItems.slice(
-    0,
-    maximumCategorizationReceiptLineItems,
+  const preparedTranscript = redactCategorizationReceiptTranscript(
+    receipt.transcript,
   );
-  let truncated = receipt.lineItems.length > sourceLineItems.length;
-  const lineItems = sourceLineItems.flatMap(item => {
-    const label = limitCodePoints(
-      item.label,
-      maximumCategorizationReceiptLineItemLabelLength,
-    );
-    if (!label) return [];
-    if (label !== item.label) truncated = true;
-    return [
-      {
-        ...(Number.isSafeInteger(item.amount) ? { amount: item.amount } : {}),
-        label,
-        ...(typeof item.quantity === 'number' && Number.isFinite(item.quantity)
-          ? { quantity: item.quantity }
-          : {}),
-      },
-    ];
-  });
-  if (merchant !== (receipt.merchant ?? '')) truncated = true;
+  const transcript = limitReceiptTranscript(
+    preparedTranscript,
+    maximumCategorizationReceiptTranscriptLength,
+  );
+  if (!transcript) return null;
 
   const evidence: CategorizationReceiptEvidence = {
     fingerprint: JSON.stringify([
@@ -197,26 +169,37 @@ export function createCategorizationReceiptEvidence(
       receipt.transcriptRevision,
       receipt.fingerprint,
     ]),
-    lineItems,
     ...(merchant ? { merchant } : {}),
-    truncated,
+    transcript,
+    truncated:
+      merchant !== (receipt.merchant ?? '') ||
+      transcript !== receipt.transcript,
   };
-  while (
-    lineItems.length > 0 &&
-    receiptEvidenceByteLength(evidence) >
-      maximumCategorizationReceiptEvidenceBytes
-  ) {
-    lineItems.pop();
-    evidence.truncated = true;
-  }
   if (
     receiptEvidenceByteLength(evidence) >
     maximumCategorizationReceiptEvidenceBytes
   ) {
-    evidence.merchant = undefined;
     evidence.truncated = true;
+    const transcriptCodePoints = Array.from(evidence.transcript);
+    let lowerBound = 0;
+    let upperBound = transcriptCodePoints.length;
+    while (lowerBound < upperBound) {
+      const candidateLength = Math.ceil((lowerBound + upperBound) / 2);
+      evidence.transcript = transcriptCodePoints
+        .slice(0, candidateLength)
+        .join('');
+      if (
+        receiptEvidenceByteLength(evidence) <=
+        maximumCategorizationReceiptEvidenceBytes
+      ) {
+        lowerBound = candidateLength;
+      } else {
+        upperBound = candidateLength - 1;
+      }
+    }
+    evidence.transcript = transcriptCodePoints.slice(0, lowerBound).join('');
   }
-  return evidence;
+  return evidence.transcript ? evidence : null;
 }
 
 export function withCategorizationReceiptEvidence(
@@ -359,10 +342,10 @@ export function toCategorizationGatewayCandidate(
     ...(candidate.receiptEvidence
       ? {
           receipt: {
-            line_items: candidate.receiptEvidence.lineItems,
             ...(candidate.receiptEvidence.merchant
               ? { merchant: candidate.receiptEvidence.merchant }
               : {}),
+            transcript: candidate.receiptEvidence.transcript,
             ...(candidate.receiptEvidence.truncated ? { truncated: true } : {}),
           },
         }
@@ -545,6 +528,47 @@ function limitCodePoints(value: string, maximum: number): string {
   return Array.from(value.normalize('NFKC').replace(/\s+/g, ' ').trim())
     .slice(0, maximum)
     .join('');
+}
+
+function limitReceiptTranscript(value: string, maximum: number): string {
+  return Array.from(value.normalize('NFKC').replace(/\r\n?/g, '\n').trim())
+    .slice(0, maximum)
+    .join('');
+}
+
+function redactCategorizationReceiptTranscript(value: string): string {
+  return value
+    .replace(/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g, '[redacted email]')
+    .replace(
+      /\b(?:\+?\d{1,2}[ -]?)?(?:\(?\d{3}\)?[ -]?)\d{3}[ -]?\d{4}\b/g,
+      '[redacted phone]',
+    )
+    .replace(/\b(?:\d[ -]?){11,18}\d\b/g, '[redacted card]')
+    .replace(
+      /\b(?:visa|mastercard|amex|american express|discover)\b(?:[^\n\d]{0,24}\d{4})?/gi,
+      '[redacted payment method]',
+    )
+    .replace(
+      /\b(?:card|credit(?:\s+card)?|debit(?:\s+card)?|account|acct)\b[^\n\d]{0,24}(?:(?:x|\*)[ -]?){0,12}\d{4}\b/gi,
+      '[redacted payment detail]',
+    )
+    .replace(
+      /\b(?:ending(?:\s+in)?|last\s*(?:four|4))\s*[:#-]?\s*\d{4}\b/gi,
+      '[redacted payment detail]',
+    )
+    .replace(
+      /\b(?:order|receipt|transaction|txn|reference|ref|authorization|authorisation|auth|approval|customer|member(?:ship)?|loyalty|account|acct)\s*(?:(?:id|no\.?|number)\s*)?(?:[:#=-]{1,2}\s*|\s+)(?=[a-z0-9*-]*\d)[a-z0-9*-]{3,}\b/gi,
+      '[redacted identifier]',
+    )
+    .replace(/(^|[^\d])(?:\d{1,4}[./-]){2}\d{2,4}/g, '$1[redacted date]')
+    .replace(
+      /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,)?\s+\d{2,4}\b/gi,
+      '[redacted date]',
+    )
+    .replace(
+      /\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{2,4}\b/gi,
+      '[redacted date]',
+    );
 }
 
 function receiptEvidenceByteLength(

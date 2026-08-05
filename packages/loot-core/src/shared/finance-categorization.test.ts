@@ -161,10 +161,7 @@ describe('finance categorization', () => {
       fingerprint: 'receipt-fingerprint',
       id: 'receipt-id',
       merchant: 'Corner Shop',
-      lineItems: Array.from({ length: 41 }, (_, index) => ({
-        amount: index + 100,
-        label: `Item ${index}`,
-      })),
+      transcript: '🍎'.repeat(5_000),
       transcriptRevision: 1,
     });
     expect(evidence).toMatchObject({
@@ -172,7 +169,11 @@ describe('finance categorization', () => {
       merchant: 'Corner Shop',
       truncated: true,
     });
-    expect(evidence?.lineItems).toHaveLength(40);
+    expect(
+      new TextEncoder().encode(JSON.stringify(evidence)).byteLength,
+    ).toBeLessThanOrEqual(8 * 1024);
+    expect(Array.from(evidence?.transcript ?? '').length).toBeGreaterThan(0);
+    expect(Array.from(evidence?.transcript ?? '').length).toBeLessThan(4_000);
 
     const candidate = withCategorizationReceiptEvidence(
       providerCandidate('receipt'),
@@ -180,15 +181,15 @@ describe('finance categorization', () => {
         fingerprint: 'receipt-fingerprint',
         id: 'receipt-id',
         merchant: 'Corner Shop',
+        transcript: 'Apples, milk, and bread',
         transcriptRevision: 1,
-        lineItems: [{ amount: 499, label: 'Apples' }],
       },
     );
     const providerPayload = toCategorizationGatewayCandidate(candidate);
     expect(providerPayload).toMatchObject({
       receipt: {
-        line_items: [{ amount: 499, label: 'Apples' }],
         merchant: 'Corner Shop',
+        transcript: 'Apples, milk, and bread',
       },
     });
     expect(JSON.stringify(providerPayload)).not.toContain(

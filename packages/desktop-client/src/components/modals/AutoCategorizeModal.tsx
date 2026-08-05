@@ -627,11 +627,11 @@ export function AutoCategorizeModal({
                       names, your selected category names and guidance, and your
                       custom instruction will be sent to OpenAI to generate
                       suggestions. For linked reviewed receipts, the merchant
-                      and up to 40 item labels and amounts may also be sent. No
-                      receipt image, full receipt transcript, payment detail,
-                      OpenAI API key, Actual transaction IDs, notes,
-                      attachments, balances, budget name, or unchecked
-                      transactions are sent.
+                      and up to 4,000 characters of the reviewed OCR transcript
+                      (never more than 8 KiB) may also be sent. No receipt
+                      image, payment detail, OpenAI API key, Actual transaction
+                      IDs, notes, attachments, balances, budget name, or
+                      unchecked transactions are sent.
                     </Trans>
                   ) : (
                     <Trans>
@@ -639,11 +639,11 @@ export function AutoCategorizeModal({
                       names, your selected category names and guidance, and your
                       custom instruction will be sent to OpenAI to generate
                       suggestions. For linked reviewed receipts, the merchant
-                      and up to 40 item labels and amounts may also be sent. No
-                      receipt image, full receipt transcript, payment detail,
-                      OpenAI API key, Actual transaction IDs, notes,
-                      attachments, balances, budget name, or transactions
-                      outside this chosen scope are sent.
+                      and up to 4,000 characters of the reviewed OCR transcript
+                      (never more than 8 KiB) may also be sent. No receipt
+                      image, payment detail, OpenAI API key, Actual transaction
+                      IDs, notes, attachments, balances, budget name, or
+                      transactions outside this chosen scope are sent.
                     </Trans>
                   )}
                 </Information>

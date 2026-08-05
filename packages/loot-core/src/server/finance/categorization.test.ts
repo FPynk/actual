@@ -220,14 +220,15 @@ describe('applyFinanceCategorization', () => {
         id: 'receipt-id',
         line_items: JSON.stringify([{ label: 'Milk', amount: 500 }]),
         merchant: 'Market',
+        transcript: 'Changed reviewed receipt transcript',
         transcript_revision: 2,
       } as never,
     ]);
     const originalEvidence = createCategorizationReceiptEvidence({
       fingerprint: 'original-receipt',
       id: 'receipt-id',
-      lineItems: [{ amount: 500, label: 'Milk' }],
       merchant: 'Market',
+      transcript: 'Original reviewed receipt transcript',
       transcriptRevision: 1,
     });
     if (!originalEvidence) throw new Error('Expected receipt evidence');

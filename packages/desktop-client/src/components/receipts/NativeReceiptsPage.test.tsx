@@ -271,7 +271,7 @@ describe('NativeReceiptsPage', () => {
     ).toBeInTheDocument();
   });
 
-  it('keeps review fields editable, shows the locale placeholder and can continue manually after failure', async () => {
+  it('keeps the supported review fields editable and can continue manually after failure', async () => {
     const user = userEvent.setup();
     mocks.testOcrClient.extractReceiptText.mockRejectedValueOnce(
       new Error('unreadable'),
@@ -290,6 +290,14 @@ describe('NativeReceiptsPage', () => {
       'placeholder',
       'MM/DD/YYYY',
     );
+    expect(screen.getByLabelText('Total')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Time')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Subtotal')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tax')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tip')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add line item' }),
+    ).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('Merchant'), 'Manual Market');
     await user.type(
       screen.getByLabelText('OCR transcript'),
@@ -341,6 +349,44 @@ describe('NativeReceiptsPage', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:retry.png');
   });
 
+  it('loads legacy receipts without displaying their obsolete fields or warnings', async () => {
+    const user = userEvent.setup();
+    mocks.send.mockImplementation(name => {
+      if (name === 'receipts/list') {
+        return Promise.resolve([
+          savedReceipt({
+            warnings: ['line-items-truncated', 'low-confidence-merchant'],
+          }),
+        ]);
+      }
+      if (name === 'receipts/match-candidates') {
+        return Promise.resolve({
+          candidates: [],
+          exclusions: [],
+          manualSelectionReasons: [],
+          preselectedTransactionId: null,
+        });
+      }
+      throw new Error(`Unexpected handler ${name}`);
+    });
+    render(<NativeReceiptsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: /Neighborhood Market/ }),
+    );
+
+    expect(screen.getByDisplayValue('Neighborhood Market')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Time')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Subtotal')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tax')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tip')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add line item' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('line-items-truncated')).not.toBeInTheDocument();
+    expect(screen.getByText('low-confidence-merchant')).toBeInTheDocument();
+  });
+
   it('saves reviewed text, then explicitly attaches it and surfaces conflict responses', async () => {
     const user = userEvent.setup();
     const receipt = savedReceipt();
@@ -390,6 +436,18 @@ describe('NativeReceiptsPage', () => {
     await screen.findByDisplayValue('Neighborhood Market');
     await user.click(screen.getByRole('button', { name: 'Save receipt' }));
     await screen.findByText('Receipt text saved locally.');
+    expect(mocks.send).toHaveBeenCalledWith(
+      'receipts/save-reviewed',
+      expect.objectContaining({
+        receipt: expect.objectContaining({
+          lineItems: [],
+          purchaseTime: null,
+          subtotal: null,
+          tax: null,
+          tip: null,
+        }),
+      }),
+    );
     expect(
       screen.getByText(
         'Saving stores the reviewed structured receipt fields and OCR transcript in this budget.',
@@ -471,13 +529,14 @@ describe('NativeReceiptsPage', () => {
     expect(screen.getByAltText('Receipt preview')).toHaveStyle({
       transform: 'rotate(90deg)',
     });
-    await user.click(screen.getByRole('button', { name: 'Add line item' }));
-    expect(screen.getByTestId('receipt-line-item-header')).toHaveStyle({
-      flexDirection: 'row',
-      pointerEvents: 'none',
-    });
-    expect(screen.getByLabelText('Description 2')).toBeInTheDocument();
     expect(screen.getByLabelText('Total')).toHaveStyle({ textAlign: 'right' });
+    expect(screen.queryByLabelText('Time')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Subtotal')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tax')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tip')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add line item' }),
+    ).not.toBeInTheDocument();
 
     desktop.unmount();
     Object.defineProperty(window, 'innerWidth', {
@@ -493,8 +552,6 @@ describe('NativeReceiptsPage', () => {
     await screen.findByDisplayValue('Neighborhood Market');
 
     expect(screen.getByTestId('receipt-metadata-fields')).toBeVisible();
-    await user.click(screen.getByRole('button', { name: 'Add line item' }));
-    expect(screen.queryByTestId('receipt-line-item-header')).toBeNull();
     await user.clear(screen.getByLabelText('Total'));
     await user.type(screen.getByLabelText('Total'), '-1');
     expect(screen.getByLabelText('Total')).toHaveAttribute(
@@ -503,6 +560,58 @@ describe('NativeReceiptsPage', () => {
     );
     expect(
       screen.getByText('Enter a valid value before saving.'),
+    ).toBeInTheDocument();
+  });
+
+  it('warns specifically when OCR does not find a total', async () => {
+    mocks.testOcrClient.extractReceiptText.mockResolvedValue(
+      ocrDraft({
+        fieldConfidence: {},
+        total: null,
+        warnings: ['missing-total'],
+      }),
+    );
+    render(<NativeReceiptsPage />);
+
+    fireEvent.change(screen.getByLabelText('Upload receipt images'), {
+      target: {
+        files: [
+          new File(['receipt'], 'missing-total.png', { type: 'image/png' }),
+        ],
+      },
+    });
+
+    await screen.findByDisplayValue('Neighborhood Market');
+    expect(
+      screen.getByText(
+        'OCR did not find a total. Enter and verify the receipt total.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('warns specifically when OCR is uncertain about a total', async () => {
+    mocks.testOcrClient.extractReceiptText.mockResolvedValue(
+      ocrDraft({
+        fieldConfidence: {},
+        total: null,
+        warnings: ['low-confidence-total'],
+      }),
+    );
+    render(<NativeReceiptsPage />);
+
+    fireEvent.change(screen.getByLabelText('Upload receipt images'), {
+      target: {
+        files: [
+          new File(['receipt'], 'uncertain-total.png', { type: 'image/png' }),
+        ],
+      },
+    });
+
+    await screen.findByDisplayValue('Neighborhood Market');
+    expect(
+      screen.getByText(
+        'OCR is uncertain about the total. Verify the receipt total.',
+      ),
     ).toBeInTheDocument();
   });
 });
