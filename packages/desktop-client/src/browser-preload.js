@@ -6,6 +6,7 @@ import { registerSW } from 'virtual:pwa-register';
 import packageJson from '../package.json';
 
 import SharedBrowserServerWorker from './shared-browser-server.ts?sharedworker';
+import { reloadAfterRemovingStaleServiceWorkers } from './util/browser-launch-recovery';
 
 const backendWorkerUrl = new URL('./browser-server.js', import.meta.url);
 
@@ -33,6 +34,20 @@ const ACTUAL_VERSION = Platform.isPlaywright
 const isOpenIdCallback = window.location.pathname
   .replace(/\/+$/, '')
   .endsWith('/openid-cb');
+
+const hasScheduledServiceWorkerCleanupReload =
+  await reloadAfterRemovingStaleServiceWorkers({
+    isDevelopment: IS_DEV,
+    location: window.location,
+    serviceWorker: window.navigator.serviceWorker,
+    sessionStorage: window.sessionStorage,
+  });
+
+if (hasScheduledServiceWorkerCleanupReload) {
+  await new Promise(() => {
+    // The reload replaces this document before the backend can start.
+  });
+}
 
 // *** Start the backend ***
 //

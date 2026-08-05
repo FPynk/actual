@@ -24,6 +24,96 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { stagePaddleOcrAssets } from './bin/stage-paddleocr-assets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const actualLaunchBootstrapHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Opening Actual</title>
+  </head>
+  <body>
+    <main id="actual-launch-bootstrap">
+      <p id="actual-launch-status" role="status">Opening Actual…</p>
+      <p><a id="actual-launch-fallback" href="/">Open Actual</a></p>
+    </main>
+    <script>
+      (() => {
+        const status = document.getElementById('actual-launch-status');
+        const fallback = document.getElementById('actual-launch-fallback');
+        const nonce = new URLSearchParams(window.location.search).get('actual-launch');
+        const target = new URL('/', window.location.origin);
+        if (nonce) target.searchParams.set('actual-launch', nonce);
+        fallback.href = target.href;
+
+        function continueToActual() {
+          try {
+            window.location.replace(target.href);
+          } catch {
+            status.textContent = 'Could not continue automatically. Open Actual to continue.';
+          }
+        }
+
+        function isLoopbackHostname(hostname) {
+          return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
+        }
+
+        function hasCleanupGuard(key) {
+          try {
+            return window.sessionStorage.getItem(key) != null;
+          } catch {
+            return false;
+          }
+        }
+
+        function setCleanupGuard(key) {
+          try {
+            window.sessionStorage.setItem(key, 'true');
+          } catch {
+            // Storage can be unavailable in restricted browser modes.
+          }
+        }
+
+        if (!nonce || !isLoopbackHostname(window.location.hostname)) {
+          continueToActual();
+          return;
+        }
+
+        const cleanupGuardKey = \`actual-launch-service-worker-cleanup:\${nonce}\`;
+        if (hasCleanupGuard(cleanupGuardKey) || !window.navigator.serviceWorker?.getRegistrations) {
+          continueToActual();
+          return;
+        }
+
+        window.navigator.serviceWorker
+          .getRegistrations()
+          .then(registrations =>
+            Promise.allSettled(
+              registrations
+                .filter(registration => {
+                  try {
+                    return new URL(registration.scope).origin === window.location.origin;
+                  } catch {
+                    return false;
+                  }
+                })
+                .map(registration => registration.unregister()),
+            ),
+          )
+          .then(outcomes => {
+            if (
+              outcomes.length > 0 &&
+              outcomes.every(outcome => outcome.status === 'fulfilled') &&
+              outcomes.some(outcome => outcome.status === 'fulfilled' && outcome.value)
+            ) {
+              setCleanupGuard(cleanupGuardKey);
+            }
+          })
+          .catch(() => undefined)
+          .finally(continueToActual);
+      })();
+    </script>
+  </body>
+</html>`;
 // Compile every workspace package that ships React components. Workspace
 // imports resolve to their real paths under packages/<name>/src, so any
 // current or future package flowing through this build is picked up
@@ -194,6 +284,12 @@ const lootCoreBackend = (): Plugin => ({
 
     server.middlewares.use('/kcab', (req, res, next) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.pathname === '/actual-launch.html') {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(actualLaunchBootstrapHtml);
+        return;
+      }
       const filePath = path.join(lootCoreOutDir, url.pathname);
       if (!filePath.startsWith(lootCoreOutDir + path.sep)) return next();
       const stream = createReadStream(filePath);

@@ -106,6 +106,146 @@ async function expectModelPickerLayout(page: Page) {
 const longCompatibleModelId =
   'gpt-compatible-model-with-a-very-long-provider-generated-identifier';
 
+const syntheticReceiptPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL9zQAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+async function openManualReceiptReview(page: Page, fileName: string) {
+  await page.goto('/receipts');
+  await expect(page.getByTestId('native-receipts-page')).toBeVisible();
+  await page.getByLabel('Upload receipt images').setInputFiles({
+    buffer: syntheticReceiptPng,
+    mimeType: 'image/png',
+    name: fileName,
+  });
+  const cancelProcessing = page.getByRole('button', {
+    name: 'Cancel current receipt',
+  });
+  const enterManually = page.getByRole('button', {
+    name: 'Enter receipt text manually',
+  });
+  const merchant = page.getByLabel('Merchant');
+  await expect(cancelProcessing.or(enterManually).or(merchant)).toBeVisible();
+  if (await cancelProcessing.isVisible()) {
+    await cancelProcessing
+      .click({ force: true, timeout: 1_000 })
+      .catch(() => undefined);
+  }
+  if (!(await merchant.isVisible())) {
+    await expect(enterManually.or(merchant)).toBeVisible();
+    if (await enterManually.isVisible()) {
+      await enterManually.click();
+    }
+  }
+  await expect(merchant).toBeVisible();
+  await merchant.fill('Manual layout market');
+  await page.getByLabel('OCR transcript').fill('Synthetic receipt transcript');
+  await page.getByRole('button', { name: 'Add line item' }).click();
+  await page.getByLabel('Description 1').fill('First synthetic item');
+  await page.getByLabel('Quantity').fill('1');
+  await page.getByLabel('Amount').fill('2.50');
+  await page.getByRole('button', { name: 'Add line item' }).click();
+  await page.getByLabel('Description 2').fill('Second synthetic item');
+}
+
+async function expectReceiptReviewLayout(page: Page, viewportWidth: number) {
+  const [dropzoneBox, queueRowBox, previewBox, metadataBox] = await Promise.all(
+    [
+      page.getByTestId('receipt-upload-dropzone').boundingBox(),
+      page.getByTestId('receipt-queue-row').boundingBox(),
+      page.getByTestId('receipt-preview-card').boundingBox(),
+      page.getByTestId('receipt-metadata-fields').boundingBox(),
+    ],
+  );
+  if (!dropzoneBox || !queueRowBox || !previewBox || !metadataBox) {
+    throw new Error(
+      'expected all receipt review sections to have layout boxes',
+    );
+  }
+  expect(dropzoneBox.y + dropzoneBox.height).toBeLessThanOrEqual(
+    queueRowBox.y + 1,
+  );
+  expect(queueRowBox.y + queueRowBox.height).toBeLessThanOrEqual(
+    previewBox.y + 1,
+  );
+  expect(previewBox.y + previewBox.height).toBeLessThanOrEqual(
+    metadataBox.y + 1,
+  );
+  expect(queueRowBox.height).toBeGreaterThanOrEqual(44);
+  expect(queueRowBox.x + queueRowBox.width).toBeLessThanOrEqual(
+    viewportWidth + 1,
+  );
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(viewportWidth + 1);
+
+  const [descriptionBox, quantityBox] = await Promise.all([
+    page.getByLabel('Description 1').boundingBox(),
+    page.getByLabel('Quantity').first().boundingBox(),
+  ]);
+  if (!descriptionBox || !quantityBox) {
+    throw new Error('expected first line-item controls to have layout boxes');
+  }
+  if (viewportWidth < 700) {
+    expect(quantityBox.y).toBeGreaterThanOrEqual(
+      descriptionBox.y + descriptionBox.height,
+    );
+  } else {
+    expect(Math.abs(quantityBox.y - descriptionBox.y)).toBeLessThanOrEqual(2);
+  }
+
+  const transcript = page.getByLabel('OCR transcript');
+  await transcript.scrollIntoViewIfNeeded();
+  await expect(transcript).toBeVisible();
+  const scrollContainerDimensions = await transcript.evaluate(element => {
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      const overflowY = getComputedStyle(ancestor).overflowY;
+      if (
+        (overflowY === 'auto' || overflowY === 'scroll') &&
+        ancestor.scrollHeight > ancestor.clientHeight
+      ) {
+        return {
+          clientHeight: ancestor.clientHeight,
+          scrollHeight: ancestor.scrollHeight,
+          scrollTop: ancestor.scrollTop,
+        };
+      }
+      ancestor = ancestor.parentElement;
+    }
+    const scrollingElement = document.scrollingElement;
+    return scrollingElement
+      ? {
+          clientHeight: scrollingElement.clientHeight,
+          scrollHeight: scrollingElement.scrollHeight,
+          scrollTop: scrollingElement.scrollTop,
+        }
+      : null;
+  });
+  expect(scrollContainerDimensions).not.toBeNull();
+  expect(scrollContainerDimensions?.scrollHeight).toBeGreaterThan(
+    scrollContainerDimensions?.clientHeight ?? 0,
+  );
+  expect(scrollContainerDimensions?.scrollTop).toBeGreaterThan(0);
+
+  const saveReceipt = page.getByRole('button', { name: 'Save receipt' });
+  const [transcriptBox, saveReceiptBox] = await Promise.all([
+    transcript.boundingBox(),
+    saveReceipt.boundingBox(),
+  ]);
+  if (!transcriptBox || !saveReceiptBox) {
+    throw new Error(
+      'expected transcript and save receipt action to have layout boxes',
+    );
+  }
+  expect(saveReceiptBox.y).toBeGreaterThanOrEqual(
+    transcriptBox.y + transcriptBox.height,
+  );
+  await saveReceipt.scrollIntoViewIfNeeded();
+  await expect(saveReceipt).toBeVisible();
+}
+
 async function configureOpenAiCategorizationSettings(
   page: Page,
   selectedCategoryCount: number,
@@ -520,6 +660,14 @@ test.describe('Native finance workflows', () => {
     expect(reviewBox.x + reviewBox.width).toBeLessThanOrEqual(
       dialogBox.x + dialogBox.width + 1,
     );
+  });
+
+  test('keeps manual receipt review sections readable and scrollable at desktop and narrow widths', async () => {
+    for (const viewportWidth of [1234, 375]) {
+      await page.setViewportSize({ width: viewportWidth, height: 700 });
+      await openManualReceiptReview(page, `synthetic-${viewportWidth}.png`);
+      await expectReceiptReviewLayout(page, viewportWidth);
+    }
   });
 
   test('keeps long model-picker rows readable at narrow widths and browser zoom', async () => {

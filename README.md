@@ -163,7 +163,7 @@ longest edge. If a photo is sideways, use **Rotate left** or **Rotate right**
 and rerun the same local OCR. No API key is needed for receipt OCR.
 
 Review and correct the merchant, date, total, line items, and transcript before
-choosing **Save receipt text**. Saving keeps only the reviewed text and fields
+choosing **Save receipt**. Saving keeps only the reviewed text and fields
 with the budget, so they are included in the normal Actual backup and sync
 workflow. The original image, object URL, and OCR boxes are temporary: Actual
 does not save, sync, back up, log, or attach them to transaction Notes.

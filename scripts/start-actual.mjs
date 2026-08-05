@@ -9,7 +9,37 @@ import { fileURLToPath } from 'node:url';
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const actualUrl = 'http://127.0.0.1:5006';
 const readinessTimeoutMilliseconds = 60_000;
+const readinessRetryMilliseconds = 250;
 const shutdownGraceMilliseconds = 3_000;
+
+const readinessEndpoints = [
+  {
+    name: 'Actual server',
+    path: '/info',
+    validate: validateInfoResponse,
+  },
+  {
+    name: 'Actual launch bootstrap',
+    path: '/kcab/actual-launch.html',
+    validate: validateLaunchBootstrapResponse,
+  },
+  {
+    name: 'Actual frontend',
+    path: '/',
+    validate: validateFrontendResponse,
+  },
+  {
+    name: 'Actual worker',
+    path: '/kcab/kcab.worker.dev.js',
+    validate: response => validateJavaScriptResponse(response, 'var backend'),
+  },
+  {
+    name: 'Actual plugin worker',
+    path: '/service-worker/plugin-sw.js',
+    validate: response =>
+      validateJavaScriptResponse(response, 'Plugins Worker installing'),
+  },
+];
 
 export class LauncherStoppedError extends Error {
   constructor() {
@@ -25,6 +55,128 @@ export function parseArguments(arguments_) {
     throw new Error(`Unknown argument: ${unknown.join(', ')}`);
   }
   return { noOpen };
+}
+
+export function launchUrl(nonce) {
+  if (!nonce) throw new Error('A browser launch nonce is required.');
+  const url = new URL('/kcab/actual-launch.html', actualUrl);
+  url.searchParams.set('actual-launch', nonce);
+  return url.href;
+}
+
+function responseHeader(response, name) {
+  return response.headers?.get?.(name) ?? '';
+}
+
+function hasJavaScriptMimeType(contentType) {
+  return /(?:application|text)\/(?:javascript|ecmascript)|application\/x-javascript/i.test(
+    contentType,
+  );
+}
+
+function validateIsolationHeaders(response) {
+  if (
+    responseHeader(response, 'cross-origin-opener-policy') !== 'same-origin'
+  ) {
+    return 'missing Cross-Origin-Opener-Policy: same-origin';
+  }
+  if (
+    responseHeader(response, 'cross-origin-embedder-policy') !== 'require-corp'
+  ) {
+    return 'missing Cross-Origin-Embedder-Policy: require-corp';
+  }
+  return undefined;
+}
+
+async function responseText(response) {
+  if (typeof response.text !== 'function') {
+    throw new Error('response did not provide a body');
+  }
+  return response.text();
+}
+
+async function validateInfoResponse(response) {
+  if (!response.ok) return `HTTP ${response.status}`;
+  try {
+    const info = JSON.parse(await responseText(response));
+    if (info?.build?.name !== '@actual-app/sync-server') {
+      return 'JSON response was not the Actual sync server info payload';
+    }
+    if (typeof info.build.version !== 'string' || !info.build.version) {
+      return 'Actual sync server info payload did not include a build version';
+    }
+  } catch {
+    return 'expected a valid Actual sync server JSON response';
+  }
+  return undefined;
+}
+
+async function validateFrontendResponse(response) {
+  if (!response.ok) return `HTTP ${response.status}`;
+  const isolationError = validateIsolationHeaders(response);
+  if (isolationError) return isolationError;
+  const contentType = responseHeader(response, 'content-type');
+  if (!contentType.toLowerCase().includes('text/html')) {
+    return `expected HTML entry, received ${contentType || 'no content type'}`;
+  }
+  try {
+    const html = await responseText(response);
+    if (
+      !/<title>Actual<\/title>/i.test(html) ||
+      !/<div id="root"><\/div>/i.test(html) ||
+      !/\/@vite\/client/.test(html)
+    ) {
+      return 'HTML response was not the Actual Vite entry point';
+    }
+  } catch {
+    return 'could not read the Actual Vite HTML entry';
+  }
+  return undefined;
+}
+
+async function validateLaunchBootstrapResponse(response) {
+  if (!response.ok) return `HTTP ${response.status}`;
+  const isolationError = validateIsolationHeaders(response);
+  if (isolationError) return isolationError;
+  const contentType = responseHeader(response, 'content-type');
+  if (!contentType.toLowerCase().includes('text/html')) {
+    return `expected HTML bootstrap, received ${contentType || 'no content type'}`;
+  }
+  try {
+    const html = await responseText(response);
+    if (
+      !/id="actual-launch-bootstrap"/.test(html) ||
+      !/actual-launch-service-worker-cleanup:/.test(html) ||
+      !/location\.replace/.test(html)
+    ) {
+      return 'HTML response was not the Actual launch bootstrap';
+    }
+  } catch {
+    return 'could not read the Actual launch bootstrap';
+  }
+  return undefined;
+}
+
+async function validateJavaScriptResponse(response, marker) {
+  if (!response.ok) return `HTTP ${response.status}`;
+  const contentType = responseHeader(response, 'content-type');
+  if (!hasJavaScriptMimeType(contentType)) {
+    return `expected JavaScript MIME type, received ${contentType || 'no content type'}`;
+  }
+  try {
+    const body = await responseText(response);
+    const trimmedBody = body.trim();
+    if (!trimmedBody) return 'received an empty JavaScript response';
+    if (/^<(?:!doctype\b|html\b)/i.test(trimmedBody)) {
+      return 'received HTML instead of JavaScript';
+    }
+    if (!trimmedBody.includes(marker)) {
+      return 'JavaScript response was missing its expected Actual marker';
+    }
+  } catch {
+    return 'could not read the JavaScript response';
+  }
+  return undefined;
 }
 
 export function yarnExecutable() {
@@ -200,6 +352,7 @@ export class ActualLauncher {
     sleep = milliseconds =>
       new Promise(resolve => setTimeout(resolve, milliseconds)),
     now = () => Date.now(),
+    createLaunchNonce,
     onFailure = () => undefined,
   } = {}) {
     this.platform = platform;
@@ -214,6 +367,7 @@ export class ActualLauncher {
     this.readinessTimeout = readinessTimeout;
     this.sleep = sleep;
     this.now = now;
+    this.createLaunchNonce = createLaunchNonce ?? (() => String(this.now()));
     this.onFailure = onFailure;
     this.paths = persistentPaths(environment, platform);
     this.environment = launcherEnvironment(environment, this.paths);
@@ -256,7 +410,7 @@ export class ActualLauncher {
       }
 
       await this.waitForReadiness();
-      if (!noOpen) await this.openBrowser(actualUrl);
+      if (!noOpen) await this.openBrowser(launchUrl(this.createLaunchNonce()));
       this.output.write(
         `Actual is ready at ${actualUrl}. Press Ctrl+C to stop.\n`,
       );
@@ -339,24 +493,32 @@ export class ActualLauncher {
   }
 
   async waitForReadiness() {
-    await this.waitForUrl(`${actualUrl}/info`, 'Actual server');
-    await this.waitForUrl(`${actualUrl}/`, 'Actual frontend');
-    await this.waitForUrl(
-      `${actualUrl}/kcab/kcab.worker.dev.js`,
-      'Actual worker',
-    );
-    await this.waitForUrl(
-      `${actualUrl}/service-worker/plugin-sw.js`,
-      'Actual plugin worker',
+    const deadline = this.now() + this.readinessTimeout;
+    let consecutiveSuccessfulRounds = 0;
+    let lastError = 'not responding';
+
+    while (this.now() < deadline) {
+      this.throwIfStopping();
+      const result = await this.checkReadinessRound();
+      if (result.ok) {
+        consecutiveSuccessfulRounds++;
+        if (consecutiveSuccessfulRounds === 2) return;
+      } else {
+        consecutiveSuccessfulRounds = 0;
+        lastError = result.error;
+      }
+
+      if (this.now() < deadline) await this.sleep(readinessRetryMilliseconds);
+    }
+
+    throw new Error(
+      `Actual readiness did not stabilize within ${this.readinessTimeout / 1000} seconds (${lastError}). Check the prefixed service output above.`,
     );
   }
 
-  async waitForUrl(url, name) {
-    const deadline = this.now() + this.readinessTimeout;
-    let lastError = 'not responding';
-    while (this.now() < deadline) {
-      if (this.shutdownRequested) throw new LauncherStoppedError();
-      if (this.failure) throw this.failure;
+  async checkReadinessRound() {
+    for (const endpoint of readinessEndpoints) {
+      const url = `${actualUrl}${endpoint.path}`;
       try {
         const response = await this.fetchImplementation(url, {
           signal: AbortSignal.any([
@@ -364,18 +526,16 @@ export class ActualLauncher {
             AbortSignal.timeout(2_000),
           ]),
         });
-        if (response.ok) return;
-        lastError = `HTTP ${response.status}`;
-      } catch (error) {
-        if (this.shutdownRequested) throw new LauncherStoppedError();
-        if (this.failure) throw this.failure;
-        lastError = error instanceof Error ? error.message : String(error);
+        const validationError = await endpoint.validate(response);
+        if (validationError) {
+          return { ok: false, error: `${endpoint.name}: ${validationError}` };
+        }
+      } catch {
+        this.throwIfStopping();
+        return { ok: false, error: `${endpoint.name}: request failed` };
       }
-      await this.sleep(250);
     }
-    throw new Error(
-      `${name} was not ready within ${this.readinessTimeout / 1000} seconds (${lastError}). Check the prefixed service output above.`,
-    );
+    return { ok: true };
   }
 
   async fail(message) {
