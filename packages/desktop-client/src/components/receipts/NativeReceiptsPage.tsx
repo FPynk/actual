@@ -4,6 +4,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import { Button } from '@actual-app/components/button';
+import { useResponsive } from '@actual-app/components/hooks/useResponsive';
 import { Input } from '@actual-app/components/input';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
@@ -80,9 +81,15 @@ type ReceiptQueueItem = {
 
 const acceptedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const maximumQueueSize = 10;
+const receiptMetadataFieldStyle = {
+  flex: '1 1 180px',
+  minHeight: 72,
+  minWidth: 0,
+};
 
 export function NativeReceiptsPage() {
   const { t } = useTranslation();
+  const { isNarrowWidth } = useResponsive();
   const [searchParams] = useSearchParams();
   const [budgetId] = useMetadataPref('id');
   const dateFormat = useDateFormat() || 'MM/dd/yyyy';
@@ -566,11 +573,15 @@ export function NativeReceiptsPage() {
   return (
     <Page header={t('Receipts')}>
       <View
+        data-testid="native-receipts-page"
         style={{
           alignItems: 'stretch',
+          flexShrink: 0,
           gap: 16,
           margin: '20px auto',
           maxWidth: 1180,
+          minHeight: '100%',
+          padding: '0 16px 32px',
           width: '100%',
         }}
       >
@@ -594,9 +605,9 @@ export function NativeReceiptsPage() {
           }
         />
         <View
-          role="button"
+          data-testid="receipt-upload-dropzone"
+          role="region"
           aria-label={t('Receipt image drop area')}
-          tabIndex={0}
           style={{
             alignItems: 'center',
             backgroundColor: isDragging
@@ -604,10 +615,14 @@ export function NativeReceiptsPage() {
               : theme.tableBackground,
             border: `2px dashed ${theme.tableBorder}`,
             borderRadius: 6,
-            gap: 8,
-            padding: 20,
+            gap: 6,
+            minHeight: 88,
+            padding: 12,
+            '&:focus-visible': {
+              outline: `3px solid ${theme.noticeText}`,
+              outlineOffset: 3,
+            },
           }}
-          onClick={() => fileInputRef.current?.click()}
           onDragEnter={event => {
             event.preventDefault();
             setIsDragging(true);
@@ -619,12 +634,6 @@ export function NativeReceiptsPage() {
             setIsDragging(false);
             addFiles(Array.from(event.dataTransfer.files));
           }}
-          onKeyDown={event => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              fileInputRef.current?.click();
-            }
-          }}
         >
           <Button onPress={() => fileInputRef.current?.click()}>
             <Trans>Choose receipt images</Trans>
@@ -635,8 +644,17 @@ export function NativeReceiptsPage() {
         </View>
 
         {queue.length > 0 && (
-          <View style={{ alignItems: 'stretch', gap: 8 }}>
-            <Text role="status" style={{ fontWeight: 600 }}>
+          <View
+            role="region"
+            aria-labelledby="receipt-queue-heading"
+            style={{ alignItems: 'stretch', flexShrink: 0, gap: 8 }}
+          >
+            <Text
+              id="receipt-queue-heading"
+              role="status"
+              aria-live="polite"
+              style={{ fontWeight: 600 }}
+            >
               {t('Receipt queue: {{completed}} of {{total}} completed', {
                 completed: completedCount,
                 total: queue.length,
@@ -647,64 +665,146 @@ export function NativeReceiptsPage() {
               style={{
                 border: `1px solid ${theme.tableBorder}`,
                 borderRadius: 6,
-                maxHeight: 230,
+                maxHeight: 300,
                 overflowY: 'auto',
               }}
             >
-              {queue.map(item => (
+              {!isNarrowWidth && (
                 <View
-                  key={item.id}
+                  aria-hidden="true"
                   style={{
                     alignItems: 'center',
-                    borderBottom: `1px solid ${theme.tableBorder}`,
+                    color: theme.pageTextSubdued,
                     flexDirection: 'row',
+                    fontSize: 12,
+                    fontWeight: 600,
                     gap: 8,
-                    padding: 8,
+                    minHeight: 28,
+                    padding: '8px 12px',
+                    pointerEvents: 'none',
                   }}
                 >
-                  <Button
-                    variant="bare"
-                    onPress={() => {
-                      setSelectedQueueId(item.id);
-                      setSelectedReceiptId(null);
-                      setSavedReceiptForm(null);
-                    }}
+                  <Text style={{ flex: 1, minWidth: 0 }}>
+                    <Trans>File name</Trans>
+                  </Text>
+                  <Text style={{ width: 110 }}>
+                    <Trans>Status</Trans>
+                  </Text>
+                  <Text style={{ minWidth: 60 }}>
+                    <Trans>Actions</Trans>
+                  </Text>
+                </View>
+              )}
+              {queue.map(item => (
+                <View
+                  data-testid="receipt-queue-row"
+                  key={item.id}
+                  style={{
+                    alignItems: isNarrowWidth ? 'stretch' : 'center',
+                    backgroundColor:
+                      selectedQueueId === item.id
+                        ? theme.tableRowBackgroundHover
+                        : undefined,
+                    borderBottom: `1px solid ${theme.tableBorder}`,
+                    flexDirection: isNarrowWidth ? 'column' : 'row',
+                    flexShrink: 0,
+                    gap: 8,
+                    minHeight: 44,
+                    padding: '6px 12px',
+                  }}
+                >
+                  <View
                     style={{
                       flex: 1,
-                      justifyContent: 'flex-start',
                       minWidth: 0,
                     }}
                   >
-                    <Text
-                      style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    <Button
+                      variant="bare"
+                      aria-pressed={selectedQueueId === item.id}
+                      onPress={() => {
+                        setSelectedQueueId(item.id);
+                        setSelectedReceiptId(null);
+                        setSavedReceiptForm(null);
+                      }}
+                      style={{
+                        justifyContent: 'flex-start',
+                        minHeight: 44,
+                        minWidth: 0,
+                        width: '100%',
+                      }}
                     >
-                      {item.name}
-                    </Text>
-                  </Button>
-                  <Text style={{ color: theme.pageTextSubdued }}>
+                      <Text
+                        style={{
+                          overflow: 'hidden',
+                          textAlign: 'left',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {item.name}
+                      </Text>
+                    </Button>
+                  </View>
+                  <Text
+                    aria-live="polite"
+                    style={{
+                      color: theme.pageTextSubdued,
+                      width: isNarrowWidth ? undefined : 110,
+                    }}
+                  >
                     {queueStatusLabel(item.status, t)}
                   </Text>
-                  {item.status === 'processing' && (
-                    <Button
-                      variant="bare"
-                      onPress={() => cancelQueueItem(item)}
-                    >
-                      <Trans>Cancel</Trans>
-                    </Button>
-                  )}
-                  {['cancelled', 'failed'].includes(item.status) && (
-                    <Button variant="bare" onPress={() => retryQueueItem(item)}>
-                      <Trans>Retry</Trans>
-                    </Button>
-                  )}
-                  {item.status !== 'processing' && (
-                    <Button
-                      variant="bare"
-                      onPress={() => removeQueueItem(item)}
-                    >
-                      <Trans>Remove</Trans>
-                    </Button>
-                  )}
+                  <View
+                    style={{
+                      alignItems: 'center',
+                      display: 'flex',
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: 4,
+                      justifyContent: isNarrowWidth ? 'flex-start' : 'flex-end',
+                    }}
+                  >
+                    {item.status === 'processing' && (
+                      <Button
+                        variant="bare"
+                        aria-label={t('Cancel processing {{name}}', {
+                          name: item.name,
+                        })}
+                        style={{ minHeight: 44 }}
+                        onPress={() => cancelQueueItem(item)}
+                      >
+                        <Trans>Cancel</Trans>
+                      </Button>
+                    )}
+                    {['cancelled', 'failed'].includes(item.status) && (
+                      <Button
+                        variant="bare"
+                        aria-label={t('Retry processing {{name}}', {
+                          name: item.name,
+                        })}
+                        style={{ minHeight: 44 }}
+                        onPress={() => retryQueueItem(item)}
+                      >
+                        <Trans>Retry</Trans>
+                      </Button>
+                    )}
+                    {item.status !== 'processing' && (
+                      <Button
+                        variant="bare"
+                        aria-label={t(
+                          'Remove {{name}} from the receipt queue',
+                          {
+                            name: item.name,
+                          },
+                        )}
+                        style={{ minHeight: 44 }}
+                        onPress={() => removeQueueItem(item)}
+                      >
+                        <Trans>Remove</Trans>
+                      </Button>
+                    )}
+                  </View>
                 </View>
               ))}
             </View>
@@ -735,12 +835,25 @@ export function NativeReceiptsPage() {
         )}
 
         {message && (
-          <Text role="status" style={{ color: theme.noticeText }}>
+          <View
+            role="status"
+            aria-live="polite"
+            style={{
+              backgroundColor: theme.noticeBackground,
+              borderRadius: 6,
+              color: theme.noticeText,
+              padding: '10px 12px',
+            }}
+          >
             {message}
-          </Text>
+          </View>
         )}
         {error && (
-          <Text role="alert" style={{ color: theme.errorText }}>
+          <Text
+            role="alert"
+            aria-live="assertive"
+            style={{ color: theme.errorText }}
+          >
             {error}
           </Text>
         )}
@@ -770,32 +883,38 @@ export function NativeReceiptsPage() {
 
         {selectedForm &&
           (!selectedQueueItem || selectedQueueItem.status === 'completed') && (
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              <Button
-                variant="primary"
-                isDisabled={isSaving || !budgetId}
-                onPress={() => void saveSelectedReceipt()}
-              >
-                {selectedReceipt
-                  ? t('Save receipt changes')
-                  : t('Save receipt text')}
-              </Button>
-              {selectedReceipt?.transactionId && (
-                <Button onPress={() => void unlinkSelectedReceipt()}>
-                  <Trans>Unlink from transaction</Trans>
-                </Button>
-              )}
-              {selectedReceipt && (
+            <View style={{ alignItems: 'stretch', flexShrink: 0, gap: 8 }}>
+              <Text style={{ color: theme.pageTextSubdued }}>
+                <Trans>
+                  Saving stores the reviewed structured receipt fields and OCR
+                  transcript in this budget.
+                </Trans>
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                 <Button
-                  variant="bare"
-                  onPress={() => void deleteSelectedReceipt()}
-                  style={{ color: theme.errorText }}
+                  variant="primary"
+                  isDisabled={isSaving || !budgetId}
+                  onPress={() => void saveSelectedReceipt()}
                 >
-                  {confirmDeleteReceiptId === selectedReceipt.id
-                    ? t('Confirm delete receipt')
-                    : t('Delete receipt')}
+                  <Trans>Save receipt</Trans>
                 </Button>
-              )}
+                {selectedReceipt?.transactionId && (
+                  <Button onPress={() => void unlinkSelectedReceipt()}>
+                    <Trans>Unlink from transaction</Trans>
+                  </Button>
+                )}
+                {selectedReceipt && (
+                  <Button
+                    variant="bare"
+                    onPress={() => void deleteSelectedReceipt()}
+                    style={{ color: theme.errorText }}
+                  >
+                    {confirmDeleteReceiptId === selectedReceipt.id
+                      ? t('Confirm delete receipt')
+                      : t('Delete receipt')}
+                  </Button>
+                )}
+              </View>
             </View>
           )}
 
@@ -830,29 +949,66 @@ function QueueImageReview({
 }) {
   const { t } = useTranslation();
   return (
-    <View style={{ alignItems: 'stretch', gap: 10 }}>
+    <View
+      data-testid="receipt-preview-card"
+      role="region"
+      aria-labelledby="receipt-preview-heading"
+      style={{
+        alignItems: 'stretch',
+        backgroundColor: theme.tableBackground,
+        border: `1px solid ${theme.tableBorder}`,
+        borderRadius: 6,
+        flexShrink: 0,
+        gap: 12,
+        padding: 12,
+      }}
+    >
+      <View
+        style={{
+          alignItems: 'center',
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          gap: 8,
+          justifyContent: 'space-between',
+        }}
+      >
+        <Text id="receipt-preview-heading" style={{ fontWeight: 600 }}>
+          {item.name}
+        </Text>
+        <Text aria-live="polite" style={{ color: theme.pageTextSubdued }}>
+          {queueStatusLabel(item.status, t)}
+        </Text>
+      </View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
         <Button
           variant="bare"
+          aria-label={t('Rotate receipt left 90 degrees')}
           isDisabled={item.status === 'processing'}
+          style={{ minHeight: 44 }}
           onPress={() => onRotate(-90)}
         >
           <Trans>Rotate left and rerun</Trans>
         </Button>
         <Button
           variant="bare"
+          aria-label={t('Rotate receipt right 90 degrees')}
           isDisabled={item.status === 'processing'}
+          style={{ minHeight: 44 }}
           onPress={() => onRotate(90)}
         >
           <Trans>Rotate right and rerun</Trans>
         </Button>
         {item.status === 'processing' && (
-          <Button variant="bare" onPress={onCancel}>
+          <Button variant="bare" style={{ minHeight: 44 }} onPress={onCancel}>
             <Trans>Cancel current receipt</Trans>
           </Button>
         )}
         {['cancelled', 'failed'].includes(item.status) && (
-          <Button variant="bare" onPress={onContinueManually}>
+          <Button
+            variant="bare"
+            style={{ minHeight: 44 }}
+            onPress={onContinueManually}
+          >
             <Trans>Enter receipt text manually</Trans>
           </Button>
         )}
@@ -869,6 +1025,7 @@ function QueueImageReview({
             maxWidth: '100%',
             objectFit: 'contain',
             transform: `rotate(${item.rotationDegrees}deg)`,
+            transition: 'transform 150ms ease',
           }}
         />
       )}
@@ -904,13 +1061,14 @@ function ReceiptDetailsEditor({
   onChange: (form: ReceiptForm) => void;
 }) {
   const { t } = useTranslation();
+  const { isNarrowWidth } = useResponsive();
   const update = <Field extends keyof ReceiptForm>(
     field: Field,
     value: ReceiptForm[Field],
   ) => onChange({ ...form, [field]: value });
 
   return (
-    <View style={{ alignItems: 'stretch', gap: 12 }}>
+    <View style={{ alignItems: 'stretch', flexShrink: 0, gap: 12 }}>
       <Text style={{ fontWeight: 600 }}>
         <Trans>Review extracted receipt text</Trans>
       </Text>
@@ -921,64 +1079,139 @@ function ReceiptDetailsEditor({
         </Trans>
       </Text>
       <View
-        style={{
-          display: 'grid',
-          gap: 10,
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-        }}
+        data-testid="receipt-metadata-fields"
+        role="group"
+        aria-labelledby="receipt-metadata-heading"
+        style={{ alignItems: 'stretch', gap: 8 }}
       >
-        <ReceiptField
-          label={t('Merchant')}
-          value={form.merchant}
-          onChange={value => update('merchant', value)}
-        />
-        <ReceiptField
-          label={t('Date')}
-          placeholder={datePlaceholder}
-          value={form.purchaseDate}
-          onChange={value => update('purchaseDate', value)}
-        />
-        <ReceiptField
-          label={t('Time')}
-          placeholder="HH:MM"
-          value={form.purchaseTime}
-          onChange={value => update('purchaseTime', value)}
-        />
-        <ReceiptField
-          label={t('Total')}
-          inputMode="decimal"
-          value={form.total}
-          onChange={value => update('total', value)}
-        />
-        <ReceiptField
-          label={t('Currency')}
-          placeholder="USD"
-          value={form.currency}
-          onChange={value => update('currency', value.toUpperCase())}
-        />
-        <ReceiptField
-          label={t('Subtotal')}
-          inputMode="decimal"
-          value={form.subtotal}
-          onChange={value => update('subtotal', value)}
-        />
-        <ReceiptField
-          label={t('Tax')}
-          inputMode="decimal"
-          value={form.tax}
-          onChange={value => update('tax', value)}
-        />
-        <ReceiptField
-          label={t('Tip')}
-          inputMode="decimal"
-          value={form.tip}
-          onChange={value => update('tip', value)}
-        />
-        <ReceiptField
-          label={t('Payment hint')}
-          value={form.paymentHint}
-          onChange={value => update('paymentHint', value)}
-        />
+        <Text id="receipt-metadata-heading" style={{ fontWeight: 600 }}>
+          <Trans>Receipt details and payment</Trans>
+        </Text>
+        <View
+          style={{
+            alignItems: 'stretch',
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            gap: 10,
+          }}
+        >
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(form.fieldConfidence, 'merchant', false, t)}
+            label={t('Merchant')}
+            value={form.merchant}
+            onChange={value => update('merchant', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'purchaseDate',
+              false,
+              t,
+            )}
+            label={t('Date')}
+            placeholder={datePlaceholder}
+            value={form.purchaseDate}
+            onChange={value => update('purchaseDate', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'purchaseTime',
+              isInvalidReceiptField('purchaseTime', form.purchaseTime),
+              t,
+            )}
+            isInvalid={isInvalidReceiptField('purchaseTime', form.purchaseTime)}
+            label={t('Time')}
+            placeholder="HH:MM"
+            value={form.purchaseTime}
+            onChange={value => update('purchaseTime', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'total',
+              isInvalidReceiptField('total', form.total),
+              t,
+            )}
+            label={t('Total')}
+            inputMode="decimal"
+            isInvalid={isInvalidReceiptField('total', form.total)}
+            value={form.total}
+            onChange={value => update('total', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'currency',
+              isInvalidReceiptField('currency', form.currency),
+              t,
+            )}
+            label={t('Currency')}
+            isInvalid={isInvalidReceiptField('currency', form.currency)}
+            placeholder="USD"
+            value={form.currency}
+            onChange={value => update('currency', value.toUpperCase())}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'subtotal',
+              isInvalidReceiptField('subtotal', form.subtotal),
+              t,
+            )}
+            label={t('Subtotal')}
+            inputMode="decimal"
+            isInvalid={isInvalidReceiptField('subtotal', form.subtotal)}
+            value={form.subtotal}
+            onChange={value => update('subtotal', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'tax',
+              isInvalidReceiptField('tax', form.tax),
+              t,
+            )}
+            label={t('Tax')}
+            inputMode="decimal"
+            isInvalid={isInvalidReceiptField('tax', form.tax)}
+            value={form.tax}
+            onChange={value => update('tax', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'tip',
+              isInvalidReceiptField('tip', form.tip),
+              t,
+            )}
+            label={t('Tip')}
+            inputMode="decimal"
+            isInvalid={isInvalidReceiptField('tip', form.tip)}
+            value={form.tip}
+            onChange={value => update('tip', value)}
+          />
+          <ReceiptField
+            containerStyle={receiptMetadataFieldStyle}
+            hint={receiptFieldHint(
+              form.fieldConfidence,
+              'paymentHint',
+              false,
+              t,
+            )}
+            label={t('Payment hint')}
+            value={form.paymentHint}
+            onChange={value => update('paymentHint', value)}
+          />
+        </View>
       </View>
 
       {form.warnings.length > 0 && (
@@ -1044,12 +1277,20 @@ function ReceiptDetailsEditor({
         )}
 
       <View style={{ alignItems: 'stretch', gap: 8 }}>
-        <View style={{ alignItems: 'center', flexDirection: 'row', gap: 8 }}>
+        <View
+          style={{
+            alignItems: 'center',
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}
+        >
           <Text style={{ flex: 1, fontWeight: 600 }}>
             <Trans>Line items</Trans>
           </Text>
           <Button
             variant="bare"
+            style={{ minHeight: 44 }}
             onPress={() =>
               update('lineItems', [
                 ...form.lineItems,
@@ -1065,19 +1306,56 @@ function ReceiptDetailsEditor({
             <Trans>No line items were detected.</Trans>
           </Text>
         )}
+        {form.lineItems.length > 0 && !isNarrowWidth && (
+          <View
+            data-testid="receipt-line-item-header"
+            aria-hidden="true"
+            style={{
+              alignItems: 'center',
+              color: theme.pageTextSubdued,
+              flexDirection: 'row',
+              fontSize: 12,
+              fontWeight: 600,
+              gap: 8,
+              minHeight: 20,
+              pointerEvents: 'none',
+            }}
+          >
+            <Text style={{ flex: '1 1 180px', minWidth: 0 }}>
+              <Trans>Description</Trans>
+            </Text>
+            <Text style={{ minWidth: 80, width: 100 }}>
+              <Trans>Quantity</Trans>
+            </Text>
+            <Text style={{ minWidth: 96, width: 120 }}>
+              <Trans>Amount</Trans>
+            </Text>
+            <Text style={{ minWidth: 60 }}>
+              <Trans>Actions</Trans>
+            </Text>
+          </View>
+        )}
         {form.lineItems.map((lineItem, index) => (
           <View
             key={index}
             style={{
-              alignItems: 'flex-end',
-              display: 'grid',
+              alignItems: 'stretch',
+              flexDirection: isNarrowWidth ? 'column' : 'row',
+              flexShrink: 0,
+              flexWrap: isNarrowWidth ? undefined : 'wrap',
               gap: 8,
-              gridTemplateColumns: 'minmax(180px, 1fr) 100px 120px auto',
+              minHeight: isNarrowWidth ? 180 : 60,
+              padding: '8px 0',
             }}
           >
             <ReceiptField
+              containerStyle={{
+                flex: isNarrowWidth ? undefined : '1 1 180px',
+                minWidth: 0,
+              }}
               id={`receipt-line-item-${index}-label`}
-              label={t('Item {{number}}', { number: index + 1 })}
+              label={t('Description {{number}}', { number: index + 1 })}
+              isLabelVisuallyHidden={!isNarrowWidth}
               value={lineItem.label}
               onChange={value =>
                 update(
@@ -1090,9 +1368,14 @@ function ReceiptDetailsEditor({
               }
             />
             <ReceiptField
+              containerStyle={{
+                flex: isNarrowWidth ? undefined : '0 1 100px',
+                minWidth: isNarrowWidth ? 0 : 80,
+              }}
               id={`receipt-line-item-${index}-quantity`}
               label={t('Quantity')}
               inputMode="decimal"
+              isLabelVisuallyHidden={!isNarrowWidth}
               value={lineItem.quantity}
               onChange={value =>
                 update(
@@ -1105,9 +1388,14 @@ function ReceiptDetailsEditor({
               }
             />
             <ReceiptField
+              containerStyle={{
+                flex: isNarrowWidth ? undefined : '0 1 120px',
+                minWidth: isNarrowWidth ? 0 : 96,
+              }}
               id={`receipt-line-item-${index}-amount`}
               label={t('Amount')}
               inputMode="decimal"
+              isLabelVisuallyHidden={!isNarrowWidth}
               value={lineItem.amount}
               onChange={value =>
                 update(
@@ -1121,6 +1409,13 @@ function ReceiptDetailsEditor({
             />
             <Button
               variant="bare"
+              aria-label={t('Remove line item {{number}}', {
+                number: index + 1,
+              })}
+              style={{
+                alignSelf: isNarrowWidth ? 'stretch' : 'flex-end',
+                minHeight: 44,
+              }}
               onPress={() =>
                 update(
                   'lineItems',
@@ -1161,6 +1456,12 @@ function ReceiptDetailsEditor({
         }}
         onChange={event => update('transcript', event.currentTarget.value)}
       />
+      <Text style={{ color: theme.pageTextSubdued }}>
+        <Trans>
+          Editing this transcript does not update the structured receipt fields
+          above.
+        </Trans>
+      </Text>
       <Text style={{ color: theme.pageTextSubdued }}>
         {t('Amounts use {{count}} decimal places.', { count: decimalPlaces })}
       </Text>
@@ -1278,37 +1579,105 @@ function ReceiptMatchReview({
 }
 
 function ReceiptField({
+  containerStyle,
+  hint,
   id,
   inputMode,
+  isInvalid = false,
   label,
+  isLabelVisuallyHidden = false,
   placeholder,
   value,
   onChange,
 }: {
+  containerStyle?: React.CSSProperties;
+  hint?: string;
   id?: string;
   inputMode?: 'decimal';
+  isInvalid?: boolean;
   label: string;
+  isLabelVisuallyHidden?: boolean;
   placeholder?: string;
   value: string;
   onChange: (value: string) => void;
 }) {
   const inputId =
     id ?? `receipt-${label.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  const hintId = hint ? `${inputId}-hint` : undefined;
   return (
-    <View style={{ alignItems: 'stretch', gap: 4 }}>
+    <View style={{ alignItems: 'stretch', gap: 4, ...containerStyle }}>
       <label htmlFor={inputId}>
-        <Text style={{ fontWeight: 500 }}>{label}</Text>
+        <Text
+          style={{
+            fontWeight: 500,
+            ...(isLabelVisuallyHidden && {
+              height: 1,
+              margin: -1,
+              overflow: 'hidden',
+              padding: 0,
+              position: 'absolute',
+              width: 1,
+            }),
+          }}
+        >
+          {label}
+        </Text>
       </label>
       <Input
+        aria-describedby={hintId}
+        aria-invalid={isInvalid || undefined}
         id={inputId}
         inputMode={inputMode}
         placeholder={placeholder}
         value={value}
         onChangeValue={onChange}
-        style={{ width: '100%' }}
+        style={{
+          borderColor: isInvalid ? theme.errorText : undefined,
+          minHeight: 44,
+          textAlign: inputMode === 'decimal' ? 'right' : undefined,
+          width: '100%',
+        }}
       />
+      {hint && (
+        <Text
+          id={hintId}
+          style={{
+            color: isInvalid ? theme.errorText : theme.noticeText,
+            fontSize: 12,
+          }}
+        >
+          {hint}
+        </Text>
+      )}
     </View>
   );
+}
+
+function receiptFieldHint(
+  fieldConfidence: ReceiptFieldConfidence,
+  field: keyof ReceiptFieldConfidence,
+  isInvalid: boolean,
+  t: (value: string) => string,
+): string | undefined {
+  if (isInvalid) return t('Enter a valid value before saving.');
+  if ((fieldConfidence[field] ?? 1) < 0.8) {
+    return t('Low confidence from OCR. Please verify this value.');
+  }
+  return undefined;
+}
+
+function isInvalidReceiptField(field: string, value: string): boolean {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) return false;
+  if (field === 'currency') return !/^[A-Za-z]{3}$/.test(trimmedValue);
+  if (field === 'purchaseTime') {
+    return !/^\d{2}:\d{2}(?::\d{2})?$/.test(trimmedValue);
+  }
+  if (['total', 'subtotal', 'tax', 'tip'].includes(field)) {
+    const amount = Number(trimmedValue.replace(',', '.'));
+    return !Number.isFinite(amount) || amount < 0;
+  }
+  return false;
 }
 
 function createEmptyReceiptForm(currency: string): ReceiptForm {

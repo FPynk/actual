@@ -11,6 +11,7 @@ import {
   createServiceCommands,
   launcherEnvironment,
   LauncherStoppedError,
+  launchUrl,
   parseArguments,
   persistentPaths,
   requiredBuildOutputs,
@@ -39,6 +40,70 @@ function child(pid) {
   return process_;
 }
 
+function readinessResponse(url, { body, contentType, headers = {} } = {}) {
+  if (url.endsWith('/info')) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json', ...headers }),
+      text: async () =>
+        JSON.stringify({
+          build: { name: '@actual-app/sync-server', version: '26.8.0' },
+        }),
+    };
+  }
+  if (url.endsWith('/kcab/actual-launch.html')) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': 'text/html; charset=utf-8',
+        'cross-origin-opener-policy': 'same-origin',
+        'cross-origin-embedder-policy': 'require-corp',
+        ...headers,
+      }),
+      text: async () =>
+        body ??
+        '<!doctype html><main id="actual-launch-bootstrap"></main><script>const key = "actual-launch-service-worker-cleanup:"; location.replace("/");</script>',
+    };
+  }
+  if (url.endsWith('/')) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': 'text/html; charset=utf-8',
+        'cross-origin-opener-policy': 'same-origin',
+        'cross-origin-embedder-policy': 'require-corp',
+        ...headers,
+      }),
+      text: async () =>
+        body ??
+        '<!doctype html><title>Actual</title><div id="root"></div><script type="module" src="/@vite/client"></script>',
+    };
+  }
+  if (url.includes('kcab.worker')) {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': contentType ?? 'application/javascript',
+        ...headers,
+      }),
+      text: async () => body ?? 'var backend = {};',
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({
+      'content-type': contentType ?? 'application/javascript',
+      ...headers,
+    }),
+    text: async () => body ?? "console.log('Plugins Worker installing');",
+  };
+}
+
 function testLauncher({
   environment = {},
   fileExists = () => true,
@@ -48,6 +113,8 @@ function testLauncher({
   spawnErrorService,
   now,
   readinessTimeout,
+  createLaunchNonce,
+  sleep,
 } = {}) {
   const spawned = [];
   const opened = [];
@@ -83,7 +150,7 @@ function testLauncher({
         ...environment,
       },
       fetchImplementation:
-        fetchImplementation ?? (async () => ({ ok: true, status: 200 })),
+        fetchImplementation ?? (async url => readinessResponse(url)),
       openBrowser: async url => opened.push(url),
       output,
       errorOutput,
@@ -93,7 +160,8 @@ function testLauncher({
       portAvailable,
       now,
       readinessTimeout,
-      sleep: async () => undefined,
+      createLaunchNonce: createLaunchNonce ?? (() => 'test-launch'),
+      sleep: sleep ?? (async () => undefined),
       spawnProcess,
     }),
     opened,
@@ -128,6 +196,14 @@ void test('accepts --no-open and rejects every unknown argument', () => {
   assert.throws(() => parseArguments(['--wrong']), /Unknown argument/);
 });
 
+void test('uses an encoded, nonempty browser recovery launch nonce', () => {
+  assert.equal(
+    launchUrl('launch nonce'),
+    'http://127.0.0.1:5006/kcab/actual-launch.html?actual-launch=launch+nonce',
+  );
+  assert.throws(() => launchUrl(''), /launch nonce/);
+});
+
 void test('uses the committed Yarn release and one stable Actual data path', () => {
   const environment = { LOCALAPPDATA: 'C:\\Users\\Example\\AppData\\Local' };
   const first = persistentPaths(environment, 'win32');
@@ -153,21 +229,29 @@ void test('honors an explicit Actual data directory without requiring a platform
   );
 });
 
-void test('builds workers, starts native Actual services, verifies readiness, and opens one URL', async () => {
+void test('builds workers, verifies two complete semantic readiness rounds, and opens one recovery URL', async () => {
   const requested = [];
   const checkedPorts = [];
   const { launcher, opened, spawned } = testLauncher({
     fetchImplementation: async url => {
       requested.push(url);
-      return { ok: true, status: 200 };
+      return readinessResponse(url);
     },
     portAvailable: async port => checkedPorts.push(port),
   });
   await launcher.start();
   assert.deepEqual(checkedPorts, [3001, 5006]);
-  assert.deepEqual(opened, ['http://127.0.0.1:5006']);
+  assert.deepEqual(opened, [
+    'http://127.0.0.1:5006/kcab/actual-launch.html?actual-launch=test-launch',
+  ]);
   assert.deepEqual(requested, [
     'http://127.0.0.1:5006/info',
+    'http://127.0.0.1:5006/kcab/actual-launch.html',
+    'http://127.0.0.1:5006/',
+    'http://127.0.0.1:5006/kcab/kcab.worker.dev.js',
+    'http://127.0.0.1:5006/service-worker/plugin-sw.js',
+    'http://127.0.0.1:5006/info',
+    'http://127.0.0.1:5006/kcab/actual-launch.html',
     'http://127.0.0.1:5006/',
     'http://127.0.0.1:5006/kcab/kcab.worker.dev.js',
     'http://127.0.0.1:5006/service-worker/plugin-sw.js',
@@ -180,6 +264,129 @@ void test('builds workers, starts native Actual services, verifies readiness, an
     'frontend',
     'actual',
   ]);
+});
+
+void test('waits one full poll interval between successful readiness rounds', async () => {
+  const sleepDelays = [];
+  const { launcher } = testLauncher({
+    sleep: async milliseconds => sleepDelays.push(milliseconds),
+  });
+
+  await launcher.start({ noOpen: true });
+
+  assert.deepEqual(sleepDelays, [250]);
+});
+
+void test('resets readiness stability after a semantic failure without opening a browser', async () => {
+  const requested = [];
+  let frontendResponses = 0;
+  let currentTime = 0;
+  const { launcher, opened } = testLauncher({
+    fetchImplementation: async url => {
+      requested.push(url);
+      if (url.endsWith('/')) {
+        frontendResponses++;
+        if (frontendResponses === 1) {
+          return readinessResponse(url, {
+            headers: { 'cross-origin-embedder-policy': 'unsafe-none' },
+          });
+        }
+      }
+      return readinessResponse(url);
+    },
+    now: () => currentTime++,
+  });
+
+  await launcher.start({ noOpen: true });
+
+  assert.deepEqual(opened, []);
+  assert.equal(requested.filter(url => url.endsWith('/info')).length, 3);
+  assert.equal(
+    requested.filter(url => url.endsWith('/kcab/actual-launch.html')).length,
+    3,
+  );
+  assert.equal(requested.filter(url => url.endsWith('/')).length, 3);
+  assert.equal(requested.filter(url => url.includes('kcab.worker')).length, 2);
+  assert.equal(requested.filter(url => url.includes('plugin-sw')).length, 2);
+});
+
+void test('rejects a malformed launch bootstrap before opening a browser', async () => {
+  let currentTime = 0;
+  const { launcher, opened } = testLauncher({
+    fetchImplementation: async url => {
+      if (url.endsWith('/kcab/actual-launch.html')) {
+        return readinessResponse(url, {
+          body: '<!doctype html><title>unrelated page</title>',
+        });
+      }
+      return readinessResponse(url);
+    },
+    now: () => currentTime++,
+    readinessTimeout: 3,
+  });
+
+  await assert.rejects(
+    launcher.start(),
+    /Actual launch bootstrap: HTML response was not the Actual launch bootstrap/,
+  );
+  assert.deepEqual(opened, []);
+});
+
+void test('reports bounded semantic readiness diagnostics without response bodies', async () => {
+  let currentTime = 0;
+  const { launcher } = testLauncher({
+    fetchImplementation: async url => {
+      if (url.includes('kcab.worker')) {
+        return readinessResponse(url, {
+          body: '<html>synthetic-secret-that-must-not-appear</html>',
+          contentType: 'text/html',
+        });
+      }
+      return readinessResponse(url);
+    },
+    now: () => currentTime++,
+    readinessTimeout: 3,
+  });
+
+  await assert.rejects(
+    launcher.start({ noOpen: true }),
+    error =>
+      /Actual readiness did not stabilize/.test(error.message) &&
+      /Actual worker: expected JavaScript MIME type/.test(error.message) &&
+      !error.message.includes('synthetic-secret'),
+  );
+});
+
+void test('accepts JavaScript string literals containing doctypes and rejects HTML fallbacks with a JavaScript MIME type', async () => {
+  const validJavaScript = testLauncher({
+    fetchImplementation: async url => {
+      if (url.includes('kcab.worker')) {
+        return readinessResponse(url, {
+          body: 'var backend = {}; const xml = "<!DOCTYPE document>";',
+        });
+      }
+      return readinessResponse(url);
+    },
+  });
+  await validJavaScript.launcher.start({ noOpen: true });
+
+  let currentTime = 0;
+  const htmlFallback = testLauncher({
+    fetchImplementation: async url => {
+      if (url.includes('kcab.worker')) {
+        return readinessResponse(url, {
+          body: '<!doctype html><title>Actual</title><div id="root"></div>',
+        });
+      }
+      return readinessResponse(url);
+    },
+    now: () => currentTime++,
+    readinessTimeout: 3,
+  });
+  await assert.rejects(
+    htmlFallback.launcher.start({ noOpen: true }),
+    /Actual worker: received HTML instead of JavaScript/,
+  );
 });
 
 void test('supports --no-open and reports a missing generated worker before services start', async () => {
@@ -246,7 +453,7 @@ void test('cleans up every owned child when readiness times out', async () => {
   });
   await assert.rejects(
     launcher.start({ noOpen: true }),
-    /Actual server was not ready/,
+    /Actual readiness did not stabilize/,
   );
   const taskkill = spawned.filter(item => item.executable === 'taskkill');
   assert.equal(taskkill.length >= 4, true);
@@ -351,7 +558,7 @@ void test('launcher preserves explicit Actual and OpenAI settings while enforcin
   );
 });
 
-void test('the frontend exposes both worker assets through the normal Actual URL', async () => {
+void test('the frontend exposes the launch bootstrap and worker assets through the normal Actual URL', async () => {
   const frontendConfiguration = await readFile(
     new URL('../packages/desktop-client/vite.config.mts', import.meta.url),
     'utf8',
@@ -359,6 +566,17 @@ void test('the frontend exposes both worker assets through the normal Actual URL
   const syncServer = await readFile(
     new URL('../packages/sync-server/src/app.ts', import.meta.url),
     'utf8',
+  );
+  const bootstrapStart = frontendConfiguration.indexOf(
+    'const actualLaunchBootstrapHtml',
+  );
+  const bootstrapEnd = frontendConfiguration.indexOf(
+    '</html>`;',
+    bootstrapStart,
+  );
+  const launchBootstrap = frontendConfiguration.slice(
+    bootstrapStart,
+    bootstrapEnd,
   );
   assert.match(
     frontendConfiguration,
@@ -371,6 +589,15 @@ void test('the frontend exposes both worker assets through the normal Actual URL
   );
   assert.match(frontendConfiguration, /env\.BROWSER === 'none'/);
   assert.match(syncServer, /target: 'http:\/\/127\.0\.0\.1:3001'/);
+  assert.match(frontendConfiguration, /\^\\\/kcab\\\/\.\*\$/);
+  assert.notEqual(bootstrapStart, -1);
+  assert.notEqual(bootstrapEnd, -1);
+  assert.match(launchBootstrap, /id="actual-launch-bootstrap"/);
+  assert.match(launchBootstrap, /getRegistrations/);
+  assert.match(launchBootstrap, /registration\.unregister/);
+  assert.match(launchBootstrap, /location\.replace/);
+  assert.match(frontendConfiguration, /Cache-Control', 'no-store/);
+  assert.doesNotMatch(launchBootstrap, /\bcaches\b|indexedDB|localStorage/);
   assert.equal(
     path.basename(requiredBuildOutputs()[0].path),
     'kcab.worker.dev.js',

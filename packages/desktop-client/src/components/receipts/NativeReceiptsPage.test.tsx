@@ -24,6 +24,17 @@ function translationChildren(children: ReactNode): ReactNode {
   return children;
 }
 
+function inlineStyle(
+  style: CSSProperties | undefined,
+): CSSProperties | undefined {
+  if (!style) return undefined;
+  return Object.fromEntries(
+    Object.entries(style).filter(
+      ([property]) => !property.startsWith('&') && !property.startsWith('@'),
+    ),
+  ) as CSSProperties;
+}
+
 vi.mock('react-i18next', () => ({
   Trans: ({ children }: { children: ReactNode }) => (
     <>{translationChildren(children)}</>
@@ -62,6 +73,7 @@ vi.mock('@actual-app/components/button', () => ({
 vi.mock('@actual-app/components/input', () => ({
   Input: ({
     onChangeValue,
+    style,
     ...props
   }: {
     onChangeValue?: (value: string) => void;
@@ -69,6 +81,7 @@ vi.mock('@actual-app/components/input', () => ({
     <input
       {...props}
       onChange={event => onChangeValue?.(event.currentTarget.value)}
+      style={inlineStyle(style)}
     />
   ),
 }));
@@ -76,9 +89,12 @@ vi.mock('@actual-app/components/input', () => ({
 vi.mock('@actual-app/components/text', () => ({
   Text: ({
     children,
+    style,
     ...props
   }: { children: ReactNode } & ComponentProps<'div'>) => (
-    <div {...props}>{children}</div>
+    <div {...props} style={inlineStyle(style)}>
+      {children}
+    </div>
   ),
 }));
 
@@ -105,7 +121,11 @@ vi.mock('@actual-app/components/view', () => ({
     children: ReactNode;
     style?: CSSProperties;
   } & ComponentProps<'div'>) => (
-    <div {...props} style={style}>
+    <div
+      {...props}
+      data-responsive-style={style ? JSON.stringify(style) : undefined}
+      style={inlineStyle(style)}
+    >
       {children}
     </div>
   ),
@@ -227,12 +247,21 @@ describe('NativeReceiptsPage', () => {
       expect.objectContaining({ name: 'one.png' }),
       expect.objectContaining({ rotationDegrees: 0 }),
     );
+    expect(
+      screen.getByRole('button', { name: 'Rotate receipt left 90 degrees' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Rotate receipt right 90 degrees' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Cancel processing one.png' }),
+    ).toBeInTheDocument();
 
     resolveFirst?.(ocrDraft());
     await waitFor(() =>
       expect(mocks.testOcrClient.extractReceiptText).toHaveBeenCalledTimes(3),
     );
-    expect(await screen.findByText('Failed')).toBeInTheDocument();
+    expect((await screen.findAllByText('Failed'))[0]).toBeInTheDocument();
     await userEvent
       .setup()
       .click(screen.getByRole('button', { name: 'three.png' }));
@@ -252,7 +281,7 @@ describe('NativeReceiptsPage', () => {
     fireEvent.change(screen.getByLabelText('Upload receipt images'), {
       target: { files: [new File(['bad'], 'bad.png', { type: 'image/png' })] },
     });
-    await screen.findByText('Failed');
+    await screen.findAllByText('Failed');
     await user.click(
       screen.getByRole('button', { name: 'Enter receipt text manually' }),
     );
@@ -270,6 +299,11 @@ describe('NativeReceiptsPage', () => {
     expect(screen.getByLabelText('OCR transcript')).toHaveValue(
       'Manual receipt text',
     );
+    expect(
+      screen.getByText(
+        'Editing this transcript does not update the structured receipt fields above.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('cancels, retries, removes queue items, and releases temporary previews', async () => {
@@ -295,10 +329,12 @@ describe('NativeReceiptsPage', () => {
     await user.click(
       screen.getByRole('button', { name: 'Cancel current receipt' }),
     );
-    await screen.findByText('Cancelled');
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findAllByText('Cancelled');
+    await user.click(
+      screen.getByRole('button', { name: 'Retry processing retry.png' }),
+    );
     await screen.findByDisplayValue('Neighborhood Market');
-    await user.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+    await user.click(screen.getByRole('button', { name: /Remove retry\.png/ }));
     expect(
       screen.queryByRole('button', { name: 'retry.png' }),
     ).not.toBeInTheDocument();
@@ -352,8 +388,13 @@ describe('NativeReceiptsPage', () => {
       },
     });
     await screen.findByDisplayValue('Neighborhood Market');
-    await user.click(screen.getByRole('button', { name: 'Save receipt text' }));
+    await user.click(screen.getByRole('button', { name: 'Save receipt' }));
     await screen.findByText('Receipt text saved locally.');
+    expect(
+      screen.getByText(
+        'Saving stores the reviewed structured receipt fields and OCR transcript in this budget.',
+      ),
+    ).toBeInTheDocument();
     await user.click(
       await screen.findByRole('button', { name: 'Attach receipt' }),
     );
@@ -370,5 +411,98 @@ describe('NativeReceiptsPage', () => {
         transactionId: 'transaction-1',
       }),
     );
+  });
+
+  it('keeps the receipt workflow usable at desktop and narrow viewport widths', async () => {
+    const user = userEvent.setup();
+    mocks.testOcrClient.extractReceiptText.mockResolvedValue(ocrDraft());
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1234,
+    });
+    const desktop = render(<NativeReceiptsPage />);
+
+    fireEvent.change(screen.getByLabelText('Upload receipt images'), {
+      target: {
+        files: [
+          new File(['receipt'], 'an-unusually-long-receipt-file-name.png', {
+            type: 'image/png',
+          }),
+        ],
+      },
+    });
+    await screen.findByDisplayValue('Neighborhood Market');
+
+    expect(screen.getByTestId('receipt-upload-dropzone')).toHaveStyle({
+      minHeight: '88px',
+    });
+    expect(screen.getByTestId('native-receipts-page')).toHaveStyle({
+      flexShrink: 0,
+    });
+    expect(screen.getByTestId('receipt-queue-row')).toHaveStyle({
+      flexDirection: 'row',
+      flexShrink: 0,
+    });
+    expect(
+      screen.getByRole('button', {
+        name: 'an-unusually-long-receipt-file-name.png',
+      }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('receipt-preview-card')).toHaveTextContent(
+      'an-unusually-long-receipt-file-name.png',
+    );
+    expect(
+      screen.getByRole('button', {
+        name: 'Remove an-unusually-long-receipt-file-name.png from the receipt queue',
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Rotate receipt right 90 degrees' }),
+    );
+    await waitFor(() =>
+      expect(mocks.testOcrClient.extractReceiptText).toHaveBeenCalledTimes(2),
+    );
+    expect(mocks.testOcrClient.extractReceiptText).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'an-unusually-long-receipt-file-name.png',
+      }),
+      expect.objectContaining({ rotationDegrees: 90 }),
+    );
+    expect(screen.getByAltText('Receipt preview')).toHaveStyle({
+      transform: 'rotate(90deg)',
+    });
+    await user.click(screen.getByRole('button', { name: 'Add line item' }));
+    expect(screen.getByTestId('receipt-line-item-header')).toHaveStyle({
+      flexDirection: 'row',
+      pointerEvents: 'none',
+    });
+    expect(screen.getByLabelText('Description 2')).toBeInTheDocument();
+    expect(screen.getByLabelText('Total')).toHaveStyle({ textAlign: 'right' });
+
+    desktop.unmount();
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 375,
+    });
+    render(<NativeReceiptsPage />);
+    fireEvent.change(screen.getByLabelText('Upload receipt images'), {
+      target: {
+        files: [new File(['receipt'], 'narrow.png', { type: 'image/png' })],
+      },
+    });
+    await screen.findByDisplayValue('Neighborhood Market');
+
+    expect(screen.getByTestId('receipt-metadata-fields')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Add line item' }));
+    expect(screen.queryByTestId('receipt-line-item-header')).toBeNull();
+    await user.clear(screen.getByLabelText('Total'));
+    await user.type(screen.getByLabelText('Total'), '-1');
+    expect(screen.getByLabelText('Total')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    expect(
+      screen.getByText('Enter a valid value before saving.'),
+    ).toBeInTheDocument();
   });
 });

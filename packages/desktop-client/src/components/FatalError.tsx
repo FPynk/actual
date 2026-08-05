@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
@@ -11,6 +11,7 @@ import { View } from '@actual-app/components/view';
 import { LazyLoadFailedError } from '@actual-app/core/shared/errors';
 
 import { useModalState } from '#hooks/useModalState';
+import { retryTransientBackendInitializationFailure } from '#util/browser-launch-recovery';
 
 import { Link } from './common/Link';
 import { Modal, ModalHeader } from './common/Modal';
@@ -207,6 +208,14 @@ export function FatalError({ error: rawError }: FatalErrorProps) {
         : new Error(String(rawError));
   const showSimpleRender = 'type' in error && error.type === 'app-init-failure';
   const isLazyLoadError = error instanceof LazyLoadFailedError;
+
+  useEffect(() => {
+    retryTransientBackendInitializationFailure(rawError, {
+      isDevelopment: import.meta.env.DEV,
+      location: window.location,
+      sessionStorage: window.sessionStorage,
+    });
+  }, [rawError]);
 
   return (
     <Modal name={lastModal?.name ?? 'fatal-error'} isDismissable={false}>
